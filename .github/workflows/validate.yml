@@ -45,6 +45,10 @@ jobs:
         with:
           go-version: '1.26.5'
           cache: false
+      - name: Install upstream native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libolm-dev
       - name: Clone pinned mautrix-meta upstream
         run: |
           set -eu
@@ -54,11 +58,16 @@ jobs:
       - name: Apply deterministic account-aware egress delta
         run: |
           python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
             pkg/connector/client.go \
             pkg/connector/login.go \
             pkg/connector/directmedia.go \
+            pkg/connector/events.go \
+            pkg/connector/userinfo.go \
+            pkg/connector/chatinfo.go \
+            pkg/connector/handlemeta.go \
             pkg/connector/proxy_context_test.go \
             pkg/msgconv/mediadl/contextkey.go \
             pkg/msgconv/mediadl/download.go \
