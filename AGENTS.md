@@ -1,23 +1,26 @@
 # Repository Working Contract
 
-This file is a concise execution guide for humans and coding agents working on `feature/meta-control-plane`. The authoritative specifications remain under `docs/architecture/`; this file does not override them.
+This file is a concise execution guide for humans and coding agents. The authoritative specifications remain under `docs/architecture/`; this file does not override them.
 
 ## Branch and deployment discipline
 
-- Do implementation work for the Meta Control Plane on `feature/meta-control-plane`.
-- Do not move feature work to `main` until the required phase gate is green on the exact candidate commit.
-- Treat `main` as deployment-triggering state.
-- Never describe a capability as complete, production-ready, or safe to merge unless the corresponding CI acceptance contract is satisfied.
+- `dev` is the primary integration branch for all development.
+- Create focused `feature/*`, `fix/*`, or `docs/*` branches from the latest green `dev`.
+- Merge working branches into `dev`, never directly into `main` under normal development.
+- Treat `main` as deployment-triggering state and promote only deliberately from a green, deployable `dev` checkpoint.
+- Read `docs/architecture/development-branch-workflow.md` before changing branch strategy.
+- Never describe a capability as complete, production-ready, or safe to promote unless the corresponding CI acceptance contract is satisfied on the exact candidate commit.
 
 ## Source-of-truth reading order
 
 Before changing architecture or implementation, read:
 
 1. `docs/architecture/meta-control-plane-documentation-index.md`
-2. `docs/architecture/meta-control-plane-branch-plan.md`
-3. the most specific contract for the subsystem being changed
-4. `docs/architecture/meta-control-plane-ci-acceptance.md`
-5. `docs/architecture/meta-control-plane-threat-failure-model.md`
+2. `docs/architecture/development-branch-workflow.md`
+3. `docs/architecture/meta-control-plane-branch-plan.md`
+4. the most specific contract for the subsystem being changed
+5. `docs/architecture/meta-control-plane-ci-acceptance.md`
+6. `docs/architecture/meta-control-plane-threat-failure-model.md`
 
 Silent contradictions between contracts are not acceptable. Resolve the contract first rather than guessing in code.
 
@@ -32,7 +35,7 @@ Phase 0 documentation/contracts are the established baseline. Implementation pro
 5. Phase 5 — Chatwoot to Matrix
 6. Phase 6 — Multi-tenant proof
 
-Do not pull later-phase behavior forward if it weakens isolation, idempotency, testability, or maintainability.
+Use a focused phase branch from `dev` where practical. Do not pull later-phase behavior forward if it weakens isolation, idempotency, testability, or maintainability.
 
 ## mautrix-meta upstream contract
 
@@ -41,6 +44,7 @@ The fork baseline is exactly:
 - repository: `mautrix/meta`
 - tag: `v0.2607.0`
 - commit: `ed37c9e6ce47e83dc75b9abea7b636302715b9bc`
+- immutable recovery branch in this fork: `upstream/mautrix-meta-v0.2607.0`
 
 The fork exists only for account-aware egress resolution and propagation of the tenant-specific egress across required Meta traffic classes. Keep the delta small, mechanically reviewable, and rebaseable. Do not put Chatwoot, tenant business logic, CRM behavior, or control-plane persistence into the mautrix fork.
 
@@ -70,6 +74,13 @@ For each phase:
 - test failure paths, not only success paths.
 
 If a required property cannot be tested, first add the instrumentation or test seam needed to make it observable.
+
+## Status language
+
+- `implemented` means code plus relevant automated tests exist.
+- `phase complete` means the entire phase gate is green on the exact candidate commit.
+- `integrated` means merged into `dev` and `dev` remains green.
+- `production-ready` is reserved for the final acceptance criteria, not a successful local test or partial phase.
 
 ## Stop conditions
 
