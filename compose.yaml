@@ -15,8 +15,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
-      : "${SYNAPSE_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
-      case "$SYNAPSE_SERVER_NAME" in
+      : "$${SYNAPSE_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
+      case "$$SYNAPSE_SERVER_NAME" in
         *.*) ;;
         *) echo "MATRIX_SERVER_NAME must be a DNS-style Matrix server name" >&2; exit 64 ;;
       esac
@@ -24,7 +24,7 @@ services:
         echo "Synapse configuration already exists for this clean state volume"
         exit 0
       fi
-      echo "Generating clean Synapse configuration for $SYNAPSE_SERVER_NAME"
+      echo "Generating clean Synapse configuration for $$SYNAPSE_SERVER_NAME"
       exec /start.py generate
 
   mautrix-config-init:
@@ -60,9 +60,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
-      : "${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
-      : "${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
-      case "$MATRIX_ADMIN_MXID" in
+      : "$${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
+      : "$${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
+      case "$$MATRIX_ADMIN_MXID" in
         @*:* ) ;;
         * ) echo "MATRIX_ADMIN_MXID must look like @user:server.name" >&2; exit 64 ;;
       esac
@@ -83,7 +83,7 @@ services:
         .appservice.hostname = "0.0.0.0" |
         .appservice.port = 29319
       ' /data/config.yaml
-      echo "mautrix-meta config patched for $MATRIX_SERVER_NAME"
+      echo "mautrix-meta config patched for $$MATRIX_SERVER_NAME"
 
   mautrix-registration-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
@@ -134,8 +134,8 @@ services:
       chmod 0644 /synapse/homeserver.yaml /synapse/appservices/mautrix-meta.yaml
 
       echo "Synapse appservice handoff complete"
-      echo "homeserver owner/mode: $(stat -c '%u:%g %a' /synapse/homeserver.yaml)"
-      echo "registration owner/mode: $(stat -c '%u:%g %a' /synapse/appservices/mautrix-meta.yaml)"
+      echo "homeserver owner/mode: $$(stat -c '%u:%g %a' /synapse/homeserver.yaml)"
+      echo "registration owner/mode: $$(stat -c '%u:%g %a' /synapse/appservices/mautrix-meta.yaml)"
 
   synapse-check-config:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
@@ -145,8 +145,6 @@ services:
       synapse-configure:
         condition: service_completed_successfully
     volumes:
-      # Keep this writable: Synapse configuration loading may need access to paths
-      # inside its data directory, and the runtime itself uses the same permissions.
       - synapse-data-v2:/data
     entrypoint: ["python", "-m", "synapse.config"]
     command: ["-c", "/data/homeserver.yaml"]
