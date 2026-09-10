@@ -7,7 +7,7 @@ services:
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
       - type: bind
-        source: ${STACK_DATA_ROOT:-/data/mautrix-meta-stack}/synapse
+        source: /data/mautrix-meta-stack/synapse
         target: /data
     expose:
       - "8008"
@@ -31,7 +31,7 @@ services:
         condition: service_healthy
     volumes:
       - type: bind
-        source: ${STACK_DATA_ROOT:-/data/mautrix-meta-stack}/mautrix-meta
+        source: /data/mautrix-meta-stack/mautrix-meta
         target: /data
     expose:
       - "29319"
