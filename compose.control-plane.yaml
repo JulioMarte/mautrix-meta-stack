@@ -1,0 +1,25 @@
+services:
+  control-plane:
+    build:
+      context: ./control-plane
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      CONTROL_PLANE_DB_PATH: /data/control-plane.db
+      CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN is required}
+      PORT: "3000"
+      TZ: ${TZ:-America/Santo_Domingo}
+    volumes:
+      - control-plane-data:/data
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:3000/health/ready');process.exit(r.ok?0:1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    stop_grace_period: 20s
+
+volumes:
+  control-plane-data:
