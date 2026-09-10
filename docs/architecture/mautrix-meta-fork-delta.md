@@ -1,7 +1,7 @@
 # mautrix-meta Fork Delta Contract
 
 Status: normative for `feature/meta-control-plane`
-Pinned upstream baseline: `mautrix/meta v0.2607.0`
+Pinned upstream baseline: `mautrix/meta v0.2607.0` (`ed37c9e6ce47e83dc75b9abea7b636302715b9bc`)
 
 ## Purpose
 
