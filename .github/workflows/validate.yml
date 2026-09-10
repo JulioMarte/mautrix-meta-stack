@@ -18,19 +18,61 @@ jobs:
       TZ: America/Santo_Domingo
     steps:
       - uses: actions/checkout@v4
+
       - name: Validate Docker Compose
         run: docker compose -f compose.yaml config -q
+
       - name: Check helper shell syntax
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
+
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
-      - name: Dump bootstrap logs on failure
+
+      - name: Start runtime services
+        run: docker compose -f compose.yaml up -d synapse mautrix-meta
+
+      - name: Wait for Synapse and mautrix health
+        run: |
+          set -eu
+          wait_healthy() {
+            service="$1"
+            timeout="$2"
+            cid="$(docker compose -f compose.yaml ps -q "$service")"
+            if [ -z "$cid" ]; then
+              echo "No container found for $service" >&2
+              return 1
+            fi
+            end=$((SECONDS + timeout))
+            while [ "$SECONDS" -lt "$end" ]; do
+              status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+              echo "$service: $status"
+              if [ "$status" = "healthy" ]; then
+                return 0
+              fi
+              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+                return 1
+              fi
+              sleep 3
+            done
+            echo "Timed out waiting for $service to become healthy" >&2
+            return 1
+          }
+          wait_healthy synapse 120
+          wait_healthy mautrix-meta 120
+
+      - name: Verify service endpoints
+        run: |
+          docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
+          docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
+
+      - name: Dump stack logs on failure
         if: failure()
         run: |
           docker compose -f compose.yaml ps -a || true
-          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config || true
+          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse mautrix-meta || true
+
       - name: Cleanup
         if: always()
         run: docker compose -f compose.yaml down -v --remove-orphans || true
