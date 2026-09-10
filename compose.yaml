@@ -1,0 +1,50 @@
+services:
+  synapse:
+    image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
+    restart: unless-stopped
+    environment:
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      TZ: ${TZ:-America/Santo_Domingo}
+    volumes:
+      - type: bind
+        source: ${STACK_DATA_ROOT:-/data/mautrix-meta-stack}/synapse
+        target: /data
+    expose:
+      - "8008"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/_matrix/client/versions', timeout=5)"
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 30s
+
+  mautrix-meta:
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    restart: unless-stopped
+    depends_on:
+      synapse:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${STACK_DATA_ROOT:-/data/mautrix-meta-stack}/mautrix-meta
+        target: /data
+    expose:
+      - "29319"
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:29319/_matrix/mau/ready
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 30s
