@@ -108,8 +108,15 @@ services:
       set -eu
       test -s /synapse/homeserver.yaml
       test -s /meta/registration.yaml
-      yq -i '.app_service_config_files = ["/meta/registration.yaml"]' /synapse/homeserver.yaml
-      echo "mautrix-meta appservice registered in Synapse"
+      mkdir -p /synapse/appservices
+      cp /meta/registration.yaml /synapse/appservices/mautrix-meta.yaml
+      chmod 0644 /synapse/appservices/mautrix-meta.yaml
+      chown 991:991 /synapse/appservices/mautrix-meta.yaml
+      yq -i '.app_service_config_files = ["/data/appservices/mautrix-meta.yaml"]' /synapse/homeserver.yaml
+      chown 991:991 /synapse/homeserver.yaml
+      echo "mautrix-meta appservice copied into Synapse data volume"
+      test -r /synapse/appservices/mautrix-meta.yaml
+      yq '.id, .url' /synapse/appservices/mautrix-meta.yaml
 
   synapse:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
@@ -122,7 +129,6 @@ services:
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
       - synapse-data:/data
-      - mautrix-meta-data:/meta:ro
     expose:
       - "8008"
     healthcheck:
