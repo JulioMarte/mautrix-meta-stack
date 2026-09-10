@@ -25,6 +25,8 @@ def main() -> None:
     client = root / "pkg/connector/client.go"
     login = root / "pkg/connector/login.go"
     directmedia = root / "pkg/connector/directmedia.go"
+    events = root / "pkg/connector/events.go"
+    userinfo = root / "pkg/connector/userinfo.go"
     contextkey = root / "pkg/msgconv/mediadl/contextkey.go"
     download = root / "pkg/msgconv/mediadl/download.go"
 
@@ -86,6 +88,30 @@ def main() -> None:
         directmedia,
         '''\tzerolog.Ctx(ctx).Trace().Any("mediaInfo", mediaInfo).Any("err", err).Msg("download direct media")\n\n\tvar msg *database.Message\n''',
         '''\tzerolog.Ctx(ctx).Trace().Any("mediaInfo", mediaInfo).Any("err", err).Msg("download direct media")\n\n\tif m.Config.ProxyMedia && (m.Config.GetProxyFrom != "" || m.Config.Proxy != "") {\n\t\tul := m.Bridge.GetCachedUserLoginByID(mediaInfo.UserID)\n\t\tif ul == nil || !ul.Client.IsLoggedIn() {\n\t\t\treturn nil, fmt.Errorf("login %s not found for media proxy resolution", mediaInfo.UserID)\n\t\t}\n\t\tclient := ul.Client.(*MetaClient)\n\t\tproxyURL, proxyErr := m.getProxy(client.proxyContext(ProxyTrafficMedia))("download")\n\t\tif proxyErr != nil {\n\t\t\treturn nil, fmt.Errorf("failed to resolve media proxy: %w", proxyErr)\n\t\t} else if proxyURL == "" {\n\t\t\treturn nil, fmt.Errorf("media proxy resolution returned empty proxy")\n\t\t}\n\t\tctx = mediadl.WithProxy(ctx, proxyURL)\n\t}\n\n\tvar msg *database.Message\n''',
+    )
+
+    replace_once(
+        events,
+        '''\t"go.mau.fi/mautrix-meta/pkg/messagix/table"\n\t"go.mau.fi/mautrix-meta/pkg/metaid"\n)''',
+        '''\t"go.mau.fi/mautrix-meta/pkg/messagix/table"\n\t"go.mau.fi/mautrix-meta/pkg/metaid"\n\t"go.mau.fi/mautrix-meta/pkg/msgconv/mediadl"\n)''',
+    )
+
+    replace_once(
+        events,
+        '''func (evt *FBMessageEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {\n\tcli := evt.m.Client\n\tif cli == nil {\n\t\treturn nil, messagix.ErrClientIsNil\n\t}\n\treturn evt.m.Main.MsgConv.ToMatrix(ctx, portal, cli, evt.m.UserLogin, intent, evt.GetID(), evt.WrappedMessage, evt.m.Main.Config.DisableXMAAlways), nil\n}\n''',
+        '''func (evt *FBMessageEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {\n\tcli := evt.m.Client\n\tif cli == nil {\n\t\treturn nil, messagix.ErrClientIsNil\n\t}\n\tif evt.m.Main.Config.ProxyMedia && (evt.m.Main.Config.GetProxyFrom != "" || evt.m.Main.Config.Proxy != "") {\n\t\tproxyURL, err := evt.m.Main.getProxy(evt.m.proxyContext(ProxyTrafficMedia))("message")\n\t\tif err != nil {\n\t\t\treturn nil, fmt.Errorf("failed to resolve media proxy: %w", err)\n\t\t} else if proxyURL == "" {\n\t\t\treturn nil, fmt.Errorf("media proxy resolution returned empty proxy")\n\t\t}\n\t\tctx = mediadl.WithProxy(ctx, proxyURL)\n\t}\n\treturn evt.m.Main.MsgConv.ToMatrix(ctx, portal, cli, evt.m.UserLogin, intent, evt.GetID(), evt.WrappedMessage, evt.m.Main.Config.DisableXMAAlways), nil\n}\n''',
+    )
+
+    replace_once(
+        userinfo,
+        '''\t\tAvatar: wrapAvatar(info.GetAvatarURL()),''',
+        '''\t\tAvatar: m.wrapAvatar(info.GetAvatarURL()),''',
+    )
+
+    replace_once(
+        userinfo,
+        '''func wrapAvatar(avatarURL string) *bridgev2.Avatar {\n\tif avatarURL == "" {\n\t\treturn &bridgev2.Avatar{Remove: true}\n\t}\n\tparsedURL, _ := url.Parse(avatarURL)\n\tavatarID := path.Base(parsedURL.Path)\n\treturn &bridgev2.Avatar{\n\t\tID: networkid.AvatarID(avatarID),\n\t\tGet: func(ctx context.Context) ([]byte, error) {\n\t\t\treturn mediadl.DownloadAvatar(ctx, avatarURL)\n\t\t},\n\t}\n}\n''',
+        '''func (m *MetaClient) wrapAvatar(avatarURL string) *bridgev2.Avatar {\n\tif avatarURL == "" {\n\t\treturn &bridgev2.Avatar{Remove: true}\n\t}\n\tparsedURL, _ := url.Parse(avatarURL)\n\tavatarID := path.Base(parsedURL.Path)\n\treturn &bridgev2.Avatar{\n\t\tID: networkid.AvatarID(avatarID),\n\t\tGet: func(ctx context.Context) ([]byte, error) {\n\t\t\tif m.Main.Config.ProxyMedia && (m.Main.Config.GetProxyFrom != "" || m.Main.Config.Proxy != "") {\n\t\t\t\tproxyURL, err := m.Main.getProxy(m.proxyContext(ProxyTrafficMedia))("avatar")\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn nil, fmt.Errorf("failed to resolve avatar proxy: %w", err)\n\t\t\t\t} else if proxyURL == "" {\n\t\t\t\t\treturn nil, fmt.Errorf("avatar proxy resolution returned empty proxy")\n\t\t\t\t}\n\t\t\t\tctx = mediadl.WithProxy(ctx, proxyURL)\n\t\t\t}\n\t\t\treturn mediadl.DownloadAvatar(ctx, avatarURL)\n\t\t},\n\t}\n}\n''',
     )
 
     test_file = root / "pkg/connector/proxy_context_test.go"
