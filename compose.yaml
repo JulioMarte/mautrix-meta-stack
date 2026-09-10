@@ -36,6 +36,7 @@ services:
 
   mautrix-configure:
     image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
     restart: "no"
     depends_on:
       synapse-init:
@@ -88,6 +89,7 @@ services:
 
   synapse-configure:
     image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
     restart: "no"
     depends_on:
       synapse-init:
