@@ -37,6 +37,40 @@ jobs:
       - name: Build control-plane image
         run: docker build -t meta-control-plane:ci .
 
+  phase3-mautrix-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Clone pinned mautrix-meta upstream
+        run: |
+          set -eu
+          git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
+          git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
+          test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
+      - name: Apply deterministic account-aware egress delta
+        run: |
+          python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
+          cd /tmp/mautrix-meta
+          gofmt -w \
+            pkg/connector/client.go \
+            pkg/connector/login.go \
+            pkg/connector/directmedia.go \
+            pkg/connector/proxy_context_test.go \
+            pkg/msgconv/mediadl/contextkey.go \
+            pkg/msgconv/mediadl/download.go \
+            pkg/msgconv/mediadl/proxy_context_test.go
+          git diff --check
+      - name: Run upstream and fork tests
+        working-directory: /tmp/mautrix-meta
+        run: go test ./...
+      - name: Build patched mautrix-meta image
+        working-directory: /tmp/mautrix-meta
+        run: docker build -t mautrix-meta:phase3-ci .
+
   compose:
     runs-on: ubuntu-latest
     env:
