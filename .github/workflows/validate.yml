@@ -44,6 +44,8 @@ jobs:
       MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
       MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
       CONTROL_PLANE_ADMIN_TOKEN: ci-control-plane-admin-token-123456
+      CONTROL_PLANE_INTERNAL_TOKEN: ci-control-plane-internal-token-123456789
+      EGRESS_PROXY_CI_PASSWORD: ci-proxy-canary-secret
       SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
       MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
       YQ_IMAGE: mikefarah/yq:4.47.2
@@ -80,12 +82,8 @@ jobs:
             while [ "$SECONDS" -lt "$end" ]; do
               status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
               echo "$service: $status"
-              if [ "$status" = "healthy" ]; then
-                return 0
-              fi
-              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
-                return 1
-              fi
+              if [ "$status" = "healthy" ]; then return 0; fi
+              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then return 1; fi
               sleep 3
             done
             echo "Timed out waiting for $service to become healthy" >&2
@@ -99,11 +97,29 @@ jobs:
         run: |
           docker compose -f compose.yaml -f compose.control-plane.yaml exec -T synapse curl -fSs http://localhost:8008/health
           docker compose -f compose.yaml -f compose.control-plane.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
-          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const live=await fetch('http://127.0.0.1:3000/health/live'); if(!live.ok) process.exit(1); const ready=await fetch('http://127.0.0.1:3000/health/ready'); if(!ready.ok) process.exit(1); const denied=await fetch('http://127.0.0.1:3000/api/v1/tenants'); if(denied.status!==401) process.exit(1)"
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const live=await fetch('http://127.0.0.1:3000/health/live');if(!live.ok)process.exit(1);const ready=await fetch('http://127.0.0.1:3000/health/ready');if(!ready.ok)process.exit(1);const denied=await fetch('http://127.0.0.1:3000/api/v1/tenants');if(denied.status!==401)process.exit(1);const internalDenied=await fetch('http://127.0.0.1:3000/internal/v1/egress/resolve?meta_account_id=x&reason=connect&traffic_class=messaging');if(internalDenied.status!==401)process.exit(1)"
+
+      - name: Verify Phase 2 resolver integration
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e '
+            const base="http://127.0.0.1:3000";
+            const admin={authorization:"Bearer "+process.env.CONTROL_PLANE_ADMIN_TOKEN,"content-type":"application/json"};
+            const post=async(path,body)=>{const r=await fetch(base+path,{method:"POST",headers:admin,body:JSON.stringify(body)});if(!r.ok){console.error(path,r.status,await r.text());process.exit(1)}return (await r.json()).data};
+            const t=await post("/api/v1/tenants",{slug:"resolver-ci",name:"Resolver CI"});
+            const p=await post("/api/v1/egress-profiles",{provider:"fixture",scheme:"socks5",host:"proxy-ci.test",port:1080,username:"ci",secretRef:"env:EGRESS_PROXY_CI_PASSWORD",status:"healthy"});
+            const c=await post("/api/v1/meta-connections",{tenantId:t.id,matrixOwnerMxid:"@resolver:matrix.example.com",metaAccountId:"meta-ci"});
+            await post(`/api/v1/meta-connections/${c.id}/egress`,{egressProfileId:p.id});
+            await post(`/api/v1/meta-connections/${c.id}/activate`,{});
+            const h={authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN};
+            const u=base+"/internal/v1/egress/resolve?meta_account_id=meta-ci&reason=connect&traffic_class=messaging";
+            const r1=await fetch(u,{headers:h});const r2=await fetch(u.replace("connect","reconnect"),{headers:h});
+            if(!r1.ok||!r2.ok)process.exit(1);const a=await r1.json();const b=await r2.json();
+            if(a.assignment_id!==b.assignment_id||!a.proxy_url.includes("ci-proxy-canary-secret"))process.exit(1);
+          '
 
       - name: Create durable tenant before restart
         run: |
-          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN; const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({slug:'restart-proof',name:'Restart Proof'})}); if(r.status!==201){console.error(await r.text());process.exit(1)}"
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN;const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({slug:'restart-proof',name:'Restart Proof'})});if(r.status!==201){console.error(await r.text());process.exit(1)}"
 
       - name: Restart control plane and verify persistence/readiness
         run: |
@@ -116,13 +132,22 @@ jobs:
             [ "$status" = "unhealthy" ] && exit 1
             sleep 2
           done
-          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN; const ready=await fetch('http://127.0.0.1:3000/health/ready'); if(!ready.ok) process.exit(1); const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{headers:{authorization:'Bearer '+token}}); if(!r.ok) process.exit(1); const body=await r.json(); if(!body.data.some((t)=>t.slug==='restart-proof')) process.exit(1)"
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN;const ready=await fetch('http://127.0.0.1:3000/health/ready');if(!ready.ok)process.exit(1);const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{headers:{authorization:'Bearer '+token}});if(!r.ok)process.exit(1);const body=await r.json();if(!body.data.some((t)=>t.slug==='restart-proof'))process.exit(1)"
 
       - name: Dump stack logs on failure
         if: failure()
         run: |
           docker compose -f compose.yaml -f compose.control-plane.yaml ps -a || true
           docker compose -f compose.yaml -f compose.control-plane.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse synapse-admin-init mautrix-meta control-plane || true
+
+      - name: Reject canary secret leakage in logs
+        if: always()
+        run: |
+          logs="$(docker compose -f compose.yaml -f compose.control-plane.yaml logs --no-color control-plane 2>&1 || true)"
+          if printf '%s' "$logs" | grep -Fq 'ci-proxy-canary-secret'; then
+            echo 'Raw proxy canary secret leaked into control-plane logs' >&2
+            exit 1
+          fi
 
       - name: Cleanup
         if: always()
