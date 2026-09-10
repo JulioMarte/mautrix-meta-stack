@@ -12,6 +12,7 @@ jobs:
     env:
       MATRIX_SERVER_NAME: matrix.example.com
       MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
       SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
       MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
       YQ_IMAGE: mikefarah/yq:4.47.2
@@ -71,7 +72,7 @@ jobs:
         if: failure()
         run: |
           docker compose -f compose.yaml ps -a || true
-          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse mautrix-meta || true
+          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse synapse-admin-init mautrix-meta || true
 
       - name: Cleanup
         if: always()
