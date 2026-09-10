@@ -24,6 +24,7 @@ services:
     environment:
       CONTROL_PLANE_DB_PATH: /data/control-plane.db
       CONTROL_PLANE_ADMIN_TOKEN: ${CONTROL_PLANE_ADMIN_TOKEN:?CONTROL_PLANE_ADMIN_TOKEN is required}
+      CONTROL_PLANE_INTERNAL_TOKEN: ${CONTROL_PLANE_INTERNAL_TOKEN:?CONTROL_PLANE_INTERNAL_TOKEN is required}
       PORT: "3000"
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
