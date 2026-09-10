@@ -11,15 +11,20 @@ services:
       GID: "991"
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
-      - synapse-data:/data
+      - synapse-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
+      : "$${SYNAPSE_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
+      case "$$SYNAPSE_SERVER_NAME" in
+        *.*) ;;
+        *) echo "MATRIX_SERVER_NAME must be a DNS-style Matrix server name" >&2; exit 64 ;;
+      esac
       if [ -s /data/homeserver.yaml ]; then
-        echo "Synapse configuration already exists"
+        echo "Synapse configuration already exists for this clean state volume"
         exit 0
       fi
-      echo "Generating Synapse configuration as UID/GID 991"
+      echo "Generating clean Synapse configuration for $$SYNAPSE_SERVER_NAME"
       exec /start.py generate
 
   mautrix-config-init:
@@ -27,15 +32,15 @@ services:
     user: "0:0"
     restart: "no"
     volumes:
-      - mautrix-meta-data:/data
+      - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
       if [ -s /data/config.yaml ]; then
-        echo "mautrix-meta config already exists"
+        echo "mautrix-meta config already exists for this clean state volume"
         exit 0
       fi
-      echo "Generating mautrix-meta config"
+      echo "Generating clean mautrix-meta config"
       exec /docker-run.sh
 
   mautrix-configure:
@@ -51,10 +56,16 @@ services:
       MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
       MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
     volumes:
-      - mautrix-meta-data:/data
+      - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
+      : "$${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
+      : "$${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
+      case "$$MATRIX_ADMIN_MXID" in
+        @*:* ) ;;
+        * ) echo "MATRIX_ADMIN_MXID must look like @user:server.name" >&2; exit 64 ;;
+      esac
       test -s /data/config.yaml
       yq -i '
         .network.mode = "facebook" |
@@ -72,7 +83,7 @@ services:
         .appservice.hostname = "0.0.0.0" |
         .appservice.port = 29319
       ' /data/config.yaml
-      echo "mautrix-meta config patched"
+      echo "mautrix-meta config patched for $$MATRIX_SERVER_NAME"
 
   mautrix-registration-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
@@ -82,7 +93,7 @@ services:
       mautrix-configure:
         condition: service_completed_successfully
     volumes:
-      - mautrix-meta-data:/data
+      - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
@@ -103,31 +114,23 @@ services:
       mautrix-registration-init:
         condition: service_completed_successfully
     volumes:
-      - synapse-data:/synapse
-      - mautrix-meta-data:/meta:ro
+      - synapse-data-v2:/synapse
+      - mautrix-meta-data-v2:/meta:ro
     entrypoint: ["/bin/sh", "-c"]
     command: |
       set -eu
       test -s /synapse/homeserver.yaml
       test -s /meta/registration.yaml
-
       mkdir -p /synapse/appservices
       cp /meta/registration.yaml /synapse/appservices/mautrix-meta.yaml
       chmod 0644 /synapse/appservices/mautrix-meta.yaml
-
       yq -i '.app_service_config_files = ["/data/appservices/mautrix-meta.yaml"]' /synapse/homeserver.yaml
-
-      # yq/cp run as root and can replace files with root-owned inodes. Restore the
-      # ownership expected by the official Synapse image before validating/starting.
       chown -R 991:991 /synapse
       chmod 0755 /synapse /synapse/appservices
       chmod 0644 /synapse/homeserver.yaml /synapse/appservices/mautrix-meta.yaml
-
       echo "Synapse appservice handoff complete"
-      echo "homeserver owner/mode: $(stat -c '%u:%g %a' /synapse/homeserver.yaml)"
-      echo "registration owner/mode: $(stat -c '%u:%g %a' /synapse/appservices/mautrix-meta.yaml)"
-      echo "registration id/url:"
-      yq '.id, .url' /synapse/appservices/mautrix-meta.yaml
+      stat -c 'homeserver owner/mode: %u:%g %a' /synapse/homeserver.yaml
+      stat -c 'registration owner/mode: %u:%g %a' /synapse/appservices/mautrix-meta.yaml
 
   synapse-check-config:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
@@ -137,7 +140,7 @@ services:
       synapse-configure:
         condition: service_completed_successfully
     volumes:
-      - synapse-data:/data:ro
+      - synapse-data-v2:/data
     entrypoint: ["python", "-m", "synapse.config"]
     command: ["-c", "/data/homeserver.yaml"]
 
@@ -153,12 +156,10 @@ services:
       GID: "991"
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
-      - synapse-data:/data
+      - synapse-data-v2:/data
     expose:
       - "8008"
     healthcheck:
-      # Match the health probe shipped by the official Synapse image. The generated
-      # listener may bind IPv6; localhost lets curl select the available loopback.
       test: ["CMD-SHELL", "curl -fSs http://localhost:8008/health || exit 1"]
       interval: 15s
       timeout: 5s
@@ -175,7 +176,7 @@ services:
       mautrix-registration-init:
         condition: service_completed_successfully
     volumes:
-      - mautrix-meta-data:/data
+      - mautrix-meta-data-v2:/data
     expose:
       - "29319"
     healthcheck:
@@ -187,5 +188,8 @@ services:
     stop_grace_period: 30s
 
 volumes:
-  synapse-data:
-  mautrix-meta-data:
+  # v2 intentionally rebaselines the failed PoC bootstrap state. The previous
+  # volumes were created across several broken bootstrap revisions and are not
+  # trusted. There is no user/business data to migrate at this stage.
+  synapse-data-v2:
+  mautrix-meta-data-v2:
