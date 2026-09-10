@@ -21,6 +21,7 @@ function tokenMatches(actual: string | null, expected: string, minimumLength: nu
 function unauthorized(set: { status?: number | string }) { set.status = 401; return { error: { code: "UNAUTHORIZED", message: "Authentication required" } }; }
 function safeError(set: { status?: number | string }, status: number, code: string, message: string) { set.status = status; return { error: { code, message } }; }
 const trafficClasses = new Set<TrafficClass>(["login", "messaging", "media", "e2ee"]);
+const egressStatuses = new Set<EgressStatus>(["healthy", "degraded", "disabled"]);
 
 export function createApp(db: Database, adminToken: string, internalToken = "", secretEnv: Record<string, string | undefined> = process.env) {
   const tenants = new SQLiteTenantRepository(db);
@@ -67,7 +68,8 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
       const input = body as Record<string, unknown>;
       if (typeof input.provider !== "string" || typeof input.scheme !== "string" || typeof input.host !== "string" || typeof input.port !== "number" || !Number.isInteger(input.port) || input.port < 1 || input.port > 65535) return safeError(set, 400, "INVALID_EGRESS_PROFILE", "provider, scheme, host and valid port are required");
       if (input.secretRef != null && (typeof input.secretRef !== "string" || !isSupportedSecretRef(input.secretRef))) return safeError(set, 400, "INVALID_SECRET_REF", "Only env:VARIABLE secret references are supported");
-      const status: EgressStatus = input.status === "degraded" || input.status === "disabled" ? input.status : "healthy";
+      if (input.status != null && (typeof input.status !== "string" || !egressStatuses.has(input.status as EgressStatus))) return safeError(set, 400, "INVALID_EGRESS_STATUS", "Unsupported egress status");
+      const status: EgressStatus = (input.status as EgressStatus | undefined) ?? "healthy";
       const profile = egress.create({ provider: input.provider, scheme: input.scheme, host: input.host, port: input.port, username: typeof input.username === "string" ? input.username : null, secretRef: typeof input.secretRef === "string" ? input.secretRef : null, country: typeof input.country === "string" ? input.country : null, region: typeof input.region === "string" ? input.region : null, stickySessionId: typeof input.stickySessionId === "string" ? input.stickySessionId : null, expectedExitIp: typeof input.expectedExitIp === "string" ? input.expectedExitIp : null, status });
       set.status = 201;
       return { data: { ...profile, secretRef: profile.secretRef ? "[configured]" : null } };
