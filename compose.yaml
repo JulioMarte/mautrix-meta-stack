@@ -121,21 +121,16 @@ services:
       set -eu
       test -s /synapse/homeserver.yaml
       test -s /meta/registration.yaml
-
       mkdir -p /synapse/appservices
       cp /meta/registration.yaml /synapse/appservices/mautrix-meta.yaml
       chmod 0644 /synapse/appservices/mautrix-meta.yaml
       yq -i '.app_service_config_files = ["/data/appservices/mautrix-meta.yaml"]' /synapse/homeserver.yaml
-
-      # Root-owned init helpers may replace files. Normalize the complete Synapse
-      # state tree before the real process (UID/GID 991) reads it.
       chown -R 991:991 /synapse
       chmod 0755 /synapse /synapse/appservices
       chmod 0644 /synapse/homeserver.yaml /synapse/appservices/mautrix-meta.yaml
-
       echo "Synapse appservice handoff complete"
-      echo "homeserver owner/mode: $$(stat -c '%u:%g %a' /synapse/homeserver.yaml)"
-      echo "registration owner/mode: $$(stat -c '%u:%g %a' /synapse/appservices/mautrix-meta.yaml)"
+      stat -c 'homeserver owner/mode: %u:%g %a' /synapse/homeserver.yaml
+      stat -c 'registration owner/mode: %u:%g %a' /synapse/appservices/mautrix-meta.yaml
 
   synapse-check-config:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
