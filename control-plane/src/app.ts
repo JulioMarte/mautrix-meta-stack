@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { Elysia } from "elysia";
 import type { EgressStatus, TrafficClass } from "./domain/models";
@@ -11,6 +12,12 @@ function bearerToken(request: Request): string | null {
   if (!value?.startsWith("Bearer ")) return null;
   return value.slice(7);
 }
+function tokenMatches(actual: string | null, expected: string, minimumLength: number): boolean {
+  if (!actual || expected.length < minimumLength) return false;
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 function unauthorized(set: { status?: number | string }) { set.status = 401; return { error: { code: "UNAUTHORIZED", message: "Authentication required" } }; }
 function safeError(set: { status?: number | string }, status: number, code: string, message: string) { set.status = status; return { error: { code, message } }; }
 const trafficClasses = new Set<TrafficClass>(["login", "messaging", "media", "e2ee"]);
@@ -21,8 +28,8 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
   const egress = new SQLiteEgressProfileRepository(db);
   const audit = new SQLiteAuditRepository(db);
   const resolver = new EgressResolver(connections, egress, new EnvironmentSecretProvider(secretEnv));
-  const adminAuthorized = (request: Request) => adminToken.length >= 16 && bearerToken(request) === adminToken;
-  const internalAuthorized = (request: Request) => internalToken.length >= 24 && bearerToken(request) === internalToken;
+  const adminAuthorized = (request: Request) => tokenMatches(bearerToken(request), adminToken, 16);
+  const internalAuthorized = (request: Request) => tokenMatches(bearerToken(request), internalToken, 24);
 
   return new Elysia()
     .get("/health/live", () => ({ status: "ok" }))
@@ -72,9 +79,12 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
       const before = connections.findById(params.id);
       if (!before) return safeError(set, 404, "CONNECTION_NOT_FOUND", "Meta connection not found");
       try {
-        const after = connections.assignEgress(params.id, input.egressProfileId);
-        audit.record({ tenantId: after.tenantId, actorType: "operator", actorId: "admin-token", action: "egress.assign", entityType: "meta_connection", entityId: after.id, beforeJson: JSON.stringify({ egressProfileId: before.egressProfileId }), afterJson: JSON.stringify({ egressProfileId: after.egressProfileId }) });
-        return { data: after };
+        const apply = db.transaction(() => {
+          const after = connections.assignEgress(params.id, input.egressProfileId as string);
+          audit.record({ tenantId: after.tenantId, actorType: "operator", actorId: "authenticated-admin", action: "egress.assign", entityType: "meta_connection", entityId: after.id, beforeJson: JSON.stringify({ egressProfileId: before.egressProfileId }), afterJson: JSON.stringify({ egressProfileId: after.egressProfileId }) });
+          return after;
+        });
+        return { data: apply() };
       } catch { return safeError(set, 404, "EGRESS_NOT_FOUND", "Egress profile not found"); }
     })
     .post("/api/v1/meta-connections/:id/activate", ({ request, params, set }) => {
@@ -83,9 +93,12 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
       if (!connection) return safeError(set, 404, "CONNECTION_NOT_FOUND", "Meta connection not found");
       if (connection.egressPolicy === "proxy_required" && !connection.egressProfileId) return safeError(set, 409, "EGRESS_ASSIGNMENT_REQUIRED", "Required egress must be assigned before activation");
       if (!connection.metaAccountId && !connection.mautrixLoginId) return safeError(set, 409, "PROVIDER_IDENTITY_REQUIRED", "Provider identity must be bound before activation");
-      const after = connections.setStatus(params.id, "active");
-      audit.record({ tenantId: after.tenantId, actorType: "operator", actorId: "admin-token", action: "connection.activate", entityType: "meta_connection", entityId: after.id, beforeJson: JSON.stringify({ status: connection.status }), afterJson: JSON.stringify({ status: after.status }) });
-      return { data: after };
+      const activate = db.transaction(() => {
+        const after = connections.setStatus(params.id, "active");
+        audit.record({ tenantId: after.tenantId, actorType: "operator", actorId: "authenticated-admin", action: "connection.activate", entityType: "meta_connection", entityId: after.id, beforeJson: JSON.stringify({ status: connection.status }), afterJson: JSON.stringify({ status: after.status }) });
+        return after;
+      });
+      return { data: activate() };
     })
     .get("/internal/v1/egress/resolve", ({ request, query, set }) => {
       if (!internalAuthorized(request)) return unauthorized(set);
