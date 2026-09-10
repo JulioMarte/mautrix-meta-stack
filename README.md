@@ -51,14 +51,14 @@ MAUTRIX_META_IMAGE=dock.mau.dev/mautrix/meta:v26.07
 YQ_IMAGE=mikefarah/yq:4.47.2
 ```
 
-The persistent bind-mount paths are intentionally fixed in `compose.yaml` because Coolify rejects `${...}` interpolation inside volume source paths:
+The stack uses Docker named volumes rather than host bind paths:
 
 ```text
-/data/mautrix-meta-stack/synapse
-/data/mautrix-meta-stack/mautrix-meta
+synapse-data
+mautrix-meta-data
 ```
 
-Docker creates the required host directories when the bind mounts are first used.
+This is deliberate for Coolify. It avoids host-path interpolation restrictions and avoids first-deploy ownership problems caused by root-owned bind-mount directories. The same named volumes are reused by the init jobs and the long-running services, so generated identity, databases and authentication state survive normal redeployments.
 
 ## Automatic bootstrap
 
@@ -91,7 +91,7 @@ mautrix-meta
 
 The init services do the following:
 
-1. Generate `homeserver.yaml`, signing keys and the initial Synapse SQLite database location on first deployment.
+1. Generate `homeserver.yaml` and Synapse signing identity on first deployment.
 2. Generate mautrix-meta `config.yaml` if it does not already exist.
 3. Configure `network.mode=facebook` and `network.marketplace_space=true`.
 4. Configure mautrix-meta SQLite for the PoC.
@@ -102,7 +102,7 @@ The init services do the following:
 9. Start Synapse only after all init jobs succeed.
 10. Start mautrix-meta only after Synapse is healthy.
 
-Existing generated config, signing identity and appservice tokens are preserved across redeployments. Init jobs are expected to exit successfully after completing their work; they are not long-running services.
+Existing generated config, signing identity, SQLite state and appservice tokens are preserved across normal redeployments. Init jobs are expected to exit with code 0 after completing their work; they are not long-running services.
 
 ## Domain
 
@@ -154,26 +154,28 @@ Do not add Chatwoot until this transport loop is reliable.
 
 ## Persistence and security
 
-Runtime state remains on the Coolify host under:
+Runtime state is persisted in the two Docker named volumes. Conceptually they contain:
 
 ```text
-/data/mautrix-meta-stack/
-├── synapse/
-│   ├── homeserver.yaml
-│   ├── *.signing.key
-│   ├── homeserver.db
-│   └── media_store/
-└── mautrix-meta/
-    ├── config.yaml
-    ├── registration.yaml
-    └── mautrix-meta.db
+synapse-data
+├── homeserver.yaml
+├── *.signing.key
+├── homeserver.db
+└── media_store/
+
+mautrix-meta-data
+├── config.yaml
+├── registration.yaml
+└── mautrix-meta.db
 ```
 
-Treat the entire directory as sensitive. In particular, `registration.yaml`, signing keys, SQLite databases, bridge credentials and Matrix access tokens must never be committed.
+Treat both volumes as sensitive. In particular, `registration.yaml`, signing keys, SQLite databases, bridge credentials and Matrix access tokens must never be committed.
+
+Do not delete or recreate the named volumes during a normal redeploy. Removing them intentionally resets the corresponding service identity and data.
 
 ## Operational constraints
 
-- Run exactly one long-running mautrix-meta instance against a given data directory.
+- Run exactly one long-running mautrix-meta instance against a given data volume.
 - Keep Synapse and mautrix-meta in the same Compose application so they can use service-name DNS.
 - Keep the appservice port private.
 - SQLite is intentional for this one-account PoC, not for the eventual multi-tenant product.
