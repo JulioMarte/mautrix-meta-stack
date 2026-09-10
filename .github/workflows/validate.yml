@@ -28,21 +28,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - name: Install dependencies and generate lockfile
-        run: bun install
+      - name: Install dependencies from lockfile
+        run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
       - name: Unit and contract tests
         run: bun test
       - name: Build control-plane image
         run: docker build -t meta-control-plane:ci .
-      - name: Upload generated lockfile until repository lock is committed
-        if: ${{ hashFiles('control-plane/bun.lock') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: control-plane-bun-lock
-          path: control-plane/bun.lock
-          if-no-files-found: error
 
   compose:
     runs-on: ubuntu-latest
@@ -108,11 +101,22 @@ jobs:
           docker compose -f compose.yaml -f compose.control-plane.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
           docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const live=await fetch('http://127.0.0.1:3000/health/live'); if(!live.ok) process.exit(1); const ready=await fetch('http://127.0.0.1:3000/health/ready'); if(!ready.ok) process.exit(1); const denied=await fetch('http://127.0.0.1:3000/api/v1/tenants'); if(denied.status!==401) process.exit(1)"
 
+      - name: Create durable tenant before restart
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN; const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({slug:'restart-proof',name:'Restart Proof'})}); if(r.status!==201){console.error(await r.text());process.exit(1)}"
+
       - name: Restart control plane and verify persistence/readiness
         run: |
           docker compose -f compose.yaml -f compose.control-plane.yaml restart control-plane
-          sleep 3
-          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const r=await fetch('http://127.0.0.1:3000/health/ready'); if(!r.ok) process.exit(1)"
+          cid="$(docker compose -f compose.yaml -f compose.control-plane.yaml ps -q control-plane)"
+          end=$((SECONDS + 90))
+          while [ "$SECONDS" -lt "$end" ]; do
+            status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && exit 1
+            sleep 2
+          done
+          docker compose -f compose.yaml -f compose.control-plane.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN; const ready=await fetch('http://127.0.0.1:3000/health/ready'); if(!ready.ok) process.exit(1); const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{headers:{authorization:'Bearer '+token}}); if(!r.ok) process.exit(1); const body=await r.json(); if(!body.data.some((t)=>t.slug==='restart-proof')) process.exit(1)"
 
       - name: Dump stack logs on failure
         if: failure()
