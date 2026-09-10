@@ -1,10 +1,16 @@
 name: Validate stack
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
+      - feature/meta-control-plane
+
+concurrency:
+  group: validate-stack-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compose:
