@@ -15,12 +15,12 @@ jobs:
         env:
           MATRIX_SERVER_NAME: matrix.example.com
           MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
-          STACK_DATA_ROOT: /tmp/mautrix-meta-stack
           SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
           MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+          YQ_IMAGE: mikefarah/yq:4.47.2
           TZ: America/Santo_Domingo
         run: docker compose -f compose.yaml config -q
-      - name: Check shell syntax
+      - name: Check helper shell syntax
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh

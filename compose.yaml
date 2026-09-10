@@ -1,7 +1,120 @@
 services:
+  synapse-init:
+    image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
+    restart: "no"
+    environment:
+      SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
+      SYNAPSE_REPORT_STATS: "no"
+      SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      TZ: ${TZ:-America/Santo_Domingo}
+    volumes:
+      - type: bind
+        source: /data/mautrix-meta-stack/synapse
+        target: /data
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      if [ -f /data/homeserver.yaml ]; then
+        echo "Synapse configuration already exists"
+        exit 0
+      fi
+      exec /start.py generate
+
+  mautrix-config-init:
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    restart: "no"
+    volumes:
+      - type: bind
+        source: /data/mautrix-meta-stack/mautrix-meta
+        target: /data
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      if [ -f /data/config.yaml ]; then
+        echo "mautrix-meta config already exists"
+        exit 0
+      fi
+      exec /docker-run.sh
+
+  mautrix-configure:
+    image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      synapse-init:
+        condition: service_completed_successfully
+      mautrix-config-init:
+        condition: service_completed_successfully
+    environment:
+      MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
+      MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
+    volumes:
+      - type: bind
+        source: /data/mautrix-meta-stack/mautrix-meta
+        target: /data
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      yq -i '
+        .network.mode = "facebook" |
+        .network.marketplace_space = true |
+        .bridge.permissions = {} |
+        .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
+        .bridge.permissions[strenv(MATRIX_ADMIN_MXID)] = "admin" |
+        .database.type = "sqlite3-fk-wal" |
+        .database.uri = "file:/data/mautrix-meta.db?_txlock=immediate" |
+        .homeserver.address = "http://synapse:8008" |
+        .homeserver.domain = strenv(MATRIX_SERVER_NAME) |
+        .homeserver.software = "standard" |
+        .appservice.address = "http://mautrix-meta:29319" |
+        .appservice.public_address = null |
+        .appservice.hostname = "0.0.0.0" |
+        .appservice.port = 29319
+      ' /data/config.yaml
+
+  mautrix-registration-init:
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    restart: "no"
+    depends_on:
+      mautrix-configure:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: /data/mautrix-meta-stack/mautrix-meta
+        target: /data
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      if [ -f /data/registration.yaml ]; then
+        echo "mautrix-meta registration already exists"
+        exit 0
+      fi
+      exec /docker-run.sh
+
+  synapse-configure:
+    image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      synapse-init:
+        condition: service_completed_successfully
+      mautrix-registration-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: /data/mautrix-meta-stack/synapse
+        target: /synapse
+      - type: bind
+        source: /data/mautrix-meta-stack/mautrix-meta
+        target: /meta
+        read_only: true
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      test -s /meta/registration.yaml
+      yq -i '.app_service_config_files = ["/meta/registration.yaml"]' /synapse/homeserver.yaml
+
   synapse:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
     restart: unless-stopped
+    depends_on:
+      synapse-configure:
+        condition: service_completed_successfully
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
       TZ: ${TZ:-America/Santo_Domingo}
@@ -9,18 +122,18 @@ services:
       - type: bind
         source: /data/mautrix-meta-stack/synapse
         target: /data
+      - type: bind
+        source: /data/mautrix-meta-stack/mautrix-meta
+        target: /meta
+        read_only: true
     expose:
       - "8008"
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8008/_matrix/client/versions', timeout=5)"
-      interval: 30s
-      timeout: 8s
+      test: ["CMD", "curl", "-fSs", "http://127.0.0.1:8008/health"]
+      interval: 15s
+      timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 10s
     stop_grace_period: 30s
 
   mautrix-meta:
@@ -29,6 +142,8 @@ services:
     depends_on:
       synapse:
         condition: service_healthy
+      mautrix-registration-init:
+        condition: service_completed_successfully
     volumes:
       - type: bind
         source: /data/mautrix-meta-stack/mautrix-meta
@@ -36,13 +151,7 @@ services:
     expose:
       - "29319"
     healthcheck:
-      test:
-        - CMD
-        - curl
-        - --fail
-        - --silent
-        - --show-error
-        - http://127.0.0.1:29319/_matrix/mau/ready
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:29319/_matrix/mau/ready"]
       interval: 30s
       timeout: 8s
       retries: 5

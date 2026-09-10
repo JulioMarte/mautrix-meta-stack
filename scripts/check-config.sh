@@ -8,7 +8,6 @@ META_DIR="${STACK_DATA_ROOT}/mautrix-meta"
 
 required_files=(
   "${SYNAPSE_DIR}/homeserver.yaml"
-  "${SYNAPSE_DIR}/appservices/mautrix-meta.yaml"
   "${META_DIR}/config.yaml"
   "${META_DIR}/registration.yaml"
 )
@@ -31,7 +30,7 @@ docker run --rm \
     test "$(yq -r ".homeserver.address" /data/config.yaml)" = "http://synapse:8008"
     test "$(yq -r ".appservice.address" /data/config.yaml)" = "http://mautrix-meta:29319"
     test "$(yq -r ".appservice.hostname" /data/config.yaml)" = "0.0.0.0"
-    test "$(yq -r ".bridge.database.type" /data/config.yaml)" = "sqlite3-fk-wal"
+    test "$(yq -r ".database.type" /data/config.yaml)" = "sqlite3-fk-wal"
   '
 
 echo "==> Checking Synapse appservice registration path"
@@ -40,7 +39,7 @@ docker run --rm \
   -v "${SYNAPSE_DIR}:/synapse:ro" \
   "${MAUTRIX_META_IMAGE}" \
   -ec '
-    yq -e '\''(.app_service_config_files // []) | any(. == "/data/appservices/mautrix-meta.yaml")'\'' /synapse/homeserver.yaml >/dev/null
+    yq -e '\''(.app_service_config_files // []) | any(. == "/meta/registration.yaml")'\'' /synapse/homeserver.yaml >/dev/null
   '
 
-echo "OK: stack configuration is structurally ready for Coolify deployment."
+echo "OK: stack configuration is structurally ready."
