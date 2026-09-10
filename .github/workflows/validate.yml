@@ -9,18 +9,28 @@ on:
 jobs:
   compose:
     runs-on: ubuntu-latest
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      TZ: America/Santo_Domingo
     steps:
       - uses: actions/checkout@v4
       - name: Validate Docker Compose
-        env:
-          MATRIX_SERVER_NAME: matrix.example.com
-          MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
-          SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
-          MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
-          YQ_IMAGE: mikefarah/yq:4.47.2
-          TZ: America/Santo_Domingo
         run: docker compose -f compose.yaml config -q
       - name: Check helper shell syntax
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
+      - name: Reproduce bootstrap through Synapse config preflight
+        run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
+      - name: Dump bootstrap logs on failure
+        if: failure()
+        run: |
+          docker compose -f compose.yaml ps -a || true
+          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config || true
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml down -v --remove-orphans || true
