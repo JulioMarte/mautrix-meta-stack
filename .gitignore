@@ -1,17 +1,18 @@
-.idea
+.env
+.env.*
+!.env.example
 
-*.yaml
-!.pre-commit-config.yaml
-!example-config.yaml
+# Runtime state and secrets
+data/
+**/registration.yaml
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.signing.key
+**/*.key
 
-*.json
-!**/bloks/minify.json
-*.db
-*.db-shm
-*.db-wal
-*.log
-*.bak
-
-/mautrix-meta
-/mautrix-meta-v2
-/start
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
