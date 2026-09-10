@@ -1,6 +1,7 @@
 services:
   synapse-init:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
+    user: "0:0"
     restart: "no"
     environment:
       SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
@@ -8,30 +9,31 @@ services:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/synapse
-        target: /data
-    entrypoint: ["/bin/sh", "-ec"]
+      - synapse-data:/data
+    entrypoint: ["/bin/sh", "-c"]
     command: |
-      if [ -f /data/homeserver.yaml ]; then
+      set -eu
+      if [ -s /data/homeserver.yaml ]; then
         echo "Synapse configuration already exists"
         exit 0
       fi
+      echo "Generating Synapse configuration"
       exec /start.py generate
 
   mautrix-config-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    user: "0:0"
     restart: "no"
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /data
-    entrypoint: ["/bin/sh", "-ec"]
+      - mautrix-meta-data:/data
+    entrypoint: ["/bin/sh", "-c"]
     command: |
-      if [ -f /data/config.yaml ]; then
+      set -eu
+      if [ -s /data/config.yaml ]; then
         echo "mautrix-meta config already exists"
         exit 0
       fi
+      echo "Generating mautrix-meta config"
       exec /docker-run.sh
 
   mautrix-configure:
@@ -47,11 +49,11 @@ services:
       MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
       MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /data
-    entrypoint: ["/bin/sh", "-ec"]
+      - mautrix-meta-data:/data
+    entrypoint: ["/bin/sh", "-c"]
     command: |
+      set -eu
+      test -s /data/config.yaml
       yq -i '
         .network.mode = "facebook" |
         .network.marketplace_space = true |
@@ -68,23 +70,25 @@ services:
         .appservice.hostname = "0.0.0.0" |
         .appservice.port = 29319
       ' /data/config.yaml
+      echo "mautrix-meta config patched"
 
   mautrix-registration-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    user: "0:0"
     restart: "no"
     depends_on:
       mautrix-configure:
         condition: service_completed_successfully
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /data
-    entrypoint: ["/bin/sh", "-ec"]
+      - mautrix-meta-data:/data
+    entrypoint: ["/bin/sh", "-c"]
     command: |
-      if [ -f /data/registration.yaml ]; then
+      set -eu
+      if [ -s /data/registration.yaml ]; then
         echo "mautrix-meta registration already exists"
         exit 0
       fi
+      echo "Generating mautrix-meta appservice registration"
       exec /docker-run.sh
 
   synapse-configure:
@@ -97,17 +101,15 @@ services:
       mautrix-registration-init:
         condition: service_completed_successfully
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/synapse
-        target: /synapse
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /meta
-        read_only: true
-    entrypoint: ["/bin/sh", "-ec"]
+      - synapse-data:/synapse
+      - mautrix-meta-data:/meta:ro
+    entrypoint: ["/bin/sh", "-c"]
     command: |
+      set -eu
+      test -s /synapse/homeserver.yaml
       test -s /meta/registration.yaml
       yq -i '.app_service_config_files = ["/meta/registration.yaml"]' /synapse/homeserver.yaml
+      echo "mautrix-meta appservice registered in Synapse"
 
   synapse:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
@@ -119,21 +121,16 @@ services:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/synapse
-        target: /data
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /meta
-        read_only: true
+      - synapse-data:/data
+      - mautrix-meta-data:/meta:ro
     expose:
       - "8008"
     healthcheck:
       test: ["CMD", "curl", "-fSs", "http://127.0.0.1:8008/health"]
       interval: 15s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 8
+      start_period: 20s
     stop_grace_period: 30s
 
   mautrix-meta:
@@ -145,9 +142,7 @@ services:
       mautrix-registration-init:
         condition: service_completed_successfully
     volumes:
-      - type: bind
-        source: /data/mautrix-meta-stack/mautrix-meta
-        target: /data
+      - mautrix-meta-data:/data
     expose:
       - "29319"
     healthcheck:
@@ -155,5 +150,9 @@ services:
       interval: 30s
       timeout: 8s
       retries: 5
-      start_period: 20s
+      start_period: 30s
     stop_grace_period: 30s
+
+volumes:
+  synapse-data:
+  mautrix-meta-data:
