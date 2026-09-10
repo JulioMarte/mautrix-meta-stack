@@ -66,6 +66,18 @@ Internal/admin bearer tokens are long-lived service/operator credentials. Ordina
 
 Implication: compare fixed expected credentials using a length check plus constant-time byte comparison. Authentication failures remain generic and must not disclose resource existence.
 
+## 2026-09-10 — mautrix media transport is global mutable state upstream
+
+Upstream `pkg/msgconv/mediadl/download.go` owns one process-global `mediaHTTPClient`, and `SetProxy()` mutates that client's `http.Transport.Proxy`. That design is safe for one connector-global proxy but is unsafe as a per-account mechanism: two concurrent tenant downloads could overwrite the shared proxy selection and cross egress boundaries.
+
+Implication: never implement per-account media routing by calling the existing global `SetProxy()` before each download. Account-specific media egress must be request-scoped. Phase 3 clones the baseline `http.Transport` for a context carrying a resolved proxy, leaving the global client unchanged.
+
+## 2026-09-10 — direct media is not the entire media surface
+
+The first Phase 3 pass covered `MetaConnector.Download`, but upstream normal Meta-to-Matrix conversion also reaches `mediadl.DownloadMedia()` through `ReuploadFileToMatrix()`. Avatar callbacks independently call `DownloadAvatar()`. Both paths can therefore perform Meta/CDN-bound traffic without traversing the direct-media handler.
+
+Implication: traffic-class claims must be traced from all consumers of a shared network helper, not inferred from one obvious route. Phase 3 injects account-aware media context in `FBMessageEvent.ConvertMessage`, in the direct-media handler, and in account-bound avatar downloads. A green direct-media test alone is insufficient evidence of media isolation.
+
 ## Updating this record
 
 Add a discovery when CI, upstream inspection, deployment behavior or a real integration boundary disproves an assumption or establishes a reusable operational constraint. Avoid using this document as a substitute for changing a normative contract when behavior or architecture actually changes.
