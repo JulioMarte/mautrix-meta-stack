@@ -7,6 +7,8 @@ services:
       SYNAPSE_SERVER_NAME: ${MATRIX_SERVER_NAME}
       SYNAPSE_REPORT_STATS: "no"
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      UID: "991"
+      GID: "991"
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
       - synapse-data:/data
@@ -17,7 +19,7 @@ services:
         echo "Synapse configuration already exists"
         exit 0
       fi
-      echo "Generating Synapse configuration"
+      echo "Generating Synapse configuration as UID/GID 991"
       exec /start.py generate
 
   mautrix-config-init:
@@ -108,31 +110,56 @@ services:
       set -eu
       test -s /synapse/homeserver.yaml
       test -s /meta/registration.yaml
+
       mkdir -p /synapse/appservices
       cp /meta/registration.yaml /synapse/appservices/mautrix-meta.yaml
       chmod 0644 /synapse/appservices/mautrix-meta.yaml
-      chown 991:991 /synapse/appservices/mautrix-meta.yaml
+
       yq -i '.app_service_config_files = ["/data/appservices/mautrix-meta.yaml"]' /synapse/homeserver.yaml
-      chown 991:991 /synapse/homeserver.yaml
-      echo "mautrix-meta appservice copied into Synapse data volume"
-      test -r /synapse/appservices/mautrix-meta.yaml
+
+      # yq/cp run as root and can replace files with root-owned inodes. Restore the
+      # ownership expected by the official Synapse image before validating/starting.
+      chown -R 991:991 /synapse
+      chmod 0755 /synapse /synapse/appservices
+      chmod 0644 /synapse/homeserver.yaml /synapse/appservices/mautrix-meta.yaml
+
+      echo "Synapse appservice handoff complete"
+      echo "homeserver owner/mode: $(stat -c '%u:%g %a' /synapse/homeserver.yaml)"
+      echo "registration owner/mode: $(stat -c '%u:%g %a' /synapse/appservices/mautrix-meta.yaml)"
+      echo "registration id/url:"
       yq '.id, .url' /synapse/appservices/mautrix-meta.yaml
+
+  synapse-check-config:
+    image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
+    user: "991:991"
+    restart: "no"
+    depends_on:
+      synapse-configure:
+        condition: service_completed_successfully
+    volumes:
+      - synapse-data:/data:ro
+    entrypoint: ["python", "-m", "synapse.config"]
+    command: ["-c", "/data/homeserver.yaml"]
 
   synapse:
     image: ${SYNAPSE_IMAGE:-matrixdotorg/synapse:v1.160.0}
     restart: unless-stopped
     depends_on:
-      synapse-configure:
+      synapse-check-config:
         condition: service_completed_successfully
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
+      UID: "991"
+      GID: "991"
       TZ: ${TZ:-America/Santo_Domingo}
     volumes:
       - synapse-data:/data
     expose:
       - "8008"
     healthcheck:
-      test: ["CMD", "curl", "-fSs", "http://127.0.0.1:8008/health"]
+      # Match the health probe shipped by the official Synapse image. The generated
+      # listener may bind IPv6; localhost lets curl select the available loopback.
+      test: ["CMD-SHELL", "curl -fSs http://localhost:8008/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 8
