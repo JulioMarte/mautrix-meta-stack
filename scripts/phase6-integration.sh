@@ -299,7 +299,7 @@ async function replay(row, secret, payload, expected = 200) {
 }
 if ((await replay(rows[0], process.env.CHATWOOT_WEBHOOK_PHASE6_A_SECRET, payloads[0])).data?.status !== "duplicate") throw new Error("canonical A replay not duplicate");
 if ((await replay(rows[1], process.env.CHATWOOT_WEBHOOK_PHASE6_B_SECRET, payloads[1])).data?.status !== "duplicate") throw new Error("canonical B replay not duplicate");
-const reused = await replay(rows[0], process.env.CHATWOOT_WEBHOOK_PHASE6_A_SECRET, { ...payloads[0], content: "mutated reuse" }, 503);
+const reused = await replay(rows[0], process.env.CHATWOOT_WEBHOOK_PHASE6_A_SECRET, { ...payloads[0], content: "mutated reuse" }, 409);
 if (reused.error?.code !== "EVENT_IDENTITY_CONFLICT") throw new Error("mutated event-ID reuse did not fail closed");
 
 const chatwoot = await (await fetch("http://chatwoot-double:8080/_test/state")).json();
