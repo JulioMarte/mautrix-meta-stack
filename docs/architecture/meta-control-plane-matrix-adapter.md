@@ -41,7 +41,7 @@ matrix_room_id
 m.bridge channel.id -> remote_thread_id
 ```
 
-Ambiguous bridge state, conflicting persisted binding, unknown/inactive login identity or cross-tenant inconsistency fails closed and MUST NOT reach Chatwoot.
+A room whose bridge state points to an unknown or inactive login is **unattributable**: it MUST produce no Chatwoot side effect and MUST NOT create a room binding, but it MUST NOT block unrelated valid rooms in the same `/sync` batch. Ambiguous identity, contradictory bridge state, conflicting persisted binding or cross-tenant inconsistency remains a hard fail-closed error for the batch and MUST NOT reach Chatwoot.
 
 ## Persistent room authority
 
@@ -57,7 +57,9 @@ Schema v4 also adds `matrix_sync_checkpoints`. The persisted `/sync` `next_batch
 
 On first bootstrap the adapter requests timeline limit `0`, verifies/reconciles joined rooms, accepts only trusted bridge invitations, persists the resulting checkpoint and does not replay old timeline messages.
 
-Subsequent syncs use a bounded timeline. A limited timeline is treated as `MATRIX_SYNC_TIMELINE_GAP`; the checkpoint is not advanced and the batch is retried/fails operator-visible rather than silently dropping history.
+Subsequent syncs use a bounded timeline. When Synapse marks a room timeline `limited`, the adapter MUST recover the missing range before processing the current timeline by calling `/rooms/{roomId}/messages` in forward direction from the previously persisted `/sync` checkpoint to the timeline `prev_batch`. Recovery is bounded by configured page and event limits. Events repeated across recovery pages or between recovered history and the current timeline are deduplicated by Matrix event ID while preserving first-seen order.
+
+A gap is not silently skipped. Missing recovery capability, a missing `prev_batch`, non-converging pagination, an oversized history window or any recovery request failure MUST abort the batch before downstream side effects for that room and MUST leave the persisted checkpoint unchanged. The next run therefore retries from the same transport position; downstream `processed_events` idempotency protects side effects already completed earlier in a partially processed batch.
 
 The checkpoint is written only after the batch has been processed successfully enough to recover safely after restart.
 
@@ -113,11 +115,12 @@ The Matrix ingestion acceptance gate MUST use a disposable real Synapse and prov
 - trusted bridge-bot invitations auto-join while untrusted invitations do not;
 - two active tenant connections with distinct `mautrix_login_id` values bind to distinct rooms;
 - the same numeric remote contact ID in tenant A and tenant B routes to the correct distinct connection;
-- an invited room whose `channel.receiver` does not resolve to an active connection produces no downstream delivery and no persisted room binding;
+- an invited room whose `channel.receiver` does not resolve to an active connection produces no downstream delivery, no persisted room binding and does not prevent unrelated valid rooms from advancing the checkpoint;
 - text, PDF/file metadata and a Matrix voice note normalize correctly;
 - ordinary Matrix messages do not block the checkpoint or reach Chatwoot;
 - room bindings and sync checkpoint survive SQLite close/reopen;
 - malformed/ambiguous/conflicting attribution fails closed;
+- bounded gap recovery has deterministic tests proving multi-page recovery, chronological composition with the current timeline, event-ID overlap deduplication, and unchanged checkpoint on unavailable, non-converging or oversized recovery;
 - the final fork variant used by Docker, Validate and Phase 6 contains the same Matrix metadata and membership patches.
 
 The live Synapse gate may use a fake downstream `MatrixToChatwootService` to isolate the Client-Server boundary because the downstream HTTP/media behavior is already covered by Phase 4. It MUST NOT replace the real Synapse with a mocked `/sync` response for this acceptance proof.
