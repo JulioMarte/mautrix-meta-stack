@@ -27,15 +27,9 @@ def main() -> None:
         raise SystemExit("usage: apply_phase3_fixups.py <patched-mautrix-meta-source-dir>")
     root = pathlib.Path(sys.argv[1]).resolve()
 
-    # wrapAvatar became account-aware in the first Phase 3 patch. All MetaClient
-    # call sites must use that receiver; leaving any global call would either fail
-    # to compile or reintroduce unscoped media egress.
     replace_exact(root / "pkg/connector/chatinfo.go", "wrapAvatar(", "m.wrapAvatar(", 2)
     replace_exact(root / "pkg/connector/handlemeta.go", "wrapAvatar(evt.ImageURL)", "m.wrapAvatar(evt.ImageURL)", 1)
 
-    # http.DefaultTransport has ProxyFromEnvironment by default. The isolation
-    # test needs an intentionally clean baseline so it can prove our helper does
-    # not mutate the process-global transport.
     replace_exact(
         root / "pkg/msgconv/mediadl/proxy_context_test.go",
         "mediaHTTPClient = &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}",
@@ -45,19 +39,19 @@ def main() -> None:
 
     client = root / "pkg/connector/client.go"
 
-    # Resolver calls are on the critical path for login, reconnect, media and
-    # E2EE. Never use http.DefaultClient here: it has no overall request timeout.
+    # Resolver traffic is control-plane traffic, not Meta traffic. Give it a hard
+    # deadline and explicitly disable ProxyFromEnvironment so an ambient
+    # HTTP_PROXY/HTTPS_PROXY cannot receive the internal bearer credential.
     replace_exact(
         client,
         'type respGetProxy struct {\n\tProxyURL string `json:"proxy_url"`\n}\n',
-        'type respGetProxy struct {\n\tProxyURL string `json:"proxy_url"`\n}\n\nvar proxyResolverHTTPClient = &http.Client{Timeout: 5 * time.Second}\n',
+        '''type respGetProxy struct {\n\tProxyURL string `json:"proxy_url"`\n}\n\nvar proxyResolverHTTPClient = func() *http.Client {\n\ttransport := http.DefaultTransport.(*http.Transport).Clone()\n\ttransport.Proxy = nil\n\treturn &http.Client{Transport: transport, Timeout: 5 * time.Second}\n}()\n''',
         1,
     )
     replace_exact(client, "resp, err := http.DefaultClient.Do(req)", "resp, err := proxyResolverHTTPClient.Do(req)", 1)
 
-    # Cached reconnect is an upstream fast path that returns before the normal
-    # UpdateProxy block. Resolve the account-bound messaging proxy before that
-    # path can call Client.Connect(), otherwise a restart could bypass egress.
+    # Cached reconnect returns before the normal UpdateProxy block. Resolve the
+    # same account-bound messaging egress before the cached socket can connect.
     replace_exact(
         client,
         '''\t\t} else {\n\t\t\tzerolog.Ctx(ctx).Debug().\n\t\t\t\tTime("last_used", lastUsed).\n\t\t\t\tMsg("Reconnecting with cached state")\n\t\t\tm.connectWithCache(ctx)\n\t\t\treturn\n\t\t}\n''',
@@ -65,11 +59,6 @@ def main() -> None:
         1,
     )
 
-    # Dynamic account-aware egress is a security policy, not four independent
-    # best-effort feature flags. Reject configurations that expose any protected
-    # path as direct. Messenger Lite has no stable identity before its first
-    # network request on this upstream baseline, so it is explicitly unsupported
-    # while dynamic resolution is enabled.
     config = root / "pkg/connector/config.go"
     replace_exact(
         config,
@@ -110,6 +99,12 @@ func TestDynamicProxyResolverHasBoundedTimeout(t *testing.T) {
     }
 }
 
+func TestResolverClientIgnoresAmbientProxyEnvironment(t *testing.T) {
+    transport, ok := proxyResolverHTTPClient.Transport.(*http.Transport)
+    if !ok { t.Fatalf("unexpected resolver transport type %T", proxyResolverHTTPClient.Transport) }
+    if transport.Proxy != nil { t.Fatal("resolver transport must not use ProxyFromEnvironment") }
+}
+
 func TestDynamicEgressConfigRejectsPartialProxyCoverage(t *testing.T) {
     conn := &MetaConnector{}
     conn.Config.RawMode = "facebook"
@@ -138,7 +133,6 @@ func TestDynamicEgressConfigRejectsMessengerLite(t *testing.T) {
 ''',
     )
 
-    # The appended config tests need the platform enum and timeout test needs time.
     replace_exact(
         connector_test,
         '"os"\n    "testing"',
