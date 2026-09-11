@@ -84,7 +84,7 @@ describe("Phase 5 Matrix HTTP gateway", () => {
   test("uploads binary media then sends with a deterministic Matrix transaction ID and provenance marker", async () => {
     const calls: Array<{ url: URL; init?: RequestInit }> = [];
     const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const url = new URL(String(input)); calls.push({ url, init });
+      const url = new URL(String(input)); calls.push(init === undefined ? { url } : { url, init });
       if (url.pathname === "/_matrix/media/v3/upload") return Response.json({ content_uri: "mxc://matrix.example.com/uploaded" });
       return Response.json({ event_id: "$event" });
     };
