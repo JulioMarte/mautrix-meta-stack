@@ -79,6 +79,15 @@ const { Database } = await import("bun:sqlite");
 const db = new Database("/data/control-plane.db");
 const conv = db.query("select id,chatwoot_conversation_id from conversation_bindings where meta_connection_id=?").get(connection.id);
 if (!conv) throw new Error("conversation binding was not created");
+const now = new Date().toISOString();
+db.query(`insert into matrix_room_bindings(
+  matrix_room_id, tenant_id, meta_connection_id, remote_thread_id, mautrix_login_id,
+  bridge_state_key, source_event_id, verified_at, created_at, updated_at
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  .run("!backup:matrix.example.com", tenant.id, connection.id, "backup-thread", "login-backup-1",
+    "facebookgo://backup-thread", "$backup-bridge-state", now, now, now);
+db.query("insert into matrix_sync_checkpoints(consumer_id, next_batch, updated_at) values (?, ?, ?)")
+  .run("backup-matrix-ingestor", "s-backup-next", now);
 const counts = {
   tenants: db.query("select count(*) n from tenants where id=?").get(tenant.id).n,
   connections: db.query("select count(*) n from meta_connections where id=?").get(connection.id).n,
@@ -86,12 +95,16 @@ const counts = {
   chatwoot: db.query("select count(*) n from chatwoot_bindings where id=?").get(binding.id).n,
   conversations: db.query("select count(*) n from conversation_bindings where id=?").get(conv.id).n,
   processed: db.query("select count(*) n from processed_events where source='matrix' and source_event_id=?").get("$backup-event-1").n,
+  matrixRooms: db.query("select count(*) n from matrix_room_bindings where matrix_room_id=?").get("!backup:matrix.example.com").n,
+  matrixCheckpoints: db.query("select count(*) n from matrix_sync_checkpoints where consumer_id=?").get("backup-matrix-ingestor").n,
   audits: db.query("select count(*) n from audit_events where entity_id=?").get(connection.id).n,
 };
 for (const [name, count] of Object.entries(counts)) if (Number(count) < 1) throw new Error(`seed ${name} missing`);
 await Bun.write("/data/backup-acceptance.json", JSON.stringify({
   tenantId: tenant.id, profileId: profile.id, connectionId: connection.id, bindingId: binding.id,
   conversationId: conv.id, chatwootConversationId: conv.chatwoot_conversation_id,
+  matrixRoomId: "!backup:matrix.example.com", matrixConsumerId: "backup-matrix-ingestor",
+  matrixNextBatch: "s-backup-next",
 }));
 db.close();
 BUN
@@ -119,16 +132,20 @@ if (!connection) throw new Error("restored connection missing");
 if (connection.meta_account_id !== "meta-backup-1" || connection.mautrix_login_id !== "login-backup-1") throw new Error("restored identity changed");
 if (connection.egress_profile_id !== expected.profileId || connection.chatwoot_binding_id !== expected.bindingId || connection.status !== "active") throw new Error("restored assignment/binding changed");
 const conversation = db.query("select * from conversation_bindings where id=?").get(expected.conversationId);
-if (!conversation || conversation.chatwoot_conversation_id !== expected.chatwootConversationId || conversation.matrix_room_id !== "!backup:matrix.example.com") throw new Error("restored conversation route changed");
+if (!conversation || conversation.chatwoot_conversation_id !== expected.chatwootConversationId || conversation.matrix_room_id !== expected.matrixRoomId) throw new Error("restored conversation route changed");
 const processed = db.query("select status,payload_hash,meta_connection_id from processed_events where source='matrix' and source_event_id=?").get("$backup-event-1");
 if (!processed || processed.status !== "delivered" || processed.meta_connection_id !== expected.connectionId || !processed.payload_hash) throw new Error("restored processed event missing");
+const matrixRoom = db.query("select * from matrix_room_bindings where matrix_room_id=?").get(expected.matrixRoomId);
+if (!matrixRoom || matrixRoom.meta_connection_id !== expected.connectionId || matrixRoom.remote_thread_id !== "backup-thread" || matrixRoom.mautrix_login_id !== "login-backup-1" || matrixRoom.bridge_state_key !== "facebookgo://backup-thread") throw new Error("restored Matrix room attribution changed");
+const matrixCheckpoint = db.query("select next_batch from matrix_sync_checkpoints where consumer_id=?").get(expected.matrixConsumerId);
+if (!matrixCheckpoint || matrixCheckpoint.next_batch !== expected.matrixNextBatch) throw new Error("restored Matrix sync checkpoint changed");
 const audits = db.query("select count(*) n from audit_events where entity_id=?").get(expected.connectionId);
 if (Number(audits.n) < 1) throw new Error("restored audit history missing");
 const tenant = db.query("select slug,status from tenants where id=?").get(expected.tenantId);
 if (!tenant || tenant.slug !== "backup-restore" || tenant.status !== "active") throw new Error("restored tenant missing");
 db.close();
 const event = {
-  connectionId: expected.connectionId, roomId: "!backup:matrix.example.com", remoteThreadId: "backup-thread",
+  connectionId: expected.connectionId, roomId: expected.matrixRoomId, remoteThreadId: "backup-thread",
   remoteContactId: "backup-contact", eventId: "$backup-event-1", senderId: "backup-contact",
   text: "backup state seed", occurredAt: "2026-09-11T15:00:00.000Z", provenance: "meta",
 };
