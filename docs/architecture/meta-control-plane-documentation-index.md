@@ -8,6 +8,8 @@ The branch is not ready for implementation unless these documents are coherent w
 
 - `meta-control-plane-branch-plan.md` — branch purpose, product hypothesis, architecture, phases, non-goals, Definition of Done and stop conditions.
 - `meta-control-plane-ci-acceptance.md` — what must be proven automatically before any capability can be called complete.
+- `production-readiness-ledger.md` — current authoritative ledger of proven behavior, release-blocking technical gaps, staging-only evidence and the mandatory human promotion gate.
+- `development-branch-workflow.md` — normative branch roles, exact-SHA integration discipline and the prohibition on automated/unapproved changes to `main`.
 - `mautrix-meta-fork-delta.md` — exact scope and maintainability contract for the account-aware egress patch.
 - `meta-control-plane-data-model.md` — entities, identity boundaries, persistence, migrations, referential invariants and portability expectations.
 - `meta-control-plane-internal-api.md` — public/internal API split, resolver contract, authentication, errors, readiness and timeout semantics.
@@ -15,7 +17,7 @@ The branch is not ready for implementation unless these documents are coherent w
 - `phase5-chatwoot-matrix.md` — concrete Phase 5 Chatwoot webhook authentication, exact routing, Matrix send/idempotency, attachments and CI gate.
 - `phase6-multitenant-production-proof.md` — concrete Phase 6 two-tenant observable egress/routing, restart and fault-injection acceptance gate.
 - `meta-control-plane-threat-failure-model.md` — trust boundaries, leakage/cross-tenant threats, dependency failures, crash semantics and required fault injection.
-- `meta-control-plane-deployment-operations.md` — Coolify topology, state, secrets, startup, backup/restore, upgrade, smoke tests and rollback.
+- `meta-control-plane-deployment-operations.md` — Coolify topology, state, secrets, startup, backup/restore, upgrade, smoke tests, rollback and human-controlled deployment promotion.
 - `meta-control-plane-onboarding-identity-binding.md` — pre-Meta bootstrap identity, provisioning claims, first-login binding, re-login and conflict semantics.
 - `meta-control-plane-matrix-adapter.md` — Matrix service identity, ingestion mechanism boundary, room attribution, checkpoints, restart and outbound send semantics.
 - `meta-control-plane-chatwoot-tenancy.md` — Chatwoot account/inbox tenancy, contact/conversation identity, webhook routing, migration and retry semantics.
@@ -33,13 +35,14 @@ The branch is not ready for implementation unless these documents are coherent w
 9. Duplicate and replayed external events must not duplicate downstream side effects.
 10. No capability is complete until deterministic CI proves the claim on the exact candidate commit.
 11. Manual Element/Chatwoot success is diagnostic evidence, not acceptance evidence.
-12. Feature-branch work must not touch deployment branch `main` until a deliberate green integration checkpoint.
+12. Feature-branch work merges to `dev`; `main` is the human-accepted deployment baseline and MUST NOT be changed automatically or without explicit human approval of the exact candidate SHA.
 13. A Meta login must be associated with exactly one pre-created `meta_connection` before the first Meta-bound request; Matrix identity alone is not sufficient when one user can own multiple Meta logins.
 14. Matrix room names/display names are never routing authority; room attribution requires persisted stable identifiers and verifiable bridge/Matrix metadata.
 15. Chatwoot inbox/conversation IDs are always interpreted in their tenant + installation/account context; numeric IDs alone are not security boundaries.
 16. Unknown, ambiguous or conflicting identity/binding information fails closed rather than being guessed or overwritten.
 17. Chatwoot webhook signing secrets are distinct from Chatwoot API credentials and use a dedicated secret-reference namespace.
 18. A multi-tenant acceptance claim requires observable A/B side effects at the egress and routing boundaries; resolver/database state alone is insufficient evidence.
+19. Green repository CI is necessary but not sufficient for production readiness when a normative contract still requires real-provider or deployed-environment evidence.
 
 ## Phase 0 exit review
 
@@ -84,5 +87,7 @@ The following do not block Phase 1 but MUST be specified before their correspond
 - billing, quotas and tenant self-service onboarding.
 
 The Chatwoot webhook authentication mechanism is no longer deferred: Phase 5 fixes the supported contract to Chatwoot's timestamped HMAC-SHA256 signature over the raw request body, with a binding-specific secret configured under `env:CHATWOOT_WEBHOOK_*`.
+
+The current readiness audit confirms that the provisioning-claim bootstrap contract and the concrete Matrix ingestion/room-attribution contract are still implementation blockers, not merely documentation tasks. Their exact status is tracked in `production-readiness-ledger.md`.
 
 Deferral means these are explicitly not assumed. Any implementation depending on one of them must first turn the deferred item into a concrete reviewed contract.
