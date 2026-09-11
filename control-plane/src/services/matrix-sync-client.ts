@@ -24,6 +24,12 @@ export type MatrixSyncResponse = {
   };
 };
 
+export type MatrixMessagesPage = {
+  chunk: MatrixRawEvent[];
+  start: string;
+  end: string | null;
+};
+
 export type MatrixSyncFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 export type MatrixSyncOptions = { timelineLimit?: number };
 
@@ -36,6 +42,12 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 function timelineLimit(raw: number | undefined): number {
   const value = raw ?? 100;
   if (!Number.isSafeInteger(value) || value < 0 || value > 1000) throw new Error("MATRIX_SYNC_TIMELINE_LIMIT_INVALID");
+  return value;
+}
+
+function messagesLimit(raw: number | undefined): number {
+  const value = raw ?? 100;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 1000) throw new Error("MATRIX_MESSAGES_LIMIT_INVALID");
   return value;
 }
 
@@ -123,6 +135,18 @@ function parseSyncResponse(value: unknown): MatrixSyncResponse {
   return { next_batch: root.next_batch, rooms: { join, invite } };
 }
 
+function parseMessagesPage(value: unknown): MatrixMessagesPage {
+  if (!value || typeof value !== "object") throw new Error("MATRIX_MESSAGES_RESPONSE_INVALID");
+  const root = value as Record<string, unknown>;
+  if (typeof root.start !== "string" || !root.start) throw new Error("MATRIX_MESSAGES_RESPONSE_INVALID");
+  if (root.end != null && (typeof root.end !== "string" || !root.end)) throw new Error("MATRIX_MESSAGES_RESPONSE_INVALID");
+  return {
+    chunk: parseEvents(root.chunk),
+    start: root.start,
+    end: typeof root.end === "string" ? root.end : null
+  };
+}
+
 export class HttpMatrixSyncClient {
   private readonly base: URL;
   private readonly token: string;
@@ -181,6 +205,25 @@ export class HttpMatrixSyncClient {
       throw new Error(response.status === 401 || response.status === 403 ? "MATRIX_SYNC_UNAUTHORIZED" : `MATRIX_SYNC_HTTP_${response.status}`);
     }
     return parseSyncResponse(await readBoundedJson(response, this.maxResponseBytes));
+  }
+
+  async roomMessages(roomId: string, from: string, to: string, limit = 100): Promise<MatrixMessagesPage> {
+    if (!roomId.startsWith("!")) throw new Error("MATRIX_ROOM_ID_INVALID");
+    if (!from || !to || from === to) throw new Error("MATRIX_MESSAGES_RANGE_INVALID");
+    const url = appendPath(this.base, `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/messages`);
+    url.searchParams.set("dir", "f");
+    url.searchParams.set("from", from);
+    url.searchParams.set("to", to);
+    url.searchParams.set("limit", String(messagesLimit(limit)));
+    url.searchParams.set("filter", JSON.stringify({ types: ["m.room.message"] }));
+    const response = await this.request(url);
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      if (response.status === 401 || response.status === 403) throw new Error("MATRIX_SYNC_UNAUTHORIZED");
+      if (response.status === 404) throw new Error("MATRIX_ROOM_NOT_FOUND");
+      throw new Error(`MATRIX_MESSAGES_HTTP_${response.status}`);
+    }
+    return parseMessagesPage(await readBoundedJson(response, this.maxResponseBytes));
   }
 
   async roomState(roomId: string): Promise<MatrixRawEvent[]> {
