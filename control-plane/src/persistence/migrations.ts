@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const LATEST_SCHEMA_VERSION = 4;
+export const LATEST_SCHEMA_VERSION = 5;
 
 const migration1 = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -150,6 +150,12 @@ CREATE TABLE IF NOT EXISTS matrix_sync_checkpoints (
 );
 `;
 
+const migration5 = `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_meta_connections_live_egress_unique
+  ON meta_connections(egress_profile_id)
+  WHERE egress_profile_id IS NOT NULL AND status <> 'disabled';
+`;
+
 export function runMigrations(db: Database): void {
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -180,6 +186,13 @@ export function runMigrations(db: Database): void {
     const apply = db.transaction(() => {
       db.exec(migration4);
       db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(4, new Date().toISOString());
+    });
+    apply();
+  }
+  if (!versions.has(5)) {
+    const apply = db.transaction(() => {
+      db.exec(migration5);
+      db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(5, new Date().toISOString());
     });
     apply();
   }

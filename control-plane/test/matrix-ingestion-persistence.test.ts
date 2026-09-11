@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { runMigrations, schemaVersion } from "../src/persistence/migrations";
+import { LATEST_SCHEMA_VERSION, runMigrations, schemaVersion } from "../src/persistence/migrations";
 import {
   SQLiteMatrixRoomBindingRepository,
   SQLiteMatrixSyncCheckpointRepository
@@ -36,9 +36,9 @@ function activeConnection(database: Database, slug: string, loginId: string) {
 }
 
 describe("Matrix ingestion persistence", () => {
-  test("schema v4 creates Matrix room bindings and checkpoints", () => {
+  test("current schema includes Matrix room bindings and checkpoints", () => {
     const database = freshDb();
-    expect(schemaVersion(database)).toBe(4);
+    expect(schemaVersion(database)).toBe(LATEST_SCHEMA_VERSION);
     expect(database.query("SELECT name FROM sqlite_master WHERE type='table' AND name='matrix_room_bindings'").get()).not.toBeNull();
     expect(database.query("SELECT name FROM sqlite_master WHERE type='table' AND name='matrix_sync_checkpoints'").get()).not.toBeNull();
   });

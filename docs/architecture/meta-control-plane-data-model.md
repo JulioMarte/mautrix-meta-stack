@@ -2,7 +2,7 @@
 
 Status: normative for `dev` integration
 Initial engine: `bun:sqlite`
-Current schema version: `4`
+Current schema version: `5`
 
 ## Data ownership
 
@@ -72,6 +72,12 @@ A checkpoint MUST only advance after the corresponding sync batch is handled wit
 
 Fields: `id`, `provider`, `scheme`, `host`, `port`, `username`, `secret_ref`, `country`, `region`, `sticky_session_id`, `expected_exit_ip`, `last_verified_exit_ip`, `status`, `last_checked_at`, `failure_count`, `created_at`, `updated_at`.
 
+`egress_profiles` is an operator-managed global registry, not a tenant-owned table. Tenant isolation is expressed by the explicit `meta_connections.egress_profile_id` reservation, not by adding `tenant_id` to a proxy inventory record.
+
+For the current product model, one live connection must have one exclusive egress reservation. Schema v5 enforces that a non-null `egress_profile_id` may be referenced by at most one connection whose status is not `disabled`. `draft`, `ready`, `active`, `degraded` and `blocked` connections therefore continue to reserve their assigned profile. Moving a connection to `disabled` releases that reservation for another connection, while preserving the historical profile reference. A disabled connection cannot become live again while another non-disabled connection has reserved that same profile; the operator must reassign it first.
+
+This exclusivity is deliberate: the first production claim is account-specific stable egress, not a shared NAT pool. A future product decision to permit shared egress would require an explicit policy/schema change and new isolation acceptance tests; it must not emerge accidentally from missing constraints.
+
 A credential-bearing proxy URI MUST NOT be the canonical persisted representation. `secret_ref` points outside the SQLite database to a credential source dedicated to proxy egress. The initial environment-backed provider accepts only references of the form `env:EGRESS_PROXY_*`; it MUST NOT dereference arbitrary process environment variables such as control-plane service tokens.
 
 A proxy username and `secret_ref` MUST either both be configured or both be absent. Scheme, host and port MUST be validated before persistence and again before resolution so malformed persisted configuration cannot become an ambiguous proxy authority.
@@ -104,7 +110,7 @@ Changes to egress assignment, connection status, Chatwoot binding and provisioni
 
 ## Referential invariants
 
-A `meta_connection` MUST NOT reference an egress or Chatwoot binding from another tenant. A `conversation_binding` and `matrix_room_binding` MUST match the tenant of their referenced Meta connection. Cross-tenant associations MUST fail at the repository/service boundary and SHOULD also be constrained by foreign keys wherever SQLite permits.
+A `meta_connection` MUST NOT reference a Chatwoot binding from another tenant. Egress profiles are intentionally global operator inventory; the required isolation invariant is instead that no two non-disabled connections may reserve the same egress profile under the current product policy. A `conversation_binding` and `matrix_room_binding` MUST match the tenant of their referenced Meta connection. Cross-tenant associations MUST fail at the repository/service boundary and SHOULD also be constrained by foreign keys wherever SQLite permits.
 
 Provider identity ownership is global across connection status. Disabling a connection MUST NOT implicitly free its `meta_account_id` or `mautrix_login_id` for another connection. When multiple supplied identities point to different records, resolution MUST fail closed before active-status filtering.
 
@@ -118,7 +124,7 @@ Migrations MUST be ordered, immutable after merge and applied transactionally wh
 
 The application records schema version and readiness requires the local database to match `LATEST_SCHEMA_VERSION`.
 
-Migration tests MUST prove fresh-database creation and upgrade from every supported previous schema version used in released deployments.
+Migration tests MUST prove fresh-database creation and upgrade from every supported previous schema version used in released deployments. Schema v5 intentionally fails rather than silently choose a winner if a pre-v5 database already contains duplicate live reservations for one egress profile; an operator must resolve that invalid state before accepting the upgrade.
 
 ## Repository boundary
 
@@ -128,7 +134,7 @@ Required persistent boundaries include tenants, Meta connections, provisioning c
 
 ## PostgreSQL portability
 
-Avoid SQLite-specific semantics in domain rules. IDs, timestamps, uniqueness, foreign keys and transaction boundaries SHOULD be designed so a PostgreSQL adapter can replace SQLite without changing service behavior.
+Avoid SQLite-specific semantics in domain rules. IDs, timestamps, uniqueness, foreign keys and transaction boundaries SHOULD be designed so a PostgreSQL adapter can replace SQLite without changing service behavior. A future PostgreSQL adapter must reproduce the same exclusive-live-egress invariant, even if its constraint/index syntax differs.
 
 ## Retention
 
@@ -136,4 +142,4 @@ The MVP may retain audit, consumed provisioning-claim metadata, Matrix room/chec
 
 ## Required CI proofs
 
-CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, provisioning digest-only storage, forged/expired/used/revoked claim rejection, cross-tenant/owner provisioning rejection, same-account re-login behavior, conflicting-account rejection, Matrix room binding idempotency/conflict rules, sync checkpoint persistence/restart behavior, two-tenant room attribution against a disposable Synapse and upgrade behavior across supported schema versions.
+CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, exclusive live egress reservation and safe reuse after disable, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, provisioning digest-only storage, forged/expired/used/revoked claim rejection, cross-tenant/owner provisioning rejection, same-account re-login behavior, conflicting-account rejection, Matrix room binding idempotency/conflict rules, sync checkpoint persistence/restart behavior, two-tenant room attribution against a disposable Synapse and upgrade behavior across supported schema versions.
