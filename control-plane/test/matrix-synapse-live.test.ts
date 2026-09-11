@@ -40,6 +40,27 @@ async function matrixRequest(method: string, path: string, token: string, body?:
   return parsed;
 }
 
+async function createBridgeRoom(remoteThreadId: string, loginId: string): Promise<string> {
+  const created = await matrixRequest("POST", "/_matrix/client/v3/createRoom", botToken, {
+    preset: "private_chat",
+    invite: [syncMxid],
+    initial_state: [{
+      type: "m.bridge",
+      state_key: `facebookgo://${remoteThreadId}`,
+      content: {
+        protocol: { id: "facebookgo" },
+        channel: { id: remoteThreadId, receiver: loginId }
+      }
+    }]
+  });
+  if (typeof created?.room_id !== "string") throw new Error("live room creation did not return room_id");
+  return created.room_id;
+}
+
+async function sendMessage(roomId: string, txn: string, content: Record<string, unknown>) {
+  return matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/${txn}`, botToken, content);
+}
+
 function fakeService(deliveries: any[]): MatrixToChatwootService {
   return {
     async handle(event: any) {
@@ -50,31 +71,33 @@ function fakeService(deliveries: any[]): MatrixToChatwootService {
 }
 
 describe.skipIf(!enabled)("live Synapse Matrix ingestion", () => {
-  test("trusted invite auto-joins, m.bridge attributes room and real timeline events are ingested", async () => {
-    const created = await matrixRequest("POST", "/_matrix/client/v3/createRoom", botToken, {
-      preset: "private_chat",
-      invite: [syncMxid],
-      initial_state: [{
-        type: "m.bridge",
-        state_key: "facebookgo://thread-live",
-        content: {
-          protocol: { id: "facebookgo" },
-          channel: { id: "thread-live", receiver: "login-live" }
-        }
-      }]
+  test("auth, trusted joins, two-tenant attribution, attachments and unbound-room rejection work against Synapse", async () => {
+    const badClient = new HttpMatrixSyncClient({
+      MATRIX_SYNC_BASE_URL: base,
+      MATRIX_SYNC_ACCESS_TOKEN: "definitely-invalid-token",
+      MATRIX_SYNC_SERVER_TIMEOUT_MS: "1000",
+      MATRIX_SYNC_REQUEST_TIMEOUT_MS: "5000"
     });
-    const roomId = created?.room_id;
-    expect(typeof roomId).toBe("string");
+    await expect(badClient.sync(null, { timelineLimit: 0 })).rejects.toThrow("MATRIX_SYNC_UNAUTHORIZED");
+
+    const roomA = await createBridgeRoom("thread-a", "login-a");
+    const roomB = await createBridgeRoom("thread-b", "login-b");
+    const roomUnbound = await createBridgeRoom("thread-unbound", "login-does-not-exist");
 
     const dbPath = join(tempDir, "control-plane.db");
     const database = new Database(dbPath, { create: true, strict: true });
     runMigrations(database);
     const tenants = new SQLiteTenantRepository(database);
     const connections = new SQLiteMetaConnectionRepository(database);
-    const tenant = tenants.create({ slug: "live", name: "Live" });
-    const connection = connections.create({ tenantId: tenant.id, matrixOwnerMxid: "@owner:matrix.example.com" });
-    connections.setProviderIdentity(connection.id, { metaAccountId: "1001", mautrixLoginId: "login-live" });
-    connections.setStatus(connection.id, "active");
+    const tenantA = tenants.create({ slug: "live-a", name: "Live A" });
+    const tenantB = tenants.create({ slug: "live-b", name: "Live B" });
+    const connectionA = connections.create({ tenantId: tenantA.id, matrixOwnerMxid: "@owner-a:matrix.example.com" });
+    const connectionB = connections.create({ tenantId: tenantB.id, matrixOwnerMxid: "@owner-b:matrix.example.com" });
+    connections.setProviderIdentity(connectionA.id, { metaAccountId: "1001", mautrixLoginId: "login-a" });
+    connections.setProviderIdentity(connectionB.id, { metaAccountId: "1002", mautrixLoginId: "login-b" });
+    connections.setStatus(connectionA.id, "active");
+    connections.setStatus(connectionB.id, "active");
+
     const rooms = new SQLiteMatrixRoomBindingRepository(database);
     const checkpoints = new SQLiteMatrixSyncCheckpointRepository(database);
     const attribution = new MatrixRoomAttributionService(connections, rooms, {
@@ -100,68 +123,98 @@ describe.skipIf(!enabled)("live Synapse Matrix ingestion", () => {
 
     const bootstrap = await ingestor.runOnce();
     expect(bootstrap.status).toBe("bootstrapped");
-    expect(bootstrap.roomsJoined).toBe(1);
+    expect(bootstrap.roomsJoined).toBe(3);
 
-    await matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/live-human`, botToken, {
+    await sendMessage(roomA, "human-a", {
       msgtype: "m.text",
-      body: "ordinary matrix message without bridge provenance"
+      body: "ordinary Matrix message"
     });
-    await matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/live-meta-text`, botToken, {
+    await sendMessage(roomA, "meta-a-text", {
       msgtype: "m.text",
-      body: "hello from Meta",
+      body: "hello A",
       "com.mautrix_meta_stack.provenance": { source: "meta" },
-      "com.mautrix_meta_stack.remote_sender_id": "2002"
+      "com.mautrix_meta_stack.remote_sender_id": "2000"
     });
-    await matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/live-meta-file`, botToken, {
+    await sendMessage(roomA, "meta-a-file", {
       msgtype: "m.file",
       body: "document.pdf",
       url: "mxc://matrix.example.com/fake-document",
       info: { mimetype: "application/pdf", size: 1234 },
       "com.mautrix_meta_stack.provenance": { source: "meta" },
-      "com.mautrix_meta_stack.remote_sender_id": "2002"
+      "com.mautrix_meta_stack.remote_sender_id": "2000"
     });
-    await matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/live-meta-voice`, botToken, {
+    await sendMessage(roomA, "meta-a-voice", {
       msgtype: "m.audio",
       body: "voice.ogg",
       url: "mxc://matrix.example.com/fake-voice",
       info: { mimetype: "audio/ogg", size: 4321 },
       "org.matrix.msc3245.voice": {},
       "com.mautrix_meta_stack.provenance": { source: "meta" },
-      "com.mautrix_meta_stack.remote_sender_id": "2002"
+      "com.mautrix_meta_stack.remote_sender_id": "2000"
+    });
+    await sendMessage(roomB, "meta-b-text", {
+      msgtype: "m.text",
+      body: "hello B",
+      "com.mautrix_meta_stack.provenance": { source: "meta" },
+      "com.mautrix_meta_stack.remote_sender_id": "2000"
+    });
+    await sendMessage(roomUnbound, "meta-unbound", {
+      msgtype: "m.text",
+      body: "must not route",
+      "com.mautrix_meta_stack.provenance": { source: "meta" },
+      "com.mautrix_meta_stack.remote_sender_id": "2999"
     });
 
     const processed = await ingestor.runOnce();
     expect(processed.status).toBe("processed");
-    expect(processed.eventsDelivered).toBe(3);
-    expect(processed.eventsIgnored).toBeGreaterThanOrEqual(1);
-    expect(deliveries).toHaveLength(3);
-    expect(deliveries[0]).toMatchObject({
-      connectionId: connection.id,
-      roomId,
-      remoteThreadId: "thread-live",
-      remoteContactId: "2002",
-      text: "hello from Meta"
+    expect(processed.eventsDelivered).toBe(4);
+    expect(processed.eventsIgnored).toBeGreaterThanOrEqual(2);
+    expect(deliveries).toHaveLength(4);
+
+    const aText = deliveries.find((event) => event.text === "hello A");
+    const bText = deliveries.find((event) => event.text === "hello B");
+    expect(aText).toMatchObject({
+      connectionId: connectionA.id,
+      roomId: roomA,
+      remoteThreadId: "thread-a",
+      remoteContactId: "2000"
     });
-    expect(deliveries[1].attachments?.[0]).toMatchObject({
+    expect(bText).toMatchObject({
+      connectionId: connectionB.id,
+      roomId: roomB,
+      remoteThreadId: "thread-b",
+      remoteContactId: "2000"
+    });
+    expect(aText.connectionId).not.toBe(bText.connectionId);
+    expect(deliveries.some((event) => event.roomId === roomUnbound)).toBe(false);
+
+    const pdf = deliveries.find((event) => event.attachments?.[0]?.fileName === "document.pdf");
+    expect(pdf?.attachments?.[0]).toMatchObject({
       kind: "file",
       mimeType: "application/pdf",
-      fileName: "document.pdf",
       sizeBytes: 1234
     });
-    expect(deliveries[2].attachments?.[0]).toMatchObject({
+    const voice = deliveries.find((event) => event.attachments?.[0]?.voiceNote === true);
+    expect(voice?.attachments?.[0]).toMatchObject({
       kind: "audio",
       mimeType: "audio/ogg",
       fileName: "voice.ogg",
       sizeBytes: 4321,
       voiceNote: true
     });
-    expect(rooms.findByRoomId(roomId)?.metaConnectionId).toBe(connection.id);
+
+    expect(rooms.findByRoomId(roomA)?.metaConnectionId).toBe(connectionA.id);
+    expect(rooms.findByRoomId(roomB)?.metaConnectionId).toBe(connectionB.id);
+    expect(rooms.findByRoomId(roomUnbound)).toBeNull();
     expect(checkpoints.get("live-ingestor")?.nextBatch).toBe(processed.nextCheckpoint);
     database.close();
 
     const reopened = new Database(dbPath, { strict: true });
     runMigrations(reopened);
-    expect(new SQLiteMatrixRoomBindingRepository(reopened).findByRoomId(roomId)?.remoteThreadId).toBe("thread-live");
+    const reopenedRooms = new SQLiteMatrixRoomBindingRepository(reopened);
+    expect(reopenedRooms.findByRoomId(roomA)?.remoteThreadId).toBe("thread-a");
+    expect(reopenedRooms.findByRoomId(roomB)?.remoteThreadId).toBe("thread-b");
+    expect(reopenedRooms.findByRoomId(roomUnbound)).toBeNull();
     expect(new SQLiteMatrixSyncCheckpointRepository(reopened).get("live-ingestor")?.nextBatch).toBe(processed.nextCheckpoint);
     reopened.close();
   });
