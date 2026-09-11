@@ -1,159 +1,198 @@
 # mautrix-meta Fork Delta Contract
 
-Status: normative for `dev` and Phase 3
+Status: normative for `dev` and the pinned fork delta
 Pinned upstream baseline: `mautrix/meta v0.2607.0` (`ed37c9e6ce47e83dc75b9abea7b636302715b9bc`)
 Integration branch: `dev`
 
 ## Purpose
 
-The fork exists only to make Meta egress resolution account-aware and to propagate one tenant-specific egress assignment across every relevant Meta traffic class. It must not become a general fork of mautrix-meta.
+The fork exists only to make Meta egress resolution account-aware, propagate one tenant-specific egress assignment across relevant Meta traffic classes, and bind first-login credentials to one pre-created control-plane connection before provider traffic. It must not become a general fork of mautrix-meta.
 
-## Upstream limitation being corrected
+## Upstream limitations being corrected
 
 Upstream `MetaConnector.getProxy(reason)` is connector-global and only sends `reason` to `get_proxy_from`. It does not identify the `UserLogin`, Meta account or Matrix owner. Media and E2EE paths also contain static/global proxy handling that cannot prove tenant-specific isolation.
 
-## Implemented delta
+Upstream cookie login also has no concept of the control plane's pre-created `meta_connection`: it can receive cookies and contact Meta without first proving which tenant-scoped connection/egress assignment owns those credentials.
 
-Phase 3 keeps the full mautrix source out of this stack repository. Ordered deterministic patch applicators under `mautrix-meta-fork/` transform the exact pinned upstream source. Each textual replacement asserts the expected source shape; upstream drift therefore causes patch application to fail instead of silently fuzzing the delta onto changed code.
+## Deterministic source reconstruction
 
-The current ordered applicators are:
+The full mautrix source remains outside this stack repository. Ordered applicators under `mautrix-meta-fork/` transform only the exact pinned upstream tree. Replacements assert expected source shape so upstream drift fails visibly.
+
+Current ordered applicators for the deployable candidate are:
 
 1. `apply_patch.py` — core account-aware resolver/media delta;
-2. `apply_phase3_fixups.py` — fail-closed configuration, reconnect, E2EE and media hardening plus regression tests;
+2. `apply_phase3_fixups.py` — fail-closed configuration, reconnect, E2EE and media hardening;
 3. `apply_phase3_transport_tests.py` — observable login/messaging transport tests;
-4. `apply_phase3_resolver_hardening.py` — bounded resolver transport, redirect rejection, strict endpoint/response validation and associated tests.
+4. `apply_phase3_resolver_hardening.py` — bounded private resolver transport and strict validation;
+5. `apply_provisioning_bootstrap.py` — BridgeV2 claim step, control-plane consume/bind calls and bootstrap-proxy installation;
+6. `apply_provisioning_bootstrap_fixups.py` — exact pinned-source compile fixups for generated cookie regex literals and the static Messenger Lite caller.
 
-The patched source introduces an account-aware proxy context containing, when available:
+The final fixup script is maintenance debt, not a separate runtime feature. Once behavior is stable, these provisioning transformations SHOULD be consolidated into a cleaner single applicator without changing the tested delta.
+
+`Validate`, the dedicated provisioning acceptance workflow, Phase 6's fork lane, and `mautrix-meta-fork/Dockerfile` must apply the same ordered runtime delta before their relevant tests/builds. A workflow that omits the provisioning applicators is not evidence for the provisioning-enabled candidate.
+
+## Account-aware egress context
+
+The patched source carries, when available:
 
 - `meta_account_id`
 - `login_id`
 - `reason`
 - `traffic_class`
 
-Traffic classes are `login`, `messaging`, `media`, and `e2ee`. Resolver requests use the existing `network.get_proxy_from` configuration and authenticate with `MAUTRIX_META_EGRESS_TOKEN` in the HTTP `Authorization` header. The token is never placed in the query string.
+Traffic classes are `login`, `messaging`, `media`, and `e2ee`. Resolver requests use `network.get_proxy_from` and authenticate with `MAUTRIX_META_EGRESS_TOKEN` in `Authorization`, never the query string.
 
 ### Supported identity modes
 
-Dynamic account-aware egress is intentionally restricted to Facebook/Messenger on the pinned baseline. Instagram is not claimed as supported because the first cookie identity (`ds_user_id`) and the later FBID-derived BridgeV2 `UserLogin.ID` are not yet modeled as an explicit identity transition in the control plane. Messenger Lite is also rejected because its native login performs network I/O before a stable account identity is available.
+Dynamic account-aware egress remains intentionally restricted to Facebook/Messenger on the pinned baseline.
 
-This restriction is fail-closed: an unsupported mode is rejected during config validation rather than allowed to borrow connector-global identity or host egress.
+Instagram is not claimed because its initial `ds_user_id` and later FBID-derived BridgeV2 login identity are not yet represented as an explicit identity transition. Messenger Lite remains rejected in dynamic mode because native login performs provider I/O before a stable account identity is available. Static upstream modes still have to compile and remain upstream-compatible.
 
-### First cookie login
+Unsupported dynamic modes fail during config validation rather than borrowing connector-global identity or host egress.
 
-For Facebook/Messenger cookie flows, `getMessagixClient` derives the stable provider identity from `Cookies.GetUserID()` (`c_user`) before `UpdateProxy("login")` and before `LoadMessagesPage`.
+## Provisioned first cookie login
 
-If dynamic egress is enabled but no stable account identity is present, the proxy-enabled login fails before the Meta validation request. Native login flows that cannot yet supply stable identity are therefore not allowed to borrow connector-global identity.
+For dynamic Facebook/Messenger cookie login, the first BridgeV2 step is now:
 
-### Progressive identity
+```text
+fi.mau.meta.provisioning_claim
+```
 
-A control-plane connection may be pre-created with the provider account identity before BridgeV2 has persisted `UserLogin.ID`. Once mautrix has both identifiers, resolver lookup accepts the additional identifier when the corresponding stored column is still `NULL`, provided the other identifier uniquely selects one active connection. If supplied identifiers resolve to different active connections, or contradict a non-null persisted identifier, resolution fails with `IDENTITY_CONFLICT`.
+with `LoginStepTypeUserInput` and a token field. Cookies are not requested until a syntactically valid one-time claim has been supplied to the same `LoginProcess`.
 
-This prevents the integration topology from depending on an artificial pre-populated `mautrix_login_id` while preserving fail-closed conflict handling.
+After cookies are submitted:
 
-### Established messaging connections
+1. the fork validates required cookies locally;
+2. extracts Facebook `c_user` locally;
+3. POSTs only `claim + meta_account_id + matrix_owner_mxid` to `/internal/v1/provisioning/consume` using the same dedicated private control-plane HTTP client as resolver traffic;
+4. does not send Meta cookies to the control plane;
+5. requires a successful confidential consume response containing the exact pre-created connection and its proxy assignment;
+6. validates the returned proxy scheme/authority;
+7. installs that proxy on the actual Messagix provider HTTP client;
+8. only then permits `LoadMessagesPage` or other Meta-bound validation traffic.
 
-`MetaClient.proxyContext()` derives provider account identity from persisted cookies and includes `UserLogin.ID`. Normal connect and cached reconnect use the same account-aware proxy setup helper. Re-resolution changes the reason, not the account assignment.
+If claim consumption fails, provider transport does not begin. There is no direct-host fallback.
 
-### E2EE
+The consume transaction spends the claim and binds `c_user` before the provider request. If Meta later rejects the cookies, that claim is intentionally not reusable; a new claim is issued for the same connection. A different account identity remains blocked by the control plane.
 
-The upstream static `SetProxyAddress(m.Config.Proxy)` path is replaced for dynamic egress by an account-specific resolver call immediately before the Whatsmeow connection. Resolution failure, an empty proxy, or `SetProxyAddress` failure prevents the E2EE socket connection rather than falling back to host egress.
+### Why bootstrap proxy is separate from normal resolution
 
-New E2EE device registration occurs earlier through the already account-proxied Messagix client on the pinned upstream. This preserves egress isolation, although that registration traffic is classified through the messaging transport rather than as a separate `e2ee` resolver call.
+The normal control-plane resolver remains active-connection-only. Weakening it to accept arbitrary draft connections would broaden the steady-state trust boundary.
 
-### Media and avatars
+Provisioning therefore returns the already-validated assigned proxy as part of the one-time consume response. This is the only bridge across the pre-active bootstrap window. Successful consumption moves a draft connection to `ready`, not `active`.
 
-Upstream `mediadl` owns a process-global `http.Client`. Mutating that global transport per tenant would be a cross-tenant race. The fork therefore adds a request-context proxy override that clones the baseline `http.Transport` and applies the account-specific proxy only to that request chain.
+### Binding the BridgeV2 login identity
 
-Account-aware media context is injected at all identified network entry points on the pinned baseline:
+After the provider response establishes the deterministic BridgeV2 login identity but before the new login is persisted, the fork POSTs:
 
-- direct media downloads using `mediaInfo.UserID`;
-- normal Meta-to-Matrix message conversion before attachment reupload;
-- account-bound avatar downloads;
-- chunked media HEAD/GET requests through the same request-scoped client selection.
+```text
+connection_id + meta_account_id + mautrix_login_id + matrix_owner_mxid
+```
 
-When dynamic media egress is enabled, `mediadl` refuses downloads with no scoped proxy context. This makes an uninstrumented future media call site fail closed instead of silently using the process-global transport.
+to `/internal/v1/provisioning/bind-login`.
 
-## Resolver transport hardening
+The control plane verifies that all identities still refer to the same connection and that the login ID is not owned elsewhere. Failure aborts the login rather than silently reassigning identity.
 
-Dynamic resolver configuration is validated before runtime use. `get_proxy_from` must be an `http` or `https` URL with a host and without embedded userinfo, pre-existing query parameters or a fragment.
+After this bootstrap, the existing account/login-aware messaging resolver transition occurs before `NewLogin` persistence and before the first MQTT connection.
 
-The internal resolver client:
+## Established messaging connections
 
-- ignores ambient `HTTP_PROXY`/`HTTPS_PROXY` by using a dedicated transport with `Proxy=nil`;
+`MetaClient.proxyContext()` derives provider account identity from persisted cookies and includes `UserLogin.ID`. Normal connect and cached reconnect use the same account-aware proxy setup helper. Re-resolution changes the reason, not the sticky assignment.
+
+## E2EE
+
+Dynamic E2EE resolves the account-specific proxy immediately before the Whatsmeow connection. Resolution failure, an empty proxy, or `SetProxyAddress` failure prevents socket connection rather than falling back to host egress.
+
+New E2EE device registration on the pinned upstream occurs earlier through the already account-proxied Messagix transport. This preserves egress isolation, although that registration is classified through messaging rather than a separate `e2ee` resolver call.
+
+## Media and avatars
+
+Upstream `mediadl` has a process-global `http.Client`; mutating it per tenant would create a cross-tenant race. The fork uses request-scoped proxy context and a cloned baseline transport instead.
+
+Context is injected at identified pinned-baseline entry points including direct media, Meta-to-Matrix attachment conversion, account-bound avatars and chunked media requests. When dynamic media egress is enabled, missing proxy context fails closed.
+
+## Internal control-plane transport hardening
+
+`get_proxy_from` must be `http` or `https` with a host and no embedded userinfo, pre-existing query or fragment.
+
+Resolver and provisioning internal requests use the dedicated `proxyResolverHTTPClient`, which:
+
+- ignores ambient `HTTP_PROXY`/`HTTPS_PROXY` (`Proxy=nil`);
 - has a five-second timeout;
-- does not follow redirects;
-- limits resolver response bodies to 64 KiB;
-- accepts returned proxy URLs only for `http`, `https`, or `socks5` with explicit host and port and no path/query/fragment.
+- refuses redirects;
+- keeps bearer credentials off query strings;
+- limits response bodies to 64 KiB;
+- validates returned proxy URLs as `http`, `https`, or `socks5` with explicit host/port and no path/query/fragment.
 
-The control plane independently validates supported proxy scheme, DNS/IP host, port, and username/secret-reference pairing before persistence and again at resolution time.
+Provisioning internal endpoints are derived from the same configured control-plane origin rather than accepting a second arbitrary service destination.
 
 ## Failure semantics
 
-When dynamic resolution is configured:
+For the dynamic proxy-required path, all of the following fail closed:
 
-- missing stable identity -> fail;
-- conflicting identity -> fail;
-- missing internal bearer token -> fail;
-- invalid resolver endpoint configuration -> fail startup/config validation;
-- resolver timeout/unavailability -> fail;
-- resolver redirect -> fail without following it;
-- non-2xx resolver response -> fail;
-- oversized/malformed resolver response -> fail;
-- missing assignment or unhealthy required egress -> fail at the control plane;
-- empty, malformed, or unsupported `proxy_url` -> fail;
-- proxy setup failure -> fail;
-- no direct-host fallback is permitted for the patched proxy-required path.
+- missing/invalid/expired/used/revoked provisioning claim;
+- Matrix-owner, tenant, Meta-account or login-ID conflict;
+- missing stable account identity;
+- missing internal bearer token;
+- invalid control-plane endpoint;
+- resolver/provisioning timeout or unavailability;
+- redirect or non-2xx internal response;
+- oversized/malformed internal response;
+- missing/unhealthy assignment or missing secret;
+- malformed/unsupported proxy URL;
+- provider proxy installation failure;
+- missing media proxy context;
+- E2EE proxy resolution/setup failure.
+
+No successful dynamic error path is allowed to degrade to host/Contabo direct Meta traffic.
 
 Static upstream proxy behavior remains supported when `get_proxy_from` is empty so the fork does not unnecessarily break single-proxy deployments.
 
 ## Packaging
 
-`mautrix-meta-fork/Dockerfile` performs the same pinned source checkout and ordered patch application during image construction. `compose.phase3.yaml` selects that image for the mautrix runtime and injects `MAUTRIX_META_EGRESS_TOKEN` from the control-plane internal token.
+`mautrix-meta-fork/Dockerfile` performs the exact pinned checkout and complete ordered runtime patch application during image construction. The source delta is reconstructable from the pinned SHA and repository scripts.
 
-The source delta is deterministically reconstructed from the exact upstream SHA and audited patch applicators. The resulting container image is not claimed to be bit-for-bit hermetic because base image tags and distribution package repositories are not digest/version pinned.
+This is deterministic source reconstruction, not bit-for-bit hermetic image reproduction: base image tags, OS repositories and some CI actions are not yet digest/SHA pinned.
 
 ## CI proofs
 
-The current Phase 3 gates prove:
+The combined fork gates are intended to prove:
 
-- deterministic application to `ed37c9e6ce47e83dc75b9abea7b636302715b9bc`;
-- `gofmt`/`git diff --check` on touched source;
-- full upstream `go test ./...` with native libolm dependency installed;
-- resolver identity/query context, bearer authentication, timeout and missing-identity/token failure;
-- redirect rejection, resolver response size bound and strict returned proxy URL validation;
-- dynamic config rejection for unsafe resolver URLs, partial traffic coverage, static fallback and unsupported identity modes;
-- first-login resolver invocation before provider transport use;
-- normal connect and cached reconnect account/login context;
-- observable HTTP tests in which login and messaging clients reach a proxy fixture while a direct sentinel receives zero requests;
-- observable media test in which the request-scoped downloader reaches the proxy fixture and the direct sentinel receives zero requests;
-- missing media proxy context fails closed when dynamic media egress is required;
-- E2EE proxy resolution/setup failures prevent the Whatsmeow connection path;
-- control-plane scheme/host/auth validation and progressive identity conflict behavior;
-- patched image build and real Compose topology startup;
-- runtime configuration of `get_proxy_from` and proxy traffic flags;
-- authenticated resolver reachability from inside the patched runtime container;
-- topology proof where only `meta_account_id` is prebound but a later request containing both account and login IDs resolves successfully;
-- rejection of proxy/internal-token leakage in service logs.
+- exact application to pinned upstream;
+- `gofmt` and `git diff --check` on generated/touched source;
+- full upstream/fork Go regression tests;
+- strict resolver context/auth/timeout/redirect/response validation;
+- unsupported dynamic mode rejection;
+- provisioning claim step precedes cookies in dynamic login;
+- failed claim consumption produces zero provider direct-sentinel hits;
+- successful consumption installs the returned bootstrap proxy on the actual Messagix provider HTTP client, whose direct sentinel remains at zero;
+- exact connection/account/login/Matrix-owner binding request after provider identity establishment;
+- normal login→messaging transition before login persistence;
+- normal connect and cached reconnect use account/login context;
+- login/messaging/media controlled transports reach proxy fixtures rather than direct sentinels;
+- media missing-context and E2EE proxy failures fail closed;
+- two account contexts use distinct actual proxy transports in the Phase 6 A/B proof;
+- patched image builds and topology startup with the same provisioning-enabled fork;
+- control-plane secret/canary material is absent from service logs.
 
-The Phase 3 topology workflow runs on the Phase 3 feature branch, `fix/**` branches and `dev`, so security fixes cannot bypass the same deployable-artifact lane.
+A provisioning capability is not complete until these proofs are green on one exact candidate SHA and again on the resulting `dev` merge SHA.
 
 ## Evidence boundary
 
-CI does **not** contain disposable live Meta credentials plus externally observable production-like proxy exits. Therefore it cannot truthfully prove that a live provider request reached Meta from a particular public exit IP.
+CI does not use live Meta credentials plus externally observable production-like residential exits. It therefore cannot truthfully prove that a live provider request reached Meta from a particular public IP, nor can it fully observe a real Whatsmeow E2EE socket through that exit.
 
-That final external property must be verified in a controlled staging environment before production promotion: use disposable supported Facebook/Messenger accounts, observable per-account proxy exits, exercise first login, reconnect, media and E2EE, and verify the egress IP/assignment while also testing resolver/proxy failure for absence of direct fallback.
-
-Instagram requires a separate identity-model change before it can enter that acceptance matrix.
+Controlled staging remains mandatory: use disposable supported Facebook/Messenger accounts, two observable account-specific egress endpoints, exercise initial login, reconnect, media and E2EE, verify exit assignment, and inject resolver/proxy failure while confirming absence of host direct fallback.
 
 ## Known improvement areas
 
-The current request-scoped media implementation clones an `http.Transport` for each scoped request. This avoids cross-tenant proxy mutation, but under heavy chunked-media load it may create more transient transport/idle-connection state than desirable. A future optimization may reuse a scoped client for the lifetime of one media download without reintroducing shared mutable proxy state.
-
-The current CI proves E2EE resolver and proxy-setup failure semantics but does not yet observe a real Whatsmeow socket through a local proxy sentinel. Staging remains required for the external E2EE exit-IP claim; a deterministic local socket-level fixture would strengthen CI further.
+- Request-scoped media transport cloning has a performance/resource cost under heavy chunked-media load.
+- The provisioning patch currently needs a small exact-source fixup script after generation; consolidate after correctness is stable.
+- CI has strong E2EE resolver/setup failure evidence but not a live external Whatsmeow exit-IP proof.
+- Base image/action/native package inputs are not fully immutable.
 
 ## Scope constraints
 
-The delta is limited to resolver context, the minimum login/connect/E2EE call sites, and media context propagation needed to eliminate process-global per-account routing. Unrelated protocol behavior, formatting, persistence and BridgeV2 semantics remain upstream-equivalent.
+The delta is restricted to account-aware egress context, first-login provisioning/binding, the minimum login/connect/E2EE call sites, and media context propagation needed to preserve tenant isolation. Chatwoot integration, tenant business logic, admin UI, Meta cookie storage outside mautrix, CRM behavior, generic proxy-pool rotation, Instagram dynamic identity mapping and Messenger Lite pre-identity routing are non-goals.
 
 If a future upstream change requires a broad protocol rewrite, implementation stops for architecture reassessment rather than expanding this fork casually.
 
@@ -164,23 +203,22 @@ Every upstream upgrade must:
 1. identify the new upstream tag/SHA and prior patched tag/SHA;
 2. make deterministic patch application fail visibly against changed source;
 3. inspect and deliberately update the smallest affected replacements;
-4. run upstream tests plus fork-specific resolver/media/transport tests;
+4. run upstream tests plus provisioning/resolver/media/transport tests;
 5. run control-plane contract tests;
-6. rebuild and start the patched Compose topology;
-7. run the controlled external egress acceptance test before production promotion.
+6. rebuild/start the patched topology;
+7. run controlled external egress acceptance before any human-authorized production promotion.
 
 ## Required release proofs
 
-Before promoting `dev` to `main`, the release evidence must include both CI and staging:
+Before a human could consider promoting an exact `dev` candidate to `main`, evidence must include:
 
-- login context identifies the correct supported Meta account before first Meta-bound request;
-- two supported accounts resolve distinct assigned egress when configured that way;
-- reconnect preserves the same account assignment;
-- message media, direct media, avatars and E2EE obey the account isolation policy;
-- a failed required resolver/proxy produces no direct-host Meta request;
-- secrets remain absent from logs;
-- the patch remains reconstructable from the pinned upstream baseline.
+- provisioning claim binds the correct supported account/connection before first Meta-bound request;
+- two supported accounts can use distinct assigned egress;
+- reconnect preserves assignment;
+- message media, direct media, avatars and E2EE obey isolation policy;
+- required resolver/proxy failure produces no direct-host Meta request;
+- secrets and raw provisioning claims remain absent from logs/persistence;
+- the fork remains reconstructable from the pinned upstream baseline;
+- real staging confirms externally observable provider egress and round trips.
 
-## Non-goals
-
-The fork does not implement Chatwoot integration, tenant business logic, admin UI, Meta cookie storage outside mautrix, CRM behavior, generic proxy-pool rotation, Instagram dynamic egress identity mapping, or Messenger Lite pre-identity egress routing.
+Passing these proofs still does not authorize `main`; that remains an explicit human decision for the exact SHA.
