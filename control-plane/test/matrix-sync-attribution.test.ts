@@ -28,7 +28,7 @@ function makeActiveConnection(database: Database, loginId = "login-a") {
 describe("Matrix sync client", () => {
   test("uses bearer auth, preserves checkpoint and parses bounded join data", async () => {
     let seen: URL | undefined;
-    let authorization: string | null = null;
+    let authorization = "";
     const client = new HttpMatrixSyncClient({
       MATRIX_SYNC_BASE_URL: "http://synapse:8008",
       MATRIX_SYNC_ACCESS_TOKEN: "sync-secret",
@@ -36,7 +36,7 @@ describe("Matrix sync client", () => {
       MATRIX_SYNC_REQUEST_TIMEOUT_MS: "2000"
     }, async (input, init) => {
       seen = new URL(String(input));
-      authorization = new Headers(init?.headers).get("authorization");
+      authorization = new Headers(init?.headers).get("authorization") ?? "";
       return Response.json({
         next_batch: "s124",
         rooms: { join: {
