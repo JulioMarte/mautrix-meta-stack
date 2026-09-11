@@ -120,12 +120,21 @@ describe.skipIf(!enabled)("live Synapse Matrix ingestion", () => {
       "com.mautrix_meta_stack.provenance": { source: "meta" },
       "com.mautrix_meta_stack.remote_sender_id": "2002"
     });
+    await matrixRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/m.room.message/live-meta-voice`, botToken, {
+      msgtype: "m.audio",
+      body: "voice.ogg",
+      url: "mxc://matrix.example.com/fake-voice",
+      info: { mimetype: "audio/ogg", size: 4321 },
+      "org.matrix.msc3245.voice": {},
+      "com.mautrix_meta_stack.provenance": { source: "meta" },
+      "com.mautrix_meta_stack.remote_sender_id": "2002"
+    });
 
     const processed = await ingestor.runOnce();
     expect(processed.status).toBe("processed");
-    expect(processed.eventsDelivered).toBe(2);
+    expect(processed.eventsDelivered).toBe(3);
     expect(processed.eventsIgnored).toBeGreaterThanOrEqual(1);
-    expect(deliveries).toHaveLength(2);
+    expect(deliveries).toHaveLength(3);
     expect(deliveries[0]).toMatchObject({
       connectionId: connection.id,
       roomId,
@@ -138,6 +147,13 @@ describe.skipIf(!enabled)("live Synapse Matrix ingestion", () => {
       mimeType: "application/pdf",
       fileName: "document.pdf",
       sizeBytes: 1234
+    });
+    expect(deliveries[2].attachments?.[0]).toMatchObject({
+      kind: "audio",
+      mimeType: "audio/ogg",
+      fileName: "voice.ogg",
+      sizeBytes: 4321,
+      voiceNote: true
     });
     expect(rooms.findByRoomId(roomId)?.metaConnectionId).toBe(connection.id);
     expect(checkpoints.get("live-ingestor")?.nextBatch).toBe(processed.nextCheckpoint);
