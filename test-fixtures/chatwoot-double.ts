@@ -1,7 +1,7 @@
 type Contact = { id: number; accountId: number; inboxId: number; identifier: string; name: string; sourceId: string };
 type Conversation = { id: number; accountId: number; inboxId: number; contactId: number; sourceId: string; threadId: string };
 type StoredAttachment = { name: string; type: string; size: number; content: string };
-type Message = { id: number; accountId: number; inboxId: number; conversationId: number; content: string; sourceEventId: string; attachments: StoredAttachment[] };
+type Message = { id: number; accountId: number; inboxId: number; conversationId: number; content: string; sourceEventId: string; attachments: StoredAttachment[]; voiceMessage: boolean };
 
 const expectedToken = process.env.CHATWOOT_CI_TOKEN ?? "";
 const contacts: Contact[] = [];
@@ -17,14 +17,15 @@ function authorized(req: Request) { return expectedToken.length > 0 && req.heade
 function pathParts(url: URL) { return url.pathname.split("/").filter(Boolean); }
 async function body(req: Request) { try { return await req.json() as Record<string, unknown>; } catch { return {}; } }
 
-async function messageBody(req: Request): Promise<{ content: string; sourceEventId: string; attachments: StoredAttachment[] }> {
+async function messageBody(req: Request): Promise<{ content: string; sourceEventId: string; attachments: StoredAttachment[]; voiceMessage: boolean }> {
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.startsWith("multipart/form-data")) {
     const input = await body(req);
     return {
       content: String(input.content ?? ""),
       sourceEventId: String((input.content_attributes as Record<string, unknown> | undefined)?.mautrix_meta_source_event_id ?? ""),
-      attachments: []
+      attachments: [],
+      voiceMessage: input.is_voice_message === true || input.is_voice_message === "true"
     };
   }
   const form = await req.formData();
@@ -36,7 +37,8 @@ async function messageBody(req: Request): Promise<{ content: string; sourceEvent
   return {
     content: String(form.get("content") ?? ""),
     sourceEventId: String(form.get("content_attributes[mautrix_meta_source_event_id]") ?? ""),
-    attachments
+    attachments,
+    voiceMessage: String(form.get("is_voice_message") ?? "false") === "true"
   };
 }
 
@@ -95,7 +97,7 @@ Bun.serve({
 
     if (rest[0] === "conversations" && rest[2] === "messages" && req.method === "GET") {
       const conversationId = Number(rest[1]);
-      return json({ payload: messages.filter((m) => m.accountId === accountId && m.conversationId === conversationId).map((m) => ({ id: m.id, content: m.content, inbox_id: m.inboxId, content_attributes: { mautrix_meta_source_event_id: m.sourceEventId }, attachments: m.attachments })) });
+      return json({ payload: messages.filter((m) => m.accountId === accountId && m.conversationId === conversationId).map((m) => ({ id: m.id, content: m.content, inbox_id: m.inboxId, content_attributes: { mautrix_meta_source_event_id: m.sourceEventId }, attachments: m.attachments, is_voice_message: m.voiceMessage })) });
     }
 
     if (rest[0] === "conversations" && rest[2] === "messages" && req.method === "POST") {
@@ -104,10 +106,10 @@ Bun.serve({
       if (!conversation) return json({}, 404);
       const input = await messageBody(req);
       const existing = messages.find((m) => m.accountId === accountId && m.conversationId === conversationId && m.sourceEventId === input.sourceEventId);
-      const message = existing ?? { id: nextMessage++, accountId, inboxId: conversation.inboxId, conversationId, content: input.content, sourceEventId: input.sourceEventId, attachments: input.attachments };
+      const message = existing ?? { id: nextMessage++, accountId, inboxId: conversation.inboxId, conversationId, content: input.content, sourceEventId: input.sourceEventId, attachments: input.attachments, voiceMessage: input.voiceMessage };
       if (!existing) messages.push(message);
       if (failAfterNextMessageCreate) { failAfterNextMessageCreate = false; return json({ error: "injected post-commit failure" }, 500); }
-      return json({ id: message.id, content: message.content, inbox_id: message.inboxId, conversation_id: message.conversationId, content_attributes: { mautrix_meta_source_event_id: message.sourceEventId }, attachments: message.attachments });
+      return json({ id: message.id, content: message.content, inbox_id: message.inboxId, conversation_id: message.conversationId, content_attributes: { mautrix_meta_source_event_id: message.sourceEventId }, attachments: message.attachments, is_voice_message: message.voiceMessage });
     }
 
     return json({ error: "not found" }, 404);
