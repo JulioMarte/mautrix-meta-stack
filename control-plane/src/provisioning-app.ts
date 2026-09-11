@@ -95,6 +95,7 @@ function readClaim(db: Database, digest: string): ProvisioningRow | null {
 }
 
 function assignedProxyUrl(row: ProvisioningRow, secrets: EnvironmentSecretProvider): { proxyUrl: string; assignmentId: string } {
+  if (row.egress_policy !== "proxy_required") throw new Error("PROXY_REQUIRED_FOR_PROVISIONING");
   if (!row.egress_profile_id) throw new Error("EGRESS_ASSIGNMENT_REQUIRED");
   if (row.egress_status !== "healthy") throw new Error("EGRESS_UNHEALTHY");
   const scheme = normalizeProxyScheme(row.egress_scheme ?? "");
@@ -147,66 +148,63 @@ export function createProvisioningApp(
       if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds < MIN_TTL_SECONDS || ttlSeconds > MAX_TTL_SECONDS) {
         return fail(set, 400, "INVALID_PROVISIONING_TTL", `ttlSeconds must be between ${MIN_TTL_SECONDS} and ${MAX_TTL_SECONDS}`);
       }
-
+      const connectionId = String(params.id);
       const connection = db.query(`
         SELECT mc.*, t.status AS tenant_status, ep.status AS egress_status
         FROM meta_connections mc
         JOIN tenants t ON t.id = mc.tenant_id
         LEFT JOIN egress_profiles ep ON ep.id = mc.egress_profile_id
         WHERE mc.id = ?
-      `).get(params.id) as Record<string, unknown> | null;
+      `).get(connectionId) as Record<string, unknown> | null;
       if (!connection) return fail(set, 404, "CONNECTION_NOT_FOUND", "Meta connection not found");
       if (connection.tenant_status !== "active" || connection.status === "disabled" || connection.status === "blocked") {
         return fail(set, 409, "CONNECTION_NOT_PROVISIONABLE", "Meta connection is not eligible for provisioning");
       }
-      if (connection.egress_policy !== "direct_allowed" && !connection.egress_profile_id) {
-        return fail(set, 409, "EGRESS_ASSIGNMENT_REQUIRED", "Required egress must be assigned before provisioning");
+      if (connection.egress_policy !== "proxy_required") {
+        return fail(set, 409, "PROXY_REQUIRED_FOR_PROVISIONING", "Provisioning requires fail-closed proxy egress");
       }
-      if (connection.egress_policy !== "direct_allowed" && connection.egress_status !== "healthy") {
-        return fail(set, 409, "EGRESS_UNHEALTHY", "Assigned egress must be healthy before provisioning");
-      }
+      if (!connection.egress_profile_id) return fail(set, 409, "EGRESS_ASSIGNMENT_REQUIRED", "Required egress must be assigned before provisioning");
+      if (connection.egress_status !== "healthy") return fail(set, 409, "EGRESS_UNHEALTHY", "Assigned egress must be healthy before provisioning");
 
       const now = new Date();
       const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
       const claimId = crypto.randomUUID();
       const rawClaim = issueRawClaim(claimId);
       const secretDigest = digestClaim(rawClaim);
-      const apply = db.transaction(() => {
-        // A new claim supersedes older unused claims for the same connection. This
-        // narrows the usable credential set without deleting audit evidence.
+      db.transaction(() => {
         db.query("UPDATE provisioning_claims SET revoked_at = ? WHERE meta_connection_id = ? AND used_at IS NULL AND revoked_at IS NULL")
-          .run(now.toISOString(), params.id);
+          .run(now.toISOString(), connectionId);
         db.query(`INSERT INTO provisioning_claims(id, secret_digest, meta_connection_id, tenant_id, matrix_owner_mxid, expires_at, used_at, revoked_at, created_at)
           VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)`)
-          .run(claimId, secretDigest, params.id, String(connection.tenant_id), String(connection.matrix_owner_mxid), expiresAt, now.toISOString());
+          .run(claimId, secretDigest, connectionId, String(connection.tenant_id), String(connection.matrix_owner_mxid), expiresAt, now.toISOString());
         recordAudit(db, {
           tenantId: String(connection.tenant_id), actorType: "operator", actorId: "authenticated-admin",
           action: "provisioning.claim.issue", entityType: "provisioning_claim", entityId: claimId,
-          after: { metaConnectionId: params.id, matrixOwnerMxid: String(connection.matrix_owner_mxid), expiresAt }
+          after: { metaConnectionId: connectionId, matrixOwnerMxid: String(connection.matrix_owner_mxid), expiresAt }
         });
-      });
-      apply();
+      })();
       set.status = 201;
-      return { data: { claim: rawClaim, claimId, metaConnectionId: params.id, expiresAt } };
+      return { data: { claim: rawClaim, claimId, metaConnectionId: connectionId, expiresAt } };
     })
     .post("/api/v1/meta-connections/:id/provisioning-claims/:claimId/revoke", ({ request, params, set }) => {
       if (!adminAuthorized(request)) return fail(set, 401, "UNAUTHORIZED", "Authentication required");
-      const claim = db.query("SELECT * FROM provisioning_claims WHERE id = ? AND meta_connection_id = ?").get(params.claimId, params.id) as Record<string, unknown> | null;
+      const connectionId = String(params.id);
+      const claimId = String(params.claimId);
+      const claim = db.query("SELECT * FROM provisioning_claims WHERE id = ? AND meta_connection_id = ?").get(claimId, connectionId) as Record<string, unknown> | null;
       if (!claim) return fail(set, 404, "PROVISIONING_CLAIM_NOT_FOUND", "Provisioning claim not found");
       if (claim.used_at != null) return fail(set, 409, "PROVISIONING_CLAIM_USED", "Used provisioning claims cannot be revoked");
       if (claim.revoked_at == null) {
         const now = new Date().toISOString();
-        const apply = db.transaction(() => {
-          db.query("UPDATE provisioning_claims SET revoked_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL").run(now, params.claimId);
+        db.transaction(() => {
+          db.query("UPDATE provisioning_claims SET revoked_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL").run(now, claimId);
           recordAudit(db, {
             tenantId: String(claim.tenant_id), actorType: "operator", actorId: "authenticated-admin",
-            action: "provisioning.claim.revoke", entityType: "provisioning_claim", entityId: params.claimId,
+            action: "provisioning.claim.revoke", entityType: "provisioning_claim", entityId: claimId,
             before: { revokedAt: null }, after: { revokedAt: now }
           });
-        });
-        apply();
+        })();
       }
-      return { data: { claimId: params.claimId, revoked: true } };
+      return { data: { claimId, revoked: true } };
     })
     .post("/internal/v1/provisioning/consume", ({ request, body, set }) => {
       if (!internalAuthorized(request)) return fail(set, 401, "UNAUTHORIZED", "Authentication required");
@@ -216,49 +214,49 @@ export function createProvisioningApp(
           typeof input.matrixOwnerMxid !== "string" || !input.matrixOwnerMxid.startsWith("@")) {
         return fail(set, 400, "INVALID_PROVISIONING_REQUEST", "claim, Meta account ID and Matrix owner are required");
       }
+      const claim = input.claim;
+      const metaAccountId = input.metaAccountId;
+      const matrixOwnerMxid = input.matrixOwnerMxid;
 
       try {
-        const digest = digestClaim(input.claim);
-        const result = db.transaction(() => {
-          const row = readClaim(db, digest);
+        return db.transaction(() => {
+          const row = readClaim(db, digestClaim(claim));
           if (!row) throw new Error("PROVISIONING_CLAIM_INVALID");
           const now = new Date();
           if (row.revoked_at) throw new Error("PROVISIONING_CLAIM_REVOKED");
           if (row.used_at) throw new Error("PROVISIONING_CLAIM_USED");
           if (Date.parse(row.expires_at) <= now.getTime()) throw new Error("PROVISIONING_CLAIM_EXPIRED");
           if (row.claim_tenant_id !== row.connection_tenant_id) throw new Error("PROVISIONING_IDENTITY_CONFLICT");
-          if (row.claim_owner_mxid !== row.connection_owner_mxid || row.connection_owner_mxid !== input.matrixOwnerMxid) throw new Error("PROVISIONING_OWNER_MISMATCH");
+          if (row.claim_owner_mxid !== row.connection_owner_mxid || row.connection_owner_mxid !== matrixOwnerMxid) throw new Error("PROVISIONING_OWNER_MISMATCH");
           if (row.tenant_status !== "active" || row.connection_status === "disabled" || row.connection_status === "blocked") throw new Error("CONNECTION_NOT_PROVISIONABLE");
-          if (row.meta_account_id && row.meta_account_id !== input.metaAccountId) throw new Error("META_ACCOUNT_CONFLICT");
-          const other = db.query("SELECT id FROM meta_connections WHERE provider = 'facebook' AND meta_account_id = ? AND id <> ?").get(input.metaAccountId, row.meta_connection_id) as { id: string } | null;
+          if (row.meta_account_id && row.meta_account_id !== metaAccountId) throw new Error("META_ACCOUNT_CONFLICT");
+          const other = db.query("SELECT id FROM meta_connections WHERE provider = 'facebook' AND meta_account_id = ? AND id <> ?").get(metaAccountId, row.meta_connection_id) as { id: string } | null;
           if (other) throw new Error("META_ACCOUNT_CONFLICT");
-
-          const proxy = row.egress_policy === "direct_allowed" ? null : assignedProxyUrl(row, secrets);
-          if (row.egress_policy !== "direct_allowed" && !proxy) throw new Error("EGRESS_ASSIGNMENT_REQUIRED");
+          const proxy = assignedProxyUrl(row, secrets);
 
           const claimed = db.query("UPDATE provisioning_claims SET used_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL").run(now.toISOString(), row.claim_id);
           if (claimed.changes !== 1) throw new Error("PROVISIONING_CLAIM_USED");
           const nextStatus = row.connection_status === "draft" ? "ready" : row.connection_status;
           db.query("UPDATE meta_connections SET meta_account_id = ?, status = ?, updated_at = ? WHERE id = ?")
-            .run(input.metaAccountId, nextStatus, now.toISOString(), row.meta_connection_id);
+            .run(metaAccountId, nextStatus, now.toISOString(), row.meta_connection_id);
           recordAudit(db, {
             tenantId: row.connection_tenant_id, actorType: "service", actorId: "mautrix-meta",
             action: "provisioning.claim.consume", entityType: "meta_connection", entityId: row.meta_connection_id,
             before: { metaAccountId: row.meta_account_id, status: row.connection_status },
-            after: { metaAccountId: input.metaAccountId, status: nextStatus, claimId: row.claim_id }
+            after: { metaAccountId, status: nextStatus, claimId: row.claim_id }
           });
           return {
             connection_id: row.meta_connection_id,
             tenant_id: row.connection_tenant_id,
-            meta_account_id: input.metaAccountId,
+            meta_account_id: metaAccountId,
             status: nextStatus,
-            ...(proxy ? { proxy_url: proxy.proxyUrl, assignment_id: proxy.assignmentId } : {})
+            proxy_url: proxy.proxyUrl,
+            assignment_id: proxy.assignmentId
           };
         })();
-        return result;
       } catch (error) {
         const code = error instanceof Error ? error.message : "PROVISIONING_FAILED";
-        const unavailable = new Set(["EGRESS_ASSIGNMENT_REQUIRED", "EGRESS_UNHEALTHY", "EGRESS_SECRET_MISSING", "EGRESS_CONFIGURATION_INVALID"]);
+        const unavailable = new Set(["PROXY_REQUIRED_FOR_PROVISIONING", "EGRESS_ASSIGNMENT_REQUIRED", "EGRESS_UNHEALTHY", "EGRESS_SECRET_MISSING", "EGRESS_CONFIGURATION_INVALID"]);
         return fail(set, unavailable.has(code) ? 503 : 409, code, "Provisioning failed closed");
       }
     })
@@ -271,26 +269,30 @@ export function createProvisioningApp(
           typeof input.matrixOwnerMxid !== "string" || !input.matrixOwnerMxid.startsWith("@")) {
         return fail(set, 400, "INVALID_LOGIN_BINDING_REQUEST", "Connection, Meta account, login ID and Matrix owner are required");
       }
+      const connectionId = input.connectionId;
+      const metaAccountId = input.metaAccountId;
+      const loginId = input.loginId;
+      const matrixOwnerMxid = input.matrixOwnerMxid;
+
       try {
-        const result = db.transaction(() => {
-          const row = db.query(`SELECT mc.*, t.status AS tenant_status FROM meta_connections mc JOIN tenants t ON t.id = mc.tenant_id WHERE mc.id = ?`).get(input.connectionId) as Record<string, unknown> | null;
+        return db.transaction(() => {
+          const row = db.query(`SELECT mc.*, t.status AS tenant_status FROM meta_connections mc JOIN tenants t ON t.id = mc.tenant_id WHERE mc.id = ?`).get(connectionId) as Record<string, unknown> | null;
           if (!row) throw new Error("CONNECTION_NOT_FOUND");
           if (row.tenant_status !== "active" || row.status === "disabled" || row.status === "blocked") throw new Error("CONNECTION_NOT_PROVISIONABLE");
-          if (row.matrix_owner_mxid !== input.matrixOwnerMxid) throw new Error("PROVISIONING_OWNER_MISMATCH");
-          if (row.meta_account_id !== input.metaAccountId) throw new Error("META_ACCOUNT_CONFLICT");
-          if (row.mautrix_login_id && row.mautrix_login_id !== input.loginId) throw new Error("MAUTRIX_LOGIN_CONFLICT");
-          const other = db.query("SELECT id FROM meta_connections WHERE mautrix_login_id = ? AND id <> ?").get(input.loginId, input.connectionId) as { id: string } | null;
+          if (row.matrix_owner_mxid !== matrixOwnerMxid) throw new Error("PROVISIONING_OWNER_MISMATCH");
+          if (row.meta_account_id !== metaAccountId) throw new Error("META_ACCOUNT_CONFLICT");
+          if (row.mautrix_login_id && row.mautrix_login_id !== loginId) throw new Error("MAUTRIX_LOGIN_CONFLICT");
+          const other = db.query("SELECT id FROM meta_connections WHERE mautrix_login_id = ? AND id <> ?").get(loginId, connectionId) as { id: string } | null;
           if (other) throw new Error("MAUTRIX_LOGIN_CONFLICT");
           const now = new Date().toISOString();
-          db.query("UPDATE meta_connections SET mautrix_login_id = ?, updated_at = ? WHERE id = ?").run(input.loginId, now, input.connectionId);
+          db.query("UPDATE meta_connections SET mautrix_login_id = ?, updated_at = ? WHERE id = ?").run(loginId, now, connectionId);
           recordAudit(db, {
             tenantId: String(row.tenant_id), actorType: "service", actorId: "mautrix-meta",
-            action: "provisioning.login.bind", entityType: "meta_connection", entityId: input.connectionId,
-            before: { mautrixLoginId: row.mautrix_login_id }, after: { mautrixLoginId: input.loginId }
+            action: "provisioning.login.bind", entityType: "meta_connection", entityId: connectionId,
+            before: { mautrixLoginId: row.mautrix_login_id }, after: { mautrixLoginId: loginId }
           });
-          return { connection_id: input.connectionId, meta_account_id: input.metaAccountId, login_id: input.loginId, status: String(row.status) };
+          return { connection_id: connectionId, meta_account_id: metaAccountId, login_id: loginId, status: String(row.status) };
         })();
-        return result;
       } catch (error) {
         const code = error instanceof Error ? error.message : "LOGIN_BINDING_FAILED";
         return fail(set, code === "CONNECTION_NOT_FOUND" ? 404 : 409, code, "Login identity binding failed closed");
