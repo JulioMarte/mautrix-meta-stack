@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libolm-dev
-      - name: Build pinned fork test tree
+      - name: Build pinned full fork test tree
         run: |
           set -eu
           git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
@@ -42,12 +42,19 @@ jobs:
           python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_matrix_ingestion_metadata.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_matrix_ingestor_membership.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase6_multitenant_tests.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
+            pkg/connector/config.go \
+            pkg/connector/connector.go \
+            pkg/connector/events.go \
             pkg/connector/login.go \
             pkg/connector/provisioning.go \
             pkg/connector/provisioning_test.go \
+            pkg/connector/matrix_ingestion_metadata_test.go \
+            pkg/connector/matrix_ingestor_membership_test.go \
             pkg/connector/proxy_context_test.go
           git diff --check
       - name: Prove two account contexts use distinct actual transports
