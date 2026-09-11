@@ -32,7 +32,7 @@ These facts are strong engineering evidence. They are not equivalent to the glob
 
 `feature/matrix-synapse-ingestion` closes the major gap between the normalized internal Phase 4 boundary and actual Synapse Client-Server ingestion.
 
-**Current status:** implemented on branch and undergoing exact-SHA acceptance. It is not integrated until a PR to `dev` and the resulting post-merge `dev` SHA are both green.
+**Current status:** implemented on branch and undergoing final exact-SHA acceptance. It is not integrated until PR #17 merges to `dev` and the resulting post-merge `dev` SHA is green.
 
 Implemented behavior includes:
 
@@ -41,21 +41,24 @@ Implemented behavior includes:
 - bridge-bot-only trusted invitation auto-join rather than global Application Service visibility;
 - exact room attribution from bridge-authored `m.bridge`/`uk.half-shot.bridge` state: `channel.receiver -> mautrix_login_id -> meta_connection`, with `channel.id -> remote_thread_id`;
 - strict persisted room/thread/login/tenant conflict rejection;
+- an unknown/inactive bridge login is treated as an unattributable room with zero downstream side effects and no room binding, without allowing that room to deny service to unrelated valid rooms in the same sync batch;
 - bootstrap sync with timeline limit zero and durable `next_batch` checkpointing;
-- limited-timeline/gap fail-closed behavior without checkpoint advancement;
+- bounded recovery of `limited` timelines using forward `/messages` pagination from the persisted checkpoint to `prev_batch`, with event-ID deduplication across recovered pages and the current timeline;
+- recovery failure, missing range information, non-converging pagination or oversized history leaves the checkpoint unchanged;
 - runtime long-poll loop, bounded backoff, shutdown handling and Matrix-aware readiness;
 - fork metadata on every remote bridged message part carrying explicit Meta provenance and provider remote sender ID;
 - ordinary Matrix and Chatwoot-originated events excluded from Meta inbound routing;
 - text, image/video/audio/file metadata, encrypted-file metadata and Matrix voice-note semantics;
 - encrypted Matrix media fails closed if its v2/JWK metadata is unusable, including a missing `decrypt` key operation, and the checkpoint is not advanced;
+- deterministic hardening tests prove successful multi-page gap recovery, first-seen ordering, overlap deduplication, unavailable recovery, non-converging pagination and oversized-gap checkpoint safety;
 - a composed batch-retry regression proves that a retryable downstream Chatwoot failure leaves `next_batch` unchanged, replay deduplicates already-delivered earlier events, and only the failed event performs its side effect on recovery;
 - real disposable Synapse acceptance covering authentication, trusted invite/join, two tenants/two rooms, same numeric remote contact across tenants, unbound-room rejection, text/PDF/voice-note normalization and checkpoint persistence after SQLite reopen;
-- cold backup/restore acceptance now explicitly seeds and verifies `matrix_room_bindings` and `matrix_sync_checkpoints` after destruction of the original volume and restoration into a fresh volume;
+- cold backup/restore acceptance explicitly seeds and verifies `matrix_room_bindings` and `matrix_sync_checkpoints` after destruction of the original volume and restoration into a fresh volume;
 - Validate, Phase 6 and Docker build the same Matrix-enabled fork variant.
 
 The bootstrap policy intentionally begins ingestion from the first persisted `/sync` token with timeline limit zero. Historical messages that predate initial ingestion startup are not replayed automatically; adding backfill would require a separate explicit policy for historical CRM side effects.
 
-The exact branch candidate must still finish green after the final documentation SHA; do not treat the above as integrated evidence yet.
+The exact branch candidate must finish green after the final documentation SHA; do not treat the above as integrated evidence yet.
 
 ## Remaining blocking gaps
 
@@ -90,7 +93,7 @@ Repository CI intentionally does not use real Facebook customer credentials or p
 
 ### 3. Production backup operations
 
-The repository proves the recovery algorithm on disposable Docker volumes, now including Matrix room attribution and sync checkpoint state. It does not prove real backup storage, encryption/access control, retention, off-host durability, restore permissions or Coolify-specific volume identifiers.
+The repository proves the recovery algorithm on disposable Docker volumes, including Matrix room attribution and sync checkpoint state. It does not prove real backup storage, encryption/access control, retention, off-host durability, restore permissions or Coolify-specific volume identifiers.
 
 **Status:** production-operations/human evidence gap.
 
@@ -107,7 +110,7 @@ The repository proves the recovery algorithm on disposable Docker volumes, now i
 ## Completion sequence from current state
 
 1. finish exact-SHA Matrix/Synapse ingestion acceptance and all inherited regressions;
-2. open a PR only to `dev`, require all PR checks including Phase 3 topology, merge with exact-head guard, then require post-merge `dev` checks green;
+2. merge PR #17 only to `dev` with an exact-head guard, then require post-merge `dev` checks green;
 3. create a focused branch from that green `dev` and close the remaining Chatwoot tenancy assertions with tests first and code fixes only where required;
 4. rerun the complete repository acceptance matrix on one exact resulting `dev` SHA;
 5. prepare a staging checklist for every assertion CI cannot make;
@@ -120,6 +123,6 @@ The repository proves the recovery algorithm on disposable Docker volumes, now i
 
 The repository is **not production-ready yet** under its own normative documents.
 
-Provisioning is integrated in `dev`. Real Matrix/Synapse ingestion is implemented on the current feature branch but still requires final exact-SHA acceptance and integration. After that, targeted Chatwoot tenancy coverage, real Meta/provider staging and real production-operations evidence remain outstanding.
+Provisioning is integrated in `dev`. Real Matrix/Synapse ingestion is implemented on PR #17 but still requires final exact-SHA acceptance, integration to `dev`, and post-merge `dev` evidence. After that, targeted Chatwoot tenancy coverage, real Meta/provider staging and real production-operations evidence remain outstanding.
 
 No CI result or merge to `dev` changes the human-controlled `main` promotion rule.
