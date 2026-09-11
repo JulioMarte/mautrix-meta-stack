@@ -79,6 +79,8 @@ function parseMatrixEvent(body: unknown): MatrixInboundEvent | null {
     if (a.mimeType != null && typeof a.mimeType !== "string") return null;
     if (a.fileName != null && typeof a.fileName !== "string") return null;
     if (a.sizeBytes != null && (typeof a.sizeBytes !== "number" || !Number.isSafeInteger(a.sizeBytes) || a.sizeBytes < 0)) return null;
+    if (a.voiceNote != null && typeof a.voiceNote !== "boolean") return null;
+    if (a.voiceNote === true && a.kind !== "audio") return null;
     const encryption = a.encryption == null ? undefined : parseEncryptedFile(a.encryption);
     if (a.encryption != null && !encryption) return null;
     attachments.push({
@@ -88,6 +90,7 @@ function parseMatrixEvent(body: unknown): MatrixInboundEvent | null {
       ...(typeof a.mimeType === "string" ? { mimeType: a.mimeType } : {}),
       ...(typeof a.fileName === "string" ? { fileName: a.fileName } : {}),
       ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {}),
+      ...(a.voiceNote === true ? { voiceNote: true } : {}),
       ...(encryption ? { encryption } : {})
     });
   }
