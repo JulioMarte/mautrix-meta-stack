@@ -26,6 +26,7 @@ def main() -> None:
     root = pathlib.Path(sys.argv[1]).resolve()
     client = root / "pkg/connector/client.go"
     config = root / "pkg/connector/config.go"
+    login = root / "pkg/connector/login.go"
     test_file = root / "pkg/connector/proxy_context_test.go"
 
     replace_once(
@@ -53,6 +54,12 @@ def main() -> None:
         config,
         '''\tif m.Config.GetProxyFrom != "" {\n\t\tif m.Config.Proxy != "" {\n''',
         '''\tif m.Config.GetProxyFrom != "" {\n\t\tresolverURL, err := url.Parse(m.Config.GetProxyFrom)\n\t\tif err != nil || resolverURL.Host == "" || (resolverURL.Scheme != "http" && resolverURL.Scheme != "https") || resolverURL.User != nil || resolverURL.RawQuery != "" || resolverURL.Fragment != "" {\n\t\t\treturn fmt.Errorf("dynamic egress resolver URL must be an http(s) URL without userinfo, query or fragment")\n\t\t}\n\t\tif m.Config.Proxy != "" {\n''',
+    )
+
+    replace_once(
+        login,
+        '''\tmetaClient.Client = client\n\n\tbackgroundCtx := ul.Log.WithContext(conn.Bridge.BackgroundCtx)\n''',
+        '''\tmetaClient.Client = client\n\tif !metaClient.updateMessagingProxy("connect") {\n\t\treturn nil, fmt.Errorf("failed to transition from login to messaging proxy")\n\t}\n\n\tbackgroundCtx := ul.Log.WithContext(conn.Bridge.BackgroundCtx)\n''',
     )
 
     append_once(
@@ -142,6 +149,43 @@ func TestDynamicEgressConfigRejectsUnsafeResolverURLs(t *testing.T) {
         if err := conn.ValidateConfig(); err == nil {
             t.Fatalf("expected unsafe resolver URL %q to be rejected", resolverURL)
         }
+    }
+}
+
+func TestInitialLoginTransitionsResolverFromLoginToMessaging(t *testing.T) {
+    const token = "phase3-login-transition-token"
+    oldToken := os.Getenv("MAUTRIX_META_EGRESS_TOKEN")
+    t.Cleanup(func() { _ = os.Setenv("MAUTRIX_META_EGRESS_TOKEN", oldToken) })
+    if err := os.Setenv("MAUTRIX_META_EGRESS_TOKEN", token); err != nil { t.Fatal(err) }
+
+    var classes []string
+    var reasons []string
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        classes = append(classes, r.URL.Query().Get("traffic_class"))
+        reasons = append(reasons, r.URL.Query().Get("reason"))
+        _ = json.NewEncoder(w).Encode(respGetProxy{ProxyURL: "http://127.0.0.1:9"})
+    }))
+    defer server.Close()
+
+    c := &cookies.Cookies{Platform: types.Facebook}
+    c.UpdateValues(map[cookies.MetaCookieName]string{cookies.FBCookieCUser: "123"})
+    conn := &MetaConnector{Config: Config{GetProxyFrom: server.URL, ProxyOther: true}}
+    client := makePhase3TestClient(c)
+    if err := conn.configureLoginProxy(client, c, true); err != nil { t.Fatal(err) }
+
+    metaClient := &MetaClient{
+        Main: conn,
+        Client: client,
+        LoginMeta: &metaid.UserLoginMetadata{Platform: types.Facebook, Cookies: c},
+        UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: "123"}},
+    }
+    if !metaClient.updateMessagingProxy("connect") { t.Fatal("messaging proxy transition failed") }
+
+    if len(classes) != 2 || classes[0] != "login" || classes[1] != "messaging" {
+        t.Fatalf("unexpected resolver traffic-class sequence: %v", classes)
+    }
+    if len(reasons) != 2 || reasons[0] != "login" || reasons[1] != "connect" {
+        t.Fatalf("unexpected resolver reason sequence: %v", reasons)
     }
 }
 ''',
