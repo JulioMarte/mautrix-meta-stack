@@ -44,6 +44,11 @@ def main() -> None:
         '''\t\tvar respData respGetProxy\n\t\terr = json.NewDecoder(resp.Body).Decode(&respData)\n\t\tif err != nil {\n\t\t\treturn "", fmt.Errorf("failed to decode response: %w", err)\n\t\t}\n\t\tproxyURL, err := url.Parse(respData.ProxyURL)\n\t\tif err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {\n\t\t\treturn "", fmt.Errorf("proxy resolver returned invalid proxy URL")\n\t\t}\n\t\treturn respData.ProxyURL, nil\n''',
         '''\t\tconst maxResolverResponseBytes = 64 * 1024\n\t\tbody, err := io.ReadAll(io.LimitReader(resp.Body, maxResolverResponseBytes+1))\n\t\tif err != nil {\n\t\t\treturn "", fmt.Errorf("failed to read response: %w", err)\n\t\t} else if len(body) > maxResolverResponseBytes {\n\t\t\treturn "", fmt.Errorf("proxy resolver response exceeds size limit")\n\t\t}\n\t\tvar respData respGetProxy\n\t\tif err = json.Unmarshal(body, &respData); err != nil {\n\t\t\treturn "", fmt.Errorf("failed to decode response: %w", err)\n\t\t}\n\t\tproxyURL, err := url.Parse(respData.ProxyURL)\n\t\tif err != nil || proxyURL.Hostname() == "" || proxyURL.Port() == "" || proxyURL.Path != "" || proxyURL.RawQuery != "" || proxyURL.Fragment != "" {\n\t\t\treturn "", fmt.Errorf("proxy resolver returned invalid proxy URL")\n\t\t}\n\t\tswitch proxyURL.Scheme {\n\t\tcase "http", "https", "socks5":\n\t\tdefault:\n\t\t\treturn "", fmt.Errorf("proxy resolver returned unsupported proxy scheme")\n\t\t}\n\t\treturn respData.ProxyURL, nil\n''',
     )
+    replace_once(
+        client,
+        '''func (m *MetaClient) updateMessagingProxy(reason string) bool {\n\tif !m.Main.Config.ProxyOther || (m.Main.Config.GetProxyFrom == "" && m.Main.Config.Proxy == "") {\n\t\treturn true\n\t}\n\tif m.Client == nil {\n\t\treturn false\n\t}\n\tm.Client.GetHTTP().GetNewProxy = m.Main.getProxy(m.proxyContext(ProxyTrafficMessaging))\n\treturn m.Client.GetHTTP().UpdateProxy(reason)\n}\n''',
+        '''func (m *MetaConnector) updateMessagingProxy(client *messagix.Client, proxyCtx ProxyContext, reason string) bool {\n\tif !m.Config.ProxyOther || (m.Config.GetProxyFrom == "" && m.Config.Proxy == "") {\n\t\treturn true\n\t}\n\tif client == nil {\n\t\treturn false\n\t}\n\tproxyCtx.TrafficClass = ProxyTrafficMessaging\n\tclient.GetHTTP().GetNewProxy = m.getProxy(proxyCtx)\n\treturn client.GetHTTP().UpdateProxy(reason)\n}\n\nfunc (m *MetaClient) updateMessagingProxy(reason string) bool {\n\treturn m.Main.updateMessagingProxy(m.Client, m.proxyContext(ProxyTrafficMessaging), reason)\n}\n''',
+    )
 
     replace_once(
         config,
@@ -58,8 +63,8 @@ def main() -> None:
 
     replace_once(
         login,
-        '''\tmetaClient.Client = client\n\n\tbackgroundCtx := ul.Log.WithContext(conn.Bridge.BackgroundCtx)\n''',
-        '''\tmetaClient.Client = client\n\tif !metaClient.updateMessagingProxy("connect") {\n\t\treturn nil, fmt.Errorf("failed to transition from login to messaging proxy")\n\t}\n\n\tbackgroundCtx := ul.Log.WithContext(conn.Bridge.BackgroundCtx)\n''',
+        '''\tloginID := metaid.MakeUserLoginID(id)\n\tvar loginUA string\n''',
+        '''\tloginID := metaid.MakeUserLoginID(id)\n\tif !conn.updateMessagingProxy(client, ProxyContext{\n\t\tMetaAccountID: fmt.Sprint(c.GetUserID()),\n\t\tLoginID:       string(loginID),\n\t\tTrafficClass:  ProxyTrafficMessaging,\n\t}, "connect") {\n\t\treturn nil, fmt.Errorf("failed to transition from login to messaging proxy")\n\t}\n\tvar loginUA string\n''',
     )
 
     append_once(
@@ -172,14 +177,9 @@ func TestInitialLoginTransitionsResolverFromLoginToMessaging(t *testing.T) {
     conn := &MetaConnector{Config: Config{GetProxyFrom: server.URL, ProxyOther: true}}
     client := makePhase3TestClient(c)
     if err := conn.configureLoginProxy(client, c, true); err != nil { t.Fatal(err) }
-
-    metaClient := &MetaClient{
-        Main: conn,
-        Client: client,
-        LoginMeta: &metaid.UserLoginMetadata{Platform: types.Facebook, Cookies: c},
-        UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: "123"}},
+    if !conn.updateMessagingProxy(client, ProxyContext{MetaAccountID: "123", LoginID: "123"}, "connect") {
+        t.Fatal("messaging proxy transition failed")
     }
-    if !metaClient.updateMessagingProxy("connect") { t.Fatal("messaging proxy transition failed") }
 
     if len(classes) != 2 || classes[0] != "login" || classes[1] != "messaging" {
         t.Fatalf("unexpected resolver traffic-class sequence: %v", classes)
