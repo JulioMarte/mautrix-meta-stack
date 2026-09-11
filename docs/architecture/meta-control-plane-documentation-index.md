@@ -12,6 +12,7 @@ The branch is not ready for implementation unless these documents are coherent w
 - `meta-control-plane-data-model.md` — entities, identity boundaries, persistence, migrations, referential invariants and portability expectations.
 - `meta-control-plane-internal-api.md` — public/internal API split, resolver contract, authentication, errors, readiness and timeout semantics.
 - `meta-control-plane-event-contracts.md` — normalized Matrix/Chatwoot messaging model, routing, idempotency, attachments and loop prevention.
+- `phase5-chatwoot-matrix.md` — concrete Phase 5 Chatwoot webhook authentication, exact routing, Matrix send/idempotency, attachments and CI gate.
 - `meta-control-plane-threat-failure-model.md` — trust boundaries, leakage/cross-tenant threats, dependency failures, crash semantics and required fault injection.
 - `meta-control-plane-deployment-operations.md` — Coolify topology, state, secrets, startup, backup/restore, upgrade, smoke tests and rollback.
 - `meta-control-plane-onboarding-identity-binding.md` — pre-Meta bootstrap identity, provisioning claims, first-login binding, re-login and conflict semantics.
@@ -36,6 +37,7 @@ The branch is not ready for implementation unless these documents are coherent w
 14. Matrix room names/display names are never routing authority; room attribution requires persisted stable identifiers and verifiable bridge/Matrix metadata.
 15. Chatwoot inbox/conversation IDs are always interpreted in their tenant + installation/account context; numeric IDs alone are not security boundaries.
 16. Unknown, ambiguous or conflicting identity/binding information fails closed rather than being guessed or overwritten.
+17. Chatwoot webhook signing secrets are distinct from Chatwoot API credentials and use a dedicated secret-reference namespace.
 
 ## Phase 0 exit review
 
@@ -72,12 +74,13 @@ The following do not block Phase 1 but MUST be specified before their correspond
 - concrete proxy-provider adapter(s) and credential provisioning workflow;
 - exact Matrix ingestion transport choice (`/sync`/sliding sync vs application-service style) before Phase 4 acceptance;
 - exact bridge metadata/state signal used to prove room attribution before Phase 4 acceptance;
-- exact Chatwoot deployment/version-specific webhook authentication mechanism before Phase 5 acceptance;
 - exact deterministic Chatwoot source/contact identity derivation after validating the deployed API behavior;
 - production operator RBAC beyond the initial protected admin surface;
 - data retention durations once message volume and compliance requirements are known;
 - PostgreSQL migration timing/thresholds;
 - full OpenTelemetry/metrics backend;
 - billing, quotas and tenant self-service onboarding.
+
+The Chatwoot webhook authentication mechanism is no longer deferred: Phase 5 fixes the supported contract to Chatwoot's timestamped HMAC-SHA256 signature over the raw request body, with a binding-specific secret configured under `env:CHATWOOT_WEBHOOK_*`.
 
 Deferral means these are explicitly not assumed. Any implementation depending on one of them must first turn the deferred item into a concrete reviewed contract.
