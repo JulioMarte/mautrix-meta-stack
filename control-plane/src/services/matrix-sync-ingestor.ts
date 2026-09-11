@@ -73,6 +73,7 @@ function parseAttachment(content: Record<string, unknown>, eventId: string): Att
   const directUrl = nonEmptyString(content.url);
   const encryptedRaw = record(content.file);
   const encrypted = encryptedRaw ? parseEncryptedFile(encryptedRaw) : null;
+  if (encryptedRaw && !encrypted) throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID");
   const url = encrypted?.url ?? directUrl;
   if (!url || !url.startsWith("mxc://")) return null;
 
