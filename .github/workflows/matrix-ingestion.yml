@@ -106,7 +106,7 @@ jobs:
             -e SYNAPSE_CONFIG_PATH=/data/homeserver.yaml \
             -v "$data:/data" \
             "$SYNAPSE_IMAGE" generate
-          chown -R 991:991 "$data"
+          sudo chown -R 991:991 "$data"
           docker run -d --name matrix-sync-synapse \
             -e SYNAPSE_CONFIG_PATH=/data/homeserver.yaml \
             -e UID=991 -e GID=991 \
