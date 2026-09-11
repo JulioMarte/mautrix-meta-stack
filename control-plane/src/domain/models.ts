@@ -90,6 +90,21 @@ export type ProcessedEvent = {
   lastError: string | null;
 };
 
+export type MatrixEncryptedFile = {
+  v: "v2";
+  key: {
+    kty: "oct";
+    alg: "A256CTR";
+    k: string;
+    keyOps: string[];
+    ext: true;
+  };
+  iv: string;
+  hashes: {
+    sha256: string;
+  };
+};
+
 export type Attachment = {
   id?: string;
   kind: "image" | "video" | "audio" | "file" | "unknown";
@@ -97,6 +112,7 @@ export type Attachment = {
   mimeType?: string;
   fileName?: string;
   sizeBytes?: number;
+  encryption?: MatrixEncryptedFile;
 };
 
 export type NormalizedMessage = {
