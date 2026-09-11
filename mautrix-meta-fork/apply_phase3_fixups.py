@@ -66,6 +66,12 @@ def main() -> None:
         '''\tif !m.updateMessagingProxy("connect") {\n\t\tm.UserLogin.BridgeState.Send(status.BridgeState{\n\t\t\tStateEvent: status.StateUnknownError,\n\t\t\tError:      MetaProxyUpdateFail,\n\t\t})\n\t\treturn\n\t}\n''',
         1,
     )
+    replace_exact(
+        client,
+        '''\t\tm.E2EEClient.SetProxyAddress(proxyURL)\n''',
+        '''\t\tif err = m.E2EEClient.SetProxyAddress(proxyURL); err != nil {\n\t\t\treturn fmt.Errorf("failed to configure e2ee proxy: %w", err)\n\t\t}\n''',
+        1,
+    )
 
     login = root / "pkg/connector/login.go"
     replace_exact(
