@@ -83,7 +83,7 @@ const assignments={a:new Set(),b:new Set()};
 for(const cls of traffic){
   for(const [key,route] of [["a",a],["b",b]]){
     const q=new URLSearchParams({meta_account_id:route.connection.metaAccountId,login_id:route.connection.mautrixLoginId,reason:`phase6-${cls}`,traffic_class:cls});
-    const resolved=(await get(`/internal/v1/egress/resolve?${q}`)).data;
+    const resolved=await get(`/internal/v1/egress/resolve?${q}`);
     assignments[key].add(resolved.assignment_id);
     const expectedHost=key==="a"?"proxy-a":"proxy-b";
     if(new URL(resolved.proxy_url).hostname!==expectedHost) throw new Error(`tenant ${key} resolved to wrong egress`);
@@ -137,7 +137,7 @@ console.log(JSON.stringify({a:{connectionId:a.connection.id,bindingId:a.binding.
 "${DC[@]}" exec -T control-plane bun -e 'await fetch("http://proxy-a:8081/_test/down",{method:"POST"})'
 "${DC[@]}" exec -T control-plane bun -e '
 import {connect} from "node:net";
-const r=await fetch("http://127.0.0.1:3000/internal/v1/egress/resolve?meta_account_id=meta-phase6-a&login_id=login-phase6-a&reason=proxy-failure&traffic_class=messaging",{headers:{authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN}});if(!r.ok)process.exit(1);const p=(await r.json()).data;const u=new URL(p.proxy_url);
+const r=await fetch("http://127.0.0.1:3000/internal/v1/egress/resolve?meta_account_id=meta-phase6-a&login_id=login-phase6-a&reason=proxy-failure&traffic_class=messaging",{headers:{authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN}});if(!r.ok)process.exit(1);const p=await r.json();const u=new URL(p.proxy_url);
 const result=await new Promise(resolve=>{let data="";const s=connect(Number(u.port),u.hostname,()=>s.write("GET http://direct-egress-sentinel:8083/protected/failure HTTP/1.1\r\nHost: direct-egress-sentinel:8083\r\nConnection: close\r\n\r\n"));s.setTimeout(3000,()=>s.destroy());s.on("data",c=>data+=c);s.on("error",()=>resolve("transport-error"));s.on("close",()=>resolve(data));});
 if(typeof result!=="string"||(!result.includes(" 502 ")&&result!=="transport-error")) throw new Error("unavailable assigned egress did not fail");
 const direct=await (await fetch("http://direct-egress-sentinel:8083/_test/state")).json();if(direct.hits!==0) throw new Error("proxy failure fell back to direct sentinel");
@@ -177,7 +177,7 @@ for(const [i,c] of conns.entries()){
  const ev={connectionId:c.id,roomId:room,remoteThreadId:thread,remoteContactId:contact,eventId,senderId:contact,text:`from meta ${suffix.toUpperCase()}`,occurredAt:i===0?"2026-09-11T14:00:00.000Z":"2026-09-11T14:00:01.000Z",provenance:"meta"};
  const rr=await fetch("http://127.0.0.1:3000/internal/v1/matrix/events",{method:"POST",headers:internal,body:JSON.stringify(ev)});const rb=await rr.json();if(!rr.ok||rb.data?.status!=="duplicate") throw new Error(`restart Matrix replay ${suffix} was not duplicate`);
  const q=new URLSearchParams({meta_account_id:c.meta_account_id,login_id:c.mautrix_login_id,reason:"restart",traffic_class:"messaging"});const er=await fetch(`http://127.0.0.1:3000/internal/v1/egress/resolve?${q}`,{headers:{authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN}});if(!er.ok) throw new Error(`restart egress resolve ${suffix} failed`);
- const eu=new URL((await er.json()).data.proxy_url);if(eu.hostname!==(suffix==="a"?"proxy-a":"proxy-b")) throw new Error(`restart egress assignment changed for ${suffix}`);
+ const eu=new URL((await er.json()).proxy_url);if(eu.hostname!==(suffix==="a"?"proxy-a":"proxy-b")) throw new Error(`restart egress assignment changed for ${suffix}`);
 }
 const sign=async(row,secret,id,content)=>{const payload={event:"message_created",id,message_type:"outgoing",private:false,content,created_at:"2026-09-11T14:01:00.000Z",account:{id:Number(row.chatwoot_account_id)},inbox:{id:Number(row.chatwoot_inbox_id)},conversation:{id:Number(row.chatwoot_conversation_id)},sender:{id:80,type:"user",name:"Agent"},attachments:[]};const raw=JSON.stringify(payload),ts=String(Math.floor(Date.now()/1000)),sig="sha256="+createHmac("sha256",secret).update(`${ts}.${raw}`).digest("hex");const r=await fetch(`http://127.0.0.1:3000/webhooks/chatwoot/${row.binding_id}`,{method:"POST",headers:{"content-type":"application/json","x-chatwoot-timestamp":ts,"x-chatwoot-signature":sig},body:raw});const body=await r.json();if(!r.ok||body.data?.status!=="duplicate") throw new Error("restart webhook replay was not duplicate")};
 await sign(rows[0],process.env.CHATWOOT_WEBHOOK_PHASE6_A_SECRET,6001,"agent A");await sign(rows[1],process.env.CHATWOOT_WEBHOOK_PHASE6_B_SECRET,6001,"agent B");
