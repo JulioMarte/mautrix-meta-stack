@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { Elysia } from "elysia";
-import type { Attachment, ChatwootBindingStatus, EgressStatus, TrafficClass } from "./domain/models";
+import type { Attachment, ChatwootBindingStatus, EgressStatus, MatrixEncryptedFile, TrafficClass } from "./domain/models";
 import { LATEST_SCHEMA_VERSION, schemaVersion } from "./persistence/migrations";
 import {
   SQLiteAuditRepository, SQLiteChatwootBindingRepository, SQLiteConversationBindingRepository,
@@ -11,6 +11,7 @@ import { ChatwootEnvironmentSecretProvider, EnvironmentSecretProvider, isSupport
 import type { ChatwootGateway } from "./services/chatwoot-gateway";
 import { EgressResolver, normalizeProxyHost, normalizeProxyScheme, ResolverError } from "./services/egress-resolver";
 import { HttpChatwootGateway } from "./services/http-chatwoot-gateway";
+import { HttpMatrixMediaDownloader } from "./services/matrix-media-downloader";
 import { MatrixToChatwootService, type MatrixInboundEvent } from "./services/matrix-to-chatwoot";
 
 function bearerToken(request: Request): string | null {
@@ -38,6 +39,24 @@ function validChatwootBaseUrl(value: string): boolean {
   } catch { return false; }
 }
 
+function parseEncryptedFile(value: unknown): MatrixEncryptedFile | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  if (input.v !== "v2" || typeof input.iv !== "string" || !input.iv) return null;
+  if (!input.key || typeof input.key !== "object" || !input.hashes || typeof input.hashes !== "object") return null;
+  const key = input.key as Record<string, unknown>;
+  const hashes = input.hashes as Record<string, unknown>;
+  if (key.kty !== "oct" || key.alg !== "A256CTR" || typeof key.k !== "string" || !key.k || key.ext !== true) return null;
+  if (!Array.isArray(key.keyOps) || !key.keyOps.every((op) => typeof op === "string") || !key.keyOps.includes("decrypt")) return null;
+  if (typeof hashes.sha256 !== "string" || !hashes.sha256) return null;
+  return {
+    v: "v2",
+    key: { kty: "oct", alg: "A256CTR", k: key.k, keyOps: key.keyOps as string[], ext: true },
+    iv: input.iv,
+    hashes: { sha256: hashes.sha256 }
+  };
+}
+
 function parseMatrixEvent(body: unknown): MatrixInboundEvent | null {
   if (!body || typeof body !== "object") return null;
   const input = body as Record<string, unknown>;
@@ -60,13 +79,16 @@ function parseMatrixEvent(body: unknown): MatrixInboundEvent | null {
     if (a.mimeType != null && typeof a.mimeType !== "string") return null;
     if (a.fileName != null && typeof a.fileName !== "string") return null;
     if (a.sizeBytes != null && (typeof a.sizeBytes !== "number" || !Number.isSafeInteger(a.sizeBytes) || a.sizeBytes < 0)) return null;
+    const encryption = a.encryption == null ? undefined : parseEncryptedFile(a.encryption);
+    if (a.encryption != null && !encryption) return null;
     attachments.push({
       kind: a.kind as Attachment["kind"],
       ...(typeof a.id === "string" ? { id: a.id } : {}),
       ...(typeof a.url === "string" ? { url: a.url } : {}),
       ...(typeof a.mimeType === "string" ? { mimeType: a.mimeType } : {}),
       ...(typeof a.fileName === "string" ? { fileName: a.fileName } : {}),
-      ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {})
+      ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {}),
+      ...(encryption ? { encryption } : {})
     });
   }
   return {
@@ -99,7 +121,7 @@ export function createApp(
   const processedEvents = new SQLiteProcessedEventRepository(db);
   const audit = new SQLiteAuditRepository(db);
   const resolver = new EgressResolver(connections, egress, new EnvironmentSecretProvider(secretEnv));
-  const chatwootGateway = dependencies.chatwootGateway ?? new HttpChatwootGateway(new ChatwootEnvironmentSecretProvider(secretEnv));
+  const chatwootGateway = dependencies.chatwootGateway ?? new HttpChatwootGateway(new ChatwootEnvironmentSecretProvider(secretEnv), fetch, 8_000, new HttpMatrixMediaDownloader(secretEnv));
   const matrixToChatwoot = new MatrixToChatwootService(tenants, connections, chatwootBindings, conversationBindings, processedEvents, chatwootGateway);
   const adminAuthorized = (request: Request) => tokenMatches(bearerToken(request), adminToken, 16);
   const internalAuthorized = (request: Request) => tokenMatches(bearerToken(request), internalToken, 24);
@@ -246,7 +268,7 @@ export function createApp(
         return { data: result };
       } catch (error) {
         const code = error instanceof Error ? error.message : "MATRIX_TO_CHATWOOT_FAILED";
-        const terminalCodes = new Set(["CONNECTION_NOT_FOUND", "TENANT_NOT_ACTIVE", "CONNECTION_NOT_ACTIVE", "CHATWOOT_BINDING_REQUIRED", "CHATWOOT_BINDING_NOT_ACTIVE", "CROSS_TENANT_CHATWOOT_BINDING", "EVENT_IDENTITY_CONFLICT", "MATRIX_ROOM_BINDING_CONFLICT", "EMPTY_MESSAGE", "CHATWOOT_ATTACHMENT_UPLOAD_NOT_IMPLEMENTED"]);
+        const terminalCodes = new Set(["CONNECTION_NOT_FOUND", "TENANT_NOT_ACTIVE", "CONNECTION_NOT_ACTIVE", "CHATWOOT_BINDING_REQUIRED", "CHATWOOT_BINDING_NOT_ACTIVE", "CROSS_TENANT_CHATWOOT_BINDING", "EVENT_IDENTITY_CONFLICT", "MATRIX_ROOM_BINDING_CONFLICT", "EMPTY_MESSAGE", "CHATWOOT_ATTACHMENT_LIMIT_EXCEEDED", "MATRIX_MEDIA_ENCRYPTION_INVALID", "MATRIX_MEDIA_HASH_MISMATCH"]);
         return safeError(set, terminalCodes.has(code) ? 409 : 503, code, "Matrix to Chatwoot delivery failed");
       }
     });
