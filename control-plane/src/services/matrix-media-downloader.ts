@@ -11,7 +11,7 @@ export interface MatrixMediaDownloader {
   download(attachment: Attachment): Promise<DownloadedAttachment>;
 }
 
-type FetchLike = typeof fetch;
+export type HttpFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -86,7 +86,7 @@ export class HttpMatrixMediaDownloader implements MatrixMediaDownloader {
 
   constructor(
     env: Record<string, string | undefined> = process.env,
-    private readonly fetchImpl: FetchLike = fetch
+    private readonly fetchImpl: HttpFetch = fetch
   ) {
     this.base = validatedHomeserverBase(env.MATRIX_MEDIA_BASE_URL ?? "http://synapse:8008");
     this.accessToken = env.MATRIX_MEDIA_ACCESS_TOKEN ?? "";
@@ -137,8 +137,9 @@ export class HttpMatrixMediaDownloader implements MatrixMediaDownloader {
     if (attachment.sizeBytes != null && attachment.sizeBytes > this.maxBytes) throw new Error("MATRIX_MEDIA_TOO_LARGE");
     const responseType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
     const mimeType = attachment.mimeType?.trim() || responseType || "application/octet-stream";
+    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return {
-      blob: new Blob([bytes], { type: mimeType }),
+      blob: new Blob([buffer], { type: mimeType }),
       fileName: safeFileName(attachment),
       mimeType,
       sizeBytes: bytes.byteLength
