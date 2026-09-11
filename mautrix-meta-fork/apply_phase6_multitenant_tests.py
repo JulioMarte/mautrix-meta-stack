@@ -17,6 +17,13 @@ def main() -> None:
     if marker in text:
         raise SystemExit(f"{test_file}: Phase 6 multi-account test already present")
 
+    # Phase 3's generated test file already imports the connector dependencies we
+    # need. Add networkid to the existing import block for the typed UserLogin ID.
+    import_anchor = '"maunium.net/go/mautrix/bridgev2/database"\n'
+    if import_anchor not in text:
+        raise SystemExit(f"{test_file}: expected database import anchor")
+    text = text.replace(import_anchor, import_anchor + '\t"maunium.net/go/mautrix/bridgev2/networkid"\n', 1)
+
     extra = r'''
 
 func TestPhase6TwoAccountsUseDistinctResolvedTransports(t *testing.T) {
@@ -79,7 +86,7 @@ func TestPhase6TwoAccountsUseDistinctResolvedTransports(t *testing.T) {
             Main: conn,
             Client: makePhase3TestClient(c),
             LoginMeta: &metaid.UserLoginMetadata{Platform: types.Facebook, Cookies: c},
-            UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: id}},
+            UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: networkid.UserLoginID(id)}},
         }
         return c, mc
     }
