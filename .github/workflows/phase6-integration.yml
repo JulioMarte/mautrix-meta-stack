@@ -40,9 +40,15 @@ jobs:
           python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase6_multitenant_tests.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
-          gofmt -w pkg/connector/proxy_context_test.go
+          gofmt -w \
+            pkg/connector/login.go \
+            pkg/connector/provisioning.go \
+            pkg/connector/provisioning_test.go \
+            pkg/connector/proxy_context_test.go
           git diff --check
       - name: Prove two account contexts use distinct actual transports
         working-directory: /tmp/mautrix-meta
