@@ -11,6 +11,7 @@ import type { HttpMatrixSyncClient, MatrixJoinedRoom, MatrixRawEvent, MatrixSync
 
 const REMOTE_SENDER_ID_KEY = "com.mautrix_meta_stack.remote_sender_id";
 const PROVENANCE_KEY = "com.mautrix_meta_stack.provenance";
+const MATRIX_VOICE_KEY = "org.matrix.msc3245.voice";
 
 type MatrixSyncTransport = Pick<HttpMatrixSyncClient, "sync" | "roomState" | "joinRoom">;
 
@@ -77,6 +78,7 @@ function parseAttachment(content: Record<string, unknown>, eventId: string): Att
   const mimeType = info ? nonEmptyString(info.mimetype) : null;
   const fileName = nonEmptyString(content.filename) ?? nonEmptyString(content.body);
   const sizeBytes = info ? safePositiveNumber(info.size) : undefined;
+  const voiceNote = kind === "audio" && record(content[MATRIX_VOICE_KEY]) !== null;
   return {
     id: eventId,
     kind,
@@ -84,6 +86,7 @@ function parseAttachment(content: Record<string, unknown>, eventId: string): Att
     ...(mimeType ? { mimeType } : {}),
     ...(fileName ? { fileName } : {}),
     ...(sizeBytes != null ? { sizeBytes } : {}),
+    ...(voiceNote ? { voiceNote: true } : {}),
     ...(encrypted ? { encryption: encrypted.encryption } : {})
   };
 }
