@@ -6,7 +6,10 @@ import {
   SQLiteProcessedEventRepository, SQLiteTenantRepository
 } from "./persistence/sqlite-repositories";
 import { SQLiteChatwootWebhookConfigRepository, SQLitePhase5LookupRepository } from "./persistence/phase5-repositories";
-import { ChatwootEnvironmentSecretProvider, isSupportedChatwootSecretRef } from "./security/secrets";
+import {
+  ChatwootEnvironmentSecretProvider, ChatwootWebhookEnvironmentSecretProvider,
+  isSupportedChatwootWebhookSecretRef
+} from "./security/secrets";
 import { ChatwootAttachmentDownloader, type ChatwootWebhookAttachment } from "./services/chatwoot-attachment-downloader";
 import { chatwootWebhookHeaders, verifyChatwootWebhook } from "./services/chatwoot-webhook-auth";
 import { ChatwootToMatrixService, type ChatwootOutboundEvent } from "./services/chatwoot-to-matrix";
@@ -86,18 +89,19 @@ export function createPhase5App(
 ) {
   const webhookConfigs = new SQLiteChatwootWebhookConfigRepository(db);
   const lookups = new SQLitePhase5LookupRepository(db);
-  const secrets = new ChatwootEnvironmentSecretProvider(env);
+  const chatwootSecrets = new ChatwootEnvironmentSecretProvider(env);
+  const webhookSecrets = new ChatwootWebhookEnvironmentSecretProvider(env);
   const service = new ChatwootToMatrixService(
     new SQLiteTenantRepository(db), new SQLiteMetaConnectionRepository(db), new SQLiteChatwootBindingRepository(db),
     new SQLiteConversationBindingRepository(db), new SQLiteProcessedEventRepository(db),
-    new ChatwootAttachmentDownloader(secrets, env), dependencies.matrixGateway ?? new HttpMatrixGateway(env)
+    new ChatwootAttachmentDownloader(chatwootSecrets, env), dependencies.matrixGateway ?? new HttpMatrixGateway(env)
   );
 
   return new Elysia({ name: "phase5-chatwoot-matrix" })
     .post("/api/v1/chatwoot-bindings/:id/webhook", ({ request, params, body, set }) => {
       if (!tokenMatches(bearer(request), adminToken)) return error(set, 401, "UNAUTHORIZED", "Authentication required");
       const input = body as Record<string, unknown>;
-      if (typeof input.secretRef !== "string" || !isSupportedChatwootSecretRef(input.secretRef)) return error(set, 400, "INVALID_CHATWOOT_WEBHOOK_SECRET_REF", "Only env:CHATWOOT_* secret references are supported");
+      if (typeof input.secretRef !== "string" || !isSupportedChatwootWebhookSecretRef(input.secretRef)) return error(set, 400, "INVALID_CHATWOOT_WEBHOOK_SECRET_REF", "Only env:CHATWOOT_WEBHOOK_* secret references are supported");
       try {
         const configured = webhookConfigs.set(params.id, input.secretRef);
         return { data: { bindingId: configured.bindingId, secretRef: "[configured]", webhookPath: `/webhooks/chatwoot/${configured.bindingId}` } };
@@ -107,7 +111,7 @@ export function createPhase5App(
       const binding = lookups.findChatwootBinding(params.bindingId);
       const config = webhookConfigs.find(params.bindingId);
       if (!binding || !config || binding.status !== "active") return error(set, 401, "CHATWOOT_WEBHOOK_UNAUTHORIZED", "Webhook authentication failed");
-      const secret = secrets.resolve(config.secretRef);
+      const secret = webhookSecrets.resolve(config.secretRef);
       if (!secret) return error(set, 503, "CHATWOOT_WEBHOOK_SECRET_MISSING", "Webhook configuration unavailable");
       const rawBody = typeof body === "string" ? body : "";
       const headers = chatwootWebhookHeaders(request);
