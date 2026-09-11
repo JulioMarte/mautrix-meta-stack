@@ -2,10 +2,11 @@
 
 Status: normative for `feature/meta-control-plane`
 Initial engine: `bun:sqlite`
+Current schema version: `3`
 
 ## Data ownership
 
-The control plane owns tenant configuration, connector metadata, egress assignments, Chatwoot routing, processed-event idempotency and audit history. It MUST NOT own Meta session cookies or duplicate mautrix session state.
+The control plane owns tenant configuration, connector metadata, provisioning claims, egress assignments, Chatwoot routing, processed-event idempotency and audit history. It MUST NOT own Meta session cookies or duplicate mautrix session state.
 
 ## Required entities
 
@@ -21,7 +22,23 @@ Fields: `id`, `tenant_id`, `provider`, `meta_account_id`, `mautrix_login_id`, `m
 
 `meta_account_id`, `mautrix_login_id` and `matrix_owner_mxid` are separate identities even if values happen to correlate.
 
-`egress_policy` is one of `direct_allowed`, `proxy_preferred`, `proxy_required`. Production tenant connections SHOULD default to `proxy_required`.
+`egress_policy` is one of `direct_allowed`, `proxy_preferred`, `proxy_required`. Production tenant connections SHOULD default to `proxy_required`. The implemented dynamic provisioning bootstrap requires `proxy_required` because no direct fallback is permitted before the first Meta-bound request.
+
+### provisioning_claims
+
+Schema v3 adds the bootstrap authority used to bind submitted Meta credentials to exactly one pre-created connection before provider traffic begins.
+
+Fields: `id`, `secret_digest`, `meta_connection_id`, `tenant_id`, `matrix_owner_mxid`, `expires_at`, `used_at`, `revoked_at`, `created_at`.
+
+Invariants:
+
+- `secret_digest` is unique and contains a SHA-256 digest of the raw claim; the raw claim MUST NOT be persisted;
+- each claim references one `meta_connection` and snapshots its tenant and authorized Matrix owner for conflict checking;
+- only unused, unrevoked and unexpired claims can be consumed;
+- consuming a claim and binding `meta_account_id` happen in one database transaction;
+- issuing a replacement pending claim revokes earlier unused claims for the same connection;
+- used claims remain as audit/security history and are not reusable;
+- claim rows never contain Meta cookies or proxy credentials.
 
 ### egress_profiles
 
@@ -53,7 +70,7 @@ Fields: `id`, `source`, `source_event_id`, `meta_connection_id`, `payload_hash`,
 
 Fields: `id`, `tenant_id`, `actor_type`, `actor_id`, `action`, `entity_type`, `entity_id`, `before_json`, `after_json`, `created_at`.
 
-Changes to egress assignment, connection status and Chatwoot binding MUST produce audit events.
+Changes to egress assignment, connection status, Chatwoot binding and provisioning authority MUST produce audit events. Audit payloads MUST NOT include raw provisioning claims, Meta cookies or secret-bearing proxy URLs.
 
 ## Referential invariants
 
@@ -61,19 +78,21 @@ A `meta_connection` MUST NOT reference an egress or Chatwoot binding from anothe
 
 Provider identity ownership is global across connection status. Disabling a connection MUST NOT implicitly free its `meta_account_id` or `mautrix_login_id` for another connection. When multiple supplied identities point to different records, resolution MUST fail closed before active-status filtering.
 
+Provisioning adds a stricter pre-authentication invariant: `claim tenant + claim Matrix owner + connection tenant + connection Matrix owner + submitted c_user` must resolve to one non-conflicting connection. Matrix owner identity alone is never a selector for a Meta connection.
+
 ## Migration discipline
 
 Migrations MUST be ordered, immutable after merge and applied transactionally where SQLite supports it. Startup MUST either apply all pending migrations successfully or fail readiness; partial schema initialization is not acceptable.
 
-The application MUST record schema version and expose enough readiness information to distinguish migration failure from runtime dependency failure.
+The application records schema version and readiness requires the local database to match `LATEST_SCHEMA_VERSION`.
 
 Migration tests MUST prove fresh-database creation and upgrade from every supported previous schema version used in released deployments.
 
 ## Repository boundary
 
-Domain/application services MUST depend on repository interfaces rather than issuing SQLite statements throughout the codebase. SQLite adapters are the initial implementation, not the domain contract.
+Domain/application services SHOULD depend on repository/service boundaries rather than distributing SQLite statements through unrelated runtime code. SQLite adapters are the initial implementation, not the domain contract. Provisioning is currently isolated in its own Elysia module and transaction boundary rather than mixed into Meta cookie handling.
 
-Required repositories: tenants, Meta connections, egress profiles, Chatwoot bindings, conversation bindings, processed events and audit events.
+Required persistent boundaries include tenants, Meta connections, provisioning claims, egress profiles, Chatwoot bindings, conversation bindings, processed events and audit events.
 
 ## PostgreSQL portability
 
@@ -81,8 +100,8 @@ Avoid SQLite-specific semantics in domain rules. IDs, timestamps, uniqueness, fo
 
 ## Retention
 
-The MVP may retain audit and processed-event metadata indefinitely because expected volume is low, but payload bodies SHOULD be minimized. Raw webhook bodies or message contents MUST NOT be retained merely for debugging unless a later retention policy explicitly requires them.
+The MVP may retain audit, consumed provisioning-claim metadata and processed-event metadata indefinitely because expected volume is low, but payload bodies SHOULD be minimized. Raw webhook bodies, raw provisioning secrets, Meta cookies or message contents MUST NOT be retained merely for debugging unless a later retention policy explicitly requires them.
 
 ## Required CI proofs
 
-CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, and upgrade behavior once a second schema version exists.
+CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, provisioning digest-only storage, forged/expired/used/revoked claim rejection, cross-tenant/owner binding rejection, same-account re-login behavior, conflicting-account rejection and upgrade behavior across supported schema versions.

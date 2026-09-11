@@ -20,7 +20,7 @@ Implication: do not reconstruct the mautrix baseline by copying files from an ar
 
 `dev` is the primary integration branch. `main` is deployment-triggering state, not the place where active phases accumulate. All normal feature/fix/docs PRs target `dev`; promotion to `main` is deliberate and only after a green deployable checkpoint.
 
-Implication: CI status on `main` does not prove an unmerged phase. The exact phase candidate SHA and the post-merge `dev` SHA both matter.
+Implication: CI status on `main` does not prove an unmerged phase. The exact phase candidate SHA and the post-merge `dev` SHA both matter. Green CI does not authorize `main`; the human owner must explicitly approve the exact promotion candidate.
 
 ## 2026-09-10 — CI is the executable authority for this workflow
 
@@ -30,11 +30,7 @@ Implication: never call a phase complete because code type-checks conceptually o
 
 ## 2026-09-10 — Docker named-volume ownership
 
-A newly created Docker named volume mounted at `/data` is root-owned by default in the tested CI topology. Running the control-plane image as the unprivileged `bun` user therefore initially produced:
-
-```text
-SQLiteError: unable to open database file
-```
+A newly created Docker named volume mounted at `/data` is root-owned by default in the tested CI topology. Running the control-plane image as the unprivileged `bun` user therefore initially produced `SQLiteError: unable to open database file`.
 
 The accepted pattern is a one-shot root init service that prepares/chowns the volume followed by the long-running control-plane process as non-root.
 
@@ -82,7 +78,7 @@ Implication: traffic-class claims must be traced from all consumers of a shared 
 
 The first hardened Phase 3 resolver client disabled ambient proxy environment variables and added a timeout, but still inherited Go's default redirect behavior and accepted an unbounded response body. An internal redirect is not part of the resolver contract and should not be allowed to move a bearer-authenticated request to another destination.
 
-Implication: security-sensitive internal clients need an explicit redirect policy, response-size bound and strict response contract. Phase 3 now rejects redirects without following them, caps resolver bodies at 64 KiB and validates returned proxy scheme/authority/path/query/fragment.
+Implication: security-sensitive internal clients need an explicit redirect policy, response-size bound and strict response contract. Phase 3 rejects redirects without following them, caps resolver bodies at 64 KiB and validates returned proxy scheme/authority/path/query/fragment.
 
 ## 2026-09-11 — integration fixtures can hide identity bootstrap defects
 
@@ -90,7 +86,7 @@ The initial Phase 3 topology fixture pre-populated both `meta_account_id` and `m
 
 The repository uniqueness constraints prevent duplicate non-null identities, but the previous resolver lookup incorrectly treated a still-`NULL` counterpart as a conflict when mautrix later supplied both identifiers. A second audit pass also established that identity ownership must be checked globally before active-status filtering: a login ID owned by a disabled connection must still conflict with another connection's provider identity rather than being treated as free.
 
-Implication: integration fixtures must model identity state transitions, not only the steady state. Resolver lookup now accepts an additional identifier when its stored column is still null only if the other identifier uniquely selects one record; multiple matches or contradictory persisted values fail closed even when one record is inactive. Only after unique identity ownership is established is active tenant/connection state considered. The topology deliberately prebinds only `meta_account_id` and later resolves with both IDs.
+Implication: integration fixtures must model identity state transitions, not only the steady state. Resolver lookup accepts an additional identifier when its stored column is still null only if the other identifier uniquely selects one record; multiple matches or contradictory persisted values fail closed even when one record is inactive. Only after unique identity ownership is established is active tenant/connection state considered.
 
 ## 2026-09-11 — first-login transport must explicitly transition traffic class before persistence
 
@@ -98,7 +94,7 @@ After cookie validation, upstream reuses the same Messagix client for the first 
 
 This did not change the assigned proxy because Phase 2 keeps one sticky assignment per connection, but it made the traffic-class contract inaccurate and could break future class-specific policy or observability. An initial attempted fix performed the transition after `BridgeV2.NewLogin`; further audit showed that a resolver failure there could return a login error after the login had already been persisted or cached.
 
-Implication: after deriving the deterministic `UserLogin.ID`, successful cookie login must switch the Messagix client to the account/login-aware `messaging` resolver **before** `NewLogin` persists BridgeV2 state and before the first MQTT connection. A resolver failure then aborts without partial login persistence. Tests observe the resolver sequence `login` then `messaging`.
+Implication: after deriving the deterministic `UserLogin.ID`, successful cookie login must switch the Messagix client to the account/login-aware `messaging` resolver before `NewLogin` persists BridgeV2 state and before the first MQTT connection. A resolver failure then aborts without partial login persistence. Tests observe the resolver sequence `login` then `messaging`.
 
 ## 2026-09-11 — dynamic Instagram identity is not equivalent to Facebook identity
 
@@ -110,7 +106,7 @@ Implication: dynamic egress is restricted to Facebook/Messenger until the contro
 
 The first environment-backed secret provider accepted any `env:VARIABLE` reference. That allowed an egress profile to name unrelated process credentials such as `CONTROL_PLANE_INTERNAL_TOKEN`. If such a profile also pointed at an operator-controlled proxy, the control plane could convert an internal service credential into outbound proxy authentication material.
 
-Implication: persisted egress secret references must be constrained to a namespace that is explicitly provisioned for proxy credentials. The initial provider accepts only `env:EGRESS_PROXY_*`; arbitrary service/process environment variables are not dereferenceable through an egress profile. This restriction is enforced both by management validation and by the secret provider itself.
+Implication: persisted egress secret references must be constrained to a namespace explicitly provisioned for proxy credentials. The initial provider accepts only `env:EGRESS_PROXY_*`; arbitrary service/process environment variables are not dereferenceable through an egress profile.
 
 ## 2026-09-11 — request-scoped media isolation has a resource tradeoff
 
@@ -123,6 +119,30 @@ Implication: this is not a known cross-tenant leak, but it is a performance/reso
 The mautrix source commit and Go module graph are pinned, but the stack Dockerfile still uses tagged base images and distribution package repositories rather than immutable image digests and package snapshots. GitHub Actions are also referenced by version tags rather than immutable action commit SHAs.
 
 Implication: describe the current guarantee as deterministic source reconstruction/build recipe, not bit-for-bit reproducible container output. Stronger supply-chain reproducibility would pin base-image digests, GitHub Action SHAs and native package inputs and use least-privilege workflow permissions.
+
+## 2026-09-11 — active-only egress resolution cannot solve first-login bootstrap
+
+The established resolver correctly requires an active connection, but the onboarding contract requires tenant-specific egress before the first provider request, when a new connection is not yet authenticated or active. Relaxing the resolver to accept arbitrary draft records would weaken the steady-state security boundary.
+
+Implication: provisioning consumption is a separate one-time transaction. It validates the claim, binds `c_user` to the intended pre-created connection, validates its assigned proxy and returns that confidential bootstrap proxy in the consume response. The fork installs it before provider I/O. The normal resolver remains active-only.
+
+## 2026-09-11 — provisioning claims must be spent before provider validation
+
+If a claim remained reusable until Facebook accepted the cookies, an intercepted claim could receive repeated attempts and its authority would outlive the first binding operation. Conversely, consuming it first means a subsequent provider credential failure cannot reuse the same claim.
+
+Implication: claim consumption and `meta_account_id` binding are atomic and precede Meta transport. If provider authentication subsequently fails, the operator issues a new claim for the same connection. The same bound account may retry; a different account is rejected. This is an intentional security/usability tradeoff, not an accidental retry failure.
+
+## 2026-09-11 — provisioning must reject direct-policy bootstrap
+
+Returning an empty/direct bootstrap success for `direct_allowed` would undermine the claim that the first provider request has the same tenant egress isolation as established messaging. A connection being valid for some generic policy does not make direct first-login traffic acceptable for this deployment's dynamic isolation model.
+
+Implication: claim issuance and consumption require `proxy_required`, an assigned healthy profile and resolvable proxy credentials. `direct_allowed` and `proxy_preferred` do not enter the dynamic provisioning path.
+
+## 2026-09-11 — deterministic patch generators need their own exact-shape tests
+
+The first provisioning patch reconstructed upstream cookie URL regex literals and produced invalid Go escape sequences. A second compile audit also found a static Messenger Lite caller that needed the new `loginWithCookies` parameter even though dynamic Messenger Lite remains unsupported.
+
+Implication: patch application success is not enough; every touched tree must run `gofmt`, `git diff --check` and Go compilation/tests. Runtime feature restrictions do not remove compile obligations from untouched static modes. The provisioning fixup remains explicit maintenance debt and should be consolidated into a cleaner patch applicator after behavior is stable.
 
 ## Updating this record
 

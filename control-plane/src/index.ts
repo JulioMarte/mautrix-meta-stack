@@ -2,7 +2,9 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createApp } from "./app";
 import { createPhase5App } from "./phase5-app";
+import { createProvisioningApp } from "./provisioning-app";
 import { openDatabase } from "./persistence/database";
+import { LATEST_SCHEMA_VERSION } from "./persistence/migrations";
 import { ChatwootEnvironmentSecretProvider } from "./security/secrets";
 import { HttpChatwootGateway } from "./services/http-chatwoot-gateway";
 import { HttpMatrixMediaDownloader } from "./services/matrix-media-downloader";
@@ -25,7 +27,8 @@ const chatwootGateway = new HttpChatwootGateway(
 );
 const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway })
   .use(createPhase5App(db, adminToken, process.env))
+  .use(createProvisioningApp(db, adminToken, internalToken, process.env))
   .listen({ hostname: "0.0.0.0", port });
-console.log(JSON.stringify({ operation: "startup", result: "ok", port, schema: 2 }));
+console.log(JSON.stringify({ operation: "startup", result: "ok", port, schema: LATEST_SCHEMA_VERSION }));
 
 process.on("SIGTERM", () => { app.stop(); db.close(); process.exit(0); });

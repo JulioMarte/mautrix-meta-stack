@@ -20,33 +20,44 @@ The following identities are distinct:
 
 No identity may be substituted for another merely because values happen to correlate.
 
-## Required bootstrap mechanism
+## Implemented bootstrap mechanism
 
-The control plane MUST create a `meta_connection` before Meta authentication is attempted. A connection in `draft` state contains at minimum:
+The control plane creates a `meta_connection` before Meta authentication is attempted. A connection in `draft` state contains at minimum:
 
 ```text
 id
 tenant_id
 matrix_owner_mxid
 egress_profile_id
-egress_policy
+egress_policy=proxy_required
 status=draft
 ```
 
-The connection then receives a short-lived, single-purpose `provisioning_claim` or equivalent opaque bootstrap identifier. The claim binds:
+Dynamic provisioning currently requires `proxy_required`. `direct_allowed` and `proxy_preferred` are not accepted for this bootstrap because the first provider-bound request must have a fail-closed tenant-scoped proxy assignment.
+
+The control plane issues a short-lived, single-purpose provisioning claim through:
+
+```text
+POST /api/v1/meta-connections/:id/provisioning-claims
+```
+
+The claim record binds:
 
 ```text
 claim_id
+secret_digest
 meta_connection_id
 tenant_id
 matrix_owner_mxid
 expires_at
 used_at
+revoked_at
+created_at
 ```
 
-The raw claim secret MUST NOT be persisted in plaintext; a one-way digest is preferred.
+The raw claim secret is returned only when issued. Only its SHA-256 digest is persisted. Issuing a new pending claim for a connection revokes older unused claims for that connection.
 
-The exact UI transport may evolve, but the login path MUST carry enough context to associate the submitted Meta credentials with exactly one pre-created `meta_connection` before any Meta-bound request.
+BridgeV2 dynamic cookie login starts with a `user_input` token step named `fi.mau.meta.provisioning_claim`. The cookie step is not returned until the caller supplies a syntactically valid claim. The claim stays in the login-process memory and is not mixed into Meta cookies.
 
 ## Why Matrix identity alone is insufficient
 
@@ -66,79 +77,98 @@ Both are ambiguous and create cross-tenant or wrong-account risk.
 
 ## First-login sequence
 
-Normative sequence:
+Implemented sequence for supported dynamic Facebook/Messenger cookie login:
 
 ```text
 operator creates tenant
--> operator creates meta_connection
--> egress assignment is attached
--> control plane issues provisioning claim
--> authorized Matrix user starts Meta login for that connection
--> mautrix receives submitted Facebook cookies
+-> operator creates draft meta_connection
+-> operator assigns healthy proxy_required egress
+-> control plane issues one-time provisioning claim
+-> authorized Matrix user starts Meta login
+-> fork requests provisioning claim as first BridgeV2 user_input step
+-> after claim input, fork accepts submitted Facebook cookies
 -> fork extracts c_user locally
--> fork resolves provisioning claim + meta_account_id against control plane
--> control plane atomically binds meta_account_id to meta_connection_id
--> egress is resolved for that exact connection
--> only then may first Meta-bound request occur
--> successful BridgeV2 login produces mautrix_login_id
--> control plane binds mautrix_login_id to same meta_connection
--> connection may transition toward ready/active
+-> fork POSTs claim + c_user + matrix_owner_mxid to /internal/v1/provisioning/consume
+-> control plane atomically validates/consumes claim and binds c_user to exactly one meta_connection
+-> draft connection transitions to ready
+-> consume response returns that connection's confidential bootstrap proxy assignment
+-> fork installs that proxy on the actual Messagix provider HTTP client
+-> only then may the first Meta-bound request occur
+-> provider authentication establishes the BridgeV2 login identity
+-> fork POSTs connection + c_user + mautrix_login_id + matrix_owner_mxid to /internal/v1/provisioning/bind-login
+-> control plane binds mautrix_login_id to the same meta_connection
+-> production routing still requires explicit connection activation
 ```
 
-The control plane MUST NOT receive or store Meta cookies. The fork extracts only the required account identifier from the already-submitted cookie set.
+The normal egress resolver continues to require an active connection. Bootstrap does not weaken that rule: the one-time consume response carries the already-validated assigned proxy solely to bridge the pre-active first-login window.
+
+The control plane MUST NOT receive or store Meta cookies. The fork sends only the raw provisioning claim, extracted account identifier, Matrix owner identity, and later the BridgeV2 login identifier.
 
 ## Atomic binding rules
 
-Binding `meta_account_id` MUST be transactional and conflict-safe.
+Binding `meta_account_id` is transactional and conflict-safe:
 
-At minimum:
+- one Meta account identity cannot be bound to two different `meta_connection` records;
+- the claim resolves to exactly one pre-created connection;
+- the claim must be unused, unrevoked and unexpired;
+- the submitted Matrix owner must equal the claim and connection owner;
+- claim tenant and connection tenant must agree;
+- the tenant and connection must remain provisionable;
+- existing conflicting account binding returns a terminal conflict rather than being overwritten;
+- dynamic provisioning requires assigned healthy `proxy_required` egress and resolvable proxy credentials;
+- the claim is marked used in the same database transaction that binds `meta_account_id`.
 
-- one active Meta account identity cannot be bound to two active `meta_connection` records unless a future explicit shared-account model is introduced;
-- the provisioning claim must belong to the target connection;
-- the claim must be unused and unexpired;
-- the Matrix principal performing the login must match the connection authorization policy;
-- the tenant and connection must be enabled for provisioning;
-- an existing conflicting account binding returns a terminal conflict rather than being overwritten;
-- egress assignment must satisfy the connection policy before Meta traffic is allowed.
+If the provider later rejects the cookies, the consumed claim is not reusable. An operator issues a new claim for the same connection. The existing same-account binding is preserved; a different `meta_account_id` remains blocked.
 
 ## Re-login and replacement credentials
 
-A later re-login for an existing connection does not create a new connection automatically. It must resolve to the already-bound `meta_connection_id` and `meta_account_id`.
+A later re-login for an existing connection does not create a new connection automatically. A new one-time claim may target the existing connection, but submitted cookies must resolve to the already-bound `meta_account_id`.
 
-If submitted credentials identify a different `meta_account_id`, the operation MUST stop and require an explicit operator decision. Silent account replacement is forbidden because it could route a different person's messages into an existing tenant/Chatwoot binding.
+If submitted credentials identify a different `meta_account_id`, the operation stops with `META_ACCOUNT_CONFLICT`. Silent account replacement is forbidden because it could route another account's messages into an existing tenant/Chatwoot binding.
+
+Binding `mautrix_login_id` is also conflict-safe: the account, connection and Matrix owner must still match, and a login ID already belonging to a different connection cannot be reassigned silently.
 
 ## Connection lifecycle
 
-Suggested lifecycle:
+The currently implemented bootstrap lifecycle is:
 
 ```text
 draft
--> provisioning
--> authenticated
--> ready
--> active
+-> ready          # provisioning claim consumed and meta_account_id bound
+-> active         # explicit operator activation after required production dependencies are valid
 ```
 
-Operational side states may include `degraded`, `blocked`, and `disabled`.
+Operational side states include `degraded`, `blocked`, and `disabled`.
 
-`active` requires at minimum a valid tenant, bound Meta account, valid mautrix login identity, required egress assignment, and required Chatwoot binding for production routing.
+`ready` is intentionally not sufficient for Matrix/Chatwoot production routing or the normal active-only egress resolver. `active` remains the production-routing state.
 
 ## Revocation
 
-Operators need an explicit operation to revoke a provisioning claim and to disconnect/disable a Meta connection without deleting routing history.
+An unused claim can be revoked through:
 
-Revoking or disabling a connection MUST prevent future routing and new egress resolution for protected traffic as quickly as practical.
+```text
+POST /api/v1/meta-connections/:id/provisioning-claims/:claimId/revoke
+```
+
+Used claims cannot be revoked because their one-time authority has already been consumed. Disabling/blocking a connection prevents new provisioning consumption and normal active routing.
 
 ## Required CI proofs
 
-CI MUST prove:
+Repository acceptance must prove:
 
-- a draft connection can receive a provisioning claim;
-- expired/used/forged claims are rejected;
+- a draft connection with valid fail-closed egress can receive a provisioning claim;
+- only a digest, never the raw claim, is persisted;
+- expired/used/revoked/forged claims are rejected;
+- `direct_allowed` cannot be provisioned through the dynamic bootstrap;
 - one Matrix user can provision two distinct connections without ambiguity;
 - two tenants with similar identities cannot cross-bind;
-- first-login `c_user` is bound to the intended connection before any Meta-bound request;
+- first-login `c_user` is bound to the intended connection before any provider-bound request;
+- the actual Messagix provider HTTP client uses the bootstrap proxy and a direct sentinel receives zero requests;
+- failed claim consumption prevents provider transport;
 - conflicting `meta_account_id` binding fails rather than overwrites;
 - re-login with the same account preserves connection identity and egress;
 - re-login with a different account is blocked;
-- no Meta cookies enter control-plane persistence or logs.
+- `mautrix_login_id` is bound only to the already-provisioned connection;
+- no Meta cookies, raw claim secrets or proxy credentials enter control-plane persistence or audit logs.
+
+These deterministic proofs do not replace final staging with real Meta accounts and real egress endpoints.
