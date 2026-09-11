@@ -1,6 +1,7 @@
 type Contact = { id: number; accountId: number; inboxId: number; identifier: string; name: string; sourceId: string };
 type Conversation = { id: number; accountId: number; inboxId: number; contactId: number; sourceId: string; threadId: string };
-type Message = { id: number; accountId: number; inboxId: number; conversationId: number; content: string; sourceEventId: string };
+type StoredAttachment = { name: string; type: string; size: number; content: string };
+type Message = { id: number; accountId: number; inboxId: number; conversationId: number; content: string; sourceEventId: string; attachments: StoredAttachment[] };
 
 const expectedToken = process.env.CHATWOOT_CI_TOKEN ?? "";
 const contacts: Contact[] = [];
@@ -15,6 +16,29 @@ function json(value: unknown, status = 200) { return Response.json(value, { stat
 function authorized(req: Request) { return expectedToken.length > 0 && req.headers.get("api_access_token") === expectedToken; }
 function pathParts(url: URL) { return url.pathname.split("/").filter(Boolean); }
 async function body(req: Request) { try { return await req.json() as Record<string, unknown>; } catch { return {}; } }
+
+async function messageBody(req: Request): Promise<{ content: string; sourceEventId: string; attachments: StoredAttachment[] }> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.startsWith("multipart/form-data")) {
+    const input = await body(req);
+    return {
+      content: String(input.content ?? ""),
+      sourceEventId: String((input.content_attributes as Record<string, unknown> | undefined)?.mautrix_meta_source_event_id ?? ""),
+      attachments: []
+    };
+  }
+  const form = await req.formData();
+  const attachments: StoredAttachment[] = [];
+  for (const value of form.getAll("attachments[]")) {
+    if (!(value instanceof File)) continue;
+    attachments.push({ name: value.name, type: value.type, size: value.size, content: await value.text() });
+  }
+  return {
+    content: String(form.get("content") ?? ""),
+    sourceEventId: String(form.get("content_attributes[mautrix_meta_source_event_id]") ?? ""),
+    attachments
+  };
+}
 
 Bun.serve({
   port: 8080,
@@ -71,20 +95,19 @@ Bun.serve({
 
     if (rest[0] === "conversations" && rest[2] === "messages" && req.method === "GET") {
       const conversationId = Number(rest[1]);
-      return json({ payload: messages.filter((m) => m.accountId === accountId && m.conversationId === conversationId).map((m) => ({ id: m.id, content: m.content, inbox_id: m.inboxId, content_attributes: { mautrix_meta_source_event_id: m.sourceEventId } })) });
+      return json({ payload: messages.filter((m) => m.accountId === accountId && m.conversationId === conversationId).map((m) => ({ id: m.id, content: m.content, inbox_id: m.inboxId, content_attributes: { mautrix_meta_source_event_id: m.sourceEventId }, attachments: m.attachments })) });
     }
 
     if (rest[0] === "conversations" && rest[2] === "messages" && req.method === "POST") {
       const conversationId = Number(rest[1]);
       const conversation = conversations.find((c) => c.accountId === accountId && c.id === conversationId);
       if (!conversation) return json({}, 404);
-      const input = await body(req);
-      const sourceEventId = String((input.content_attributes as Record<string, unknown> | undefined)?.mautrix_meta_source_event_id ?? "");
-      const existing = messages.find((m) => m.accountId === accountId && m.conversationId === conversationId && m.sourceEventId === sourceEventId);
-      const message = existing ?? { id: nextMessage++, accountId, inboxId: conversation.inboxId, conversationId, content: String(input.content ?? ""), sourceEventId };
+      const input = await messageBody(req);
+      const existing = messages.find((m) => m.accountId === accountId && m.conversationId === conversationId && m.sourceEventId === input.sourceEventId);
+      const message = existing ?? { id: nextMessage++, accountId, inboxId: conversation.inboxId, conversationId, content: input.content, sourceEventId: input.sourceEventId, attachments: input.attachments };
       if (!existing) messages.push(message);
       if (failAfterNextMessageCreate) { failAfterNextMessageCreate = false; return json({ error: "injected post-commit failure" }, 500); }
-      return json({ id: message.id, content: message.content, inbox_id: message.inboxId, conversation_id: message.conversationId, content_attributes: { mautrix_meta_source_event_id: message.sourceEventId } });
+      return json({ id: message.id, content: message.content, inbox_id: message.inboxId, conversation_id: message.conversationId, content_attributes: { mautrix_meta_source_event_id: message.sourceEventId }, attachments: message.attachments });
     }
 
     return json({ error: "not found" }, 404);
