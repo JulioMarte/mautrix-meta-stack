@@ -71,7 +71,7 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
       if (!normalizedScheme) return safeError(set, 400, "INVALID_EGRESS_SCHEME", "Proxy scheme must be http, https or socks5");
       const normalizedHost = normalizeProxyHost(input.host);
       if (!normalizedHost) return safeError(set, 400, "INVALID_EGRESS_HOST", "Proxy host must be a valid DNS name or IP address");
-      if (input.secretRef != null && (typeof input.secretRef !== "string" || !isSupportedSecretRef(input.secretRef))) return safeError(set, 400, "INVALID_SECRET_REF", "Only env:VARIABLE secret references are supported");
+      if (input.secretRef != null && (typeof input.secretRef !== "string" || !isSupportedSecretRef(input.secretRef))) return safeError(set, 400, "INVALID_SECRET_REF", "Only env:EGRESS_PROXY_* secret references are supported");
       const username = typeof input.username === "string" && input.username.length > 0 ? input.username : null;
       const secretRef = typeof input.secretRef === "string" ? input.secretRef : null;
       if ((username === null) !== (secretRef === null)) return safeError(set, 400, "INVALID_PROXY_AUTH", "Proxy username and secretRef must be configured together");
