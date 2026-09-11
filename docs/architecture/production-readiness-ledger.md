@@ -47,8 +47,13 @@ Implemented behavior includes:
 - fork metadata on every remote bridged message part carrying explicit Meta provenance and provider remote sender ID;
 - ordinary Matrix and Chatwoot-originated events excluded from Meta inbound routing;
 - text, image/video/audio/file metadata, encrypted-file metadata and Matrix voice-note semantics;
+- encrypted Matrix media fails closed if its v2/JWK metadata is unusable, including a missing `decrypt` key operation, and the checkpoint is not advanced;
+- a composed batch-retry regression proves that a retryable downstream Chatwoot failure leaves `next_batch` unchanged, replay deduplicates already-delivered earlier events, and only the failed event performs its side effect on recovery;
 - real disposable Synapse acceptance covering authentication, trusted invite/join, two tenants/two rooms, same numeric remote contact across tenants, unbound-room rejection, text/PDF/voice-note normalization and checkpoint persistence after SQLite reopen;
-- Validate, Phase 6 and Docker now build the same Matrix-enabled fork variant.
+- cold backup/restore acceptance now explicitly seeds and verifies `matrix_room_bindings` and `matrix_sync_checkpoints` after destruction of the original volume and restoration into a fresh volume;
+- Validate, Phase 6 and Docker build the same Matrix-enabled fork variant.
+
+The bootstrap policy intentionally begins ingestion from the first persisted `/sync` token with timeline limit zero. Historical messages that predate initial ingestion startup are not replayed automatically; adding backfill would require a separate explicit policy for historical CRM side effects.
 
 The exact branch candidate must still finish green after the final documentation SHA; do not treat the above as integrated evidence yet.
 
@@ -85,7 +90,7 @@ Repository CI intentionally does not use real Facebook customer credentials or p
 
 ### 3. Production backup operations
 
-The repository proves the recovery algorithm on disposable Docker volumes. It does not prove real backup storage, encryption/access control, retention, off-host durability, restore permissions or Coolify-specific volume identifiers.
+The repository proves the recovery algorithm on disposable Docker volumes, now including Matrix room attribution and sync checkpoint state. It does not prove real backup storage, encryption/access control, retention, off-host durability, restore permissions or Coolify-specific volume identifiers.
 
 **Status:** production-operations/human evidence gap.
 
