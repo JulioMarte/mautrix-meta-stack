@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { createApp } from "../src/app";
 import { runMigrations } from "../src/persistence/migrations";
 import { SQLiteEgressProfileRepository, SQLiteMetaConnectionRepository, SQLiteTenantRepository } from "../src/persistence/sqlite-repositories";
-import { EnvironmentSecretProvider } from "../src/security/secrets";
+import { EnvironmentSecretProvider, isSupportedSecretRef } from "../src/security/secrets";
 import { EgressResolver } from "../src/services/egress-resolver";
 
 let db: Database | undefined;
@@ -52,6 +52,15 @@ describe("Phase 3 audit hardening", () => {
     expect(() => resolver.resolve({ metaAccountId: "meta-a", loginId: "login-b", reason: "connect", trafficClass: "messaging" })).toThrow("IDENTITY_CONFLICT");
   });
 
+  test("only dedicated egress proxy environment variables are valid secret references", () => {
+    expect(isSupportedSecretRef("env:EGRESS_PROXY_PRIMARY")).toBeTrue();
+    expect(isSupportedSecretRef("env:CONTROL_PLANE_INTERNAL_TOKEN")).toBeFalse();
+    expect(isSupportedSecretRef("env:CONTROL_PLANE_ADMIN_TOKEN")).toBeFalse();
+    const provider = new EnvironmentSecretProvider({ EGRESS_PROXY_PRIMARY: "proxy-secret", CONTROL_PLANE_INTERNAL_TOKEN: "internal-secret" });
+    expect(provider.resolve("env:EGRESS_PROXY_PRIMARY")).toBe("proxy-secret");
+    expect(provider.resolve("env:CONTROL_PLANE_INTERNAL_TOKEN")).toBeNull();
+  });
+
   test("management API rejects unusable proxy profiles before persistence", async () => {
     const database = freshDb();
     const app = createApp(database, "admin-token-123456789", "internal-token-123456789012345", {});
@@ -60,7 +69,8 @@ describe("Phase 3 audit hardening", () => {
       { provider: "fixture", scheme: "ftp", host: "proxy.test", port: 21 },
       { provider: "fixture", scheme: "http", host: "proxy.test/path", port: 8080 },
       { provider: "fixture", scheme: "http", host: "proxy.test", port: 8080, username: "user" },
-      { provider: "fixture", scheme: "http", host: "proxy.test", port: 8080, secretRef: "env:PROXY_SECRET" },
+      { provider: "fixture", scheme: "http", host: "proxy.test", port: 8080, secretRef: "env:EGRESS_PROXY_SECRET" },
+      { provider: "fixture", scheme: "http", host: "proxy.test", port: 8080, username: "user", secretRef: "env:CONTROL_PLANE_INTERNAL_TOKEN" },
     ]) {
       const response = await app.handle(new Request("http://localhost/api/v1/egress-profiles", { method: "POST", headers, body: JSON.stringify(body) }));
       expect(response.status).toBe(400);
