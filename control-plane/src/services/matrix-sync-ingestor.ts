@@ -13,7 +13,7 @@ const REMOTE_SENDER_ID_KEY = "com.mautrix_meta_stack.remote_sender_id";
 const PROVENANCE_KEY = "com.mautrix_meta_stack.provenance";
 const MATRIX_VOICE_KEY = "org.matrix.msc3245.voice";
 
-type MatrixSyncTransport = Pick<HttpMatrixSyncClient, "sync" | "roomState" | "joinRoom">;
+type MatrixSyncTransport = Pick<HttpMatrixSyncClient, "sync" | "roomState" | "joinRoom"> & Partial<Pick<HttpMatrixSyncClient, "roomMessages">>;
 
 export type MatrixSyncRunResult = {
   status: "bootstrapped" | "processed";
@@ -36,6 +36,13 @@ function nonEmptyString(value: unknown): string | null {
 
 function safePositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function configuredPositiveInt(raw: string | undefined, fallback: number, max: number): number {
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) throw new Error("MATRIX_SYNC_GAP_LIMIT_INVALID");
+  return parsed;
 }
 
 function parseEncryptedFile(raw: Record<string, unknown>): { url: string; encryption: MatrixEncryptedFile } | null {
@@ -109,8 +116,25 @@ function bridgeStatePresent(events: MatrixRawEvent[]): boolean {
   return events.some((event) => event.type === "m.bridge" || event.type === "uk.half-shot.bridge");
 }
 
+function deduplicateEvents(events: MatrixRawEvent[]): MatrixRawEvent[] {
+  const seen = new Set<string>();
+  const result: MatrixRawEvent[] = [];
+  for (const event of events) {
+    const eventId = nonEmptyString(event.event_id);
+    if (eventId) {
+      if (seen.has(eventId)) continue;
+      seen.add(eventId);
+    }
+    result.push(event);
+  }
+  return result;
+}
+
 export class MatrixSyncIngestor {
   private readonly syncUserMxid: string;
+  private readonly gapPageLimit: number;
+  private readonly maxGapPages: number;
+  private readonly maxGapEvents: number;
 
   constructor(
     private readonly consumerId: string,
@@ -124,6 +148,9 @@ export class MatrixSyncIngestor {
     if (!consumerId.trim() || consumerId.trim() !== consumerId) throw new Error("MATRIX_SYNC_CONSUMER_ID_INVALID");
     this.syncUserMxid = env.MATRIX_SYNC_USER_MXID ?? "";
     if (!this.syncUserMxid.startsWith("@") || !this.syncUserMxid.includes(":")) throw new Error("MATRIX_SYNC_USER_MXID_INVALID");
+    this.gapPageLimit = configuredPositiveInt(env.MATRIX_SYNC_GAP_PAGE_LIMIT, 100, 1000);
+    this.maxGapPages = configuredPositiveInt(env.MATRIX_SYNC_MAX_GAP_PAGES, 20, 1000);
+    this.maxGapEvents = configuredPositiveInt(env.MATRIX_SYNC_MAX_GAP_EVENTS, 2000, 100_000);
   }
 
   private async acceptTrustedInvites(response: MatrixSyncResponse): Promise<number> {
@@ -170,6 +197,40 @@ export class MatrixSyncIngestor {
       if (binding) roomsBound++;
     }
     return roomsBound;
+  }
+
+  private async recoverGap(roomId: string, from: string, to: string | undefined): Promise<MatrixRawEvent[]> {
+    if (!to) throw new Error("MATRIX_SYNC_GAP_PREV_BATCH_REQUIRED");
+    if (!this.sync.roomMessages) throw new Error("MATRIX_SYNC_GAP_RECOVERY_UNAVAILABLE");
+    if (from === to) return [];
+
+    let cursor = from;
+    const recovered: MatrixRawEvent[] = [];
+    const seen = new Set<string>();
+    for (let pageIndex = 0; pageIndex < this.maxGapPages; pageIndex++) {
+      const page = await this.sync.roomMessages(roomId, cursor, to, this.gapPageLimit);
+      for (const event of page.chunk) {
+        const eventId = nonEmptyString(event.event_id);
+        if (eventId) {
+          if (seen.has(eventId)) continue;
+          seen.add(eventId);
+        }
+        recovered.push(event);
+        if (recovered.length > this.maxGapEvents) throw new Error("MATRIX_SYNC_GAP_TOO_LARGE");
+      }
+      if (page.end === null || page.end === to) return recovered;
+      if (page.end === cursor) throw new Error("MATRIX_SYNC_GAP_NOT_CONVERGED");
+      cursor = page.end;
+    }
+    throw new Error("MATRIX_SYNC_GAP_TOO_LARGE");
+  }
+
+  private async eventsForRoom(roomId: string, room: MatrixJoinedRoom, checkpoint: string): Promise<MatrixRawEvent[]> {
+    const timeline = room.timeline;
+    const current = timeline?.events ?? [];
+    if (!timeline?.limited) return current;
+    const recovered = await this.recoverGap(roomId, checkpoint, timeline.prev_batch);
+    return deduplicateEvents([...recovered, ...current]);
   }
 
   private async processEvent(binding: MatrixRoomBinding, roomId: string, event: MatrixRawEvent): Promise<"delivered" | "ignored"> {
@@ -225,9 +286,6 @@ export class MatrixSyncIngestor {
 
     const response = await this.sync.sync(checkpoint.nextBatch, { timelineLimit: 100 });
     const roomsJoined = await this.acceptTrustedInvites(response);
-    for (const room of Object.values(response.rooms.join)) {
-      if (room.timeline?.limited) throw new Error("MATRIX_SYNC_TIMELINE_GAP");
-    }
 
     let roomsBound = 0;
     let eventsDelivered = 0;
@@ -239,7 +297,8 @@ export class MatrixSyncIngestor {
         continue;
       }
       roomsBound++;
-      for (const event of room.timeline?.events ?? []) {
+      const events = await this.eventsForRoom(roomId, room, checkpoint.nextBatch);
+      for (const event of events) {
         const result = await this.processEvent(binding, roomId, event);
         if (result === "delivered") eventsDelivered++;
         else eventsIgnored++;
