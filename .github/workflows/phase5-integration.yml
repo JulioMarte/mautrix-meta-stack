@@ -1,0 +1,52 @@
+name: Phase 5 Chatwoot to Matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+concurrency:
+  group: phase5-chatwoot-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chatwoot-matrix-routing:
+    runs-on: ubuntu-latest
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: integration-password
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      TZ: America/Santo_Domingo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create ephemeral integration credentials
+        shell: bash
+        run: |
+          echo "CONTROL_PLANE_ADMIN_TOKEN=admin-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          echo "CONTROL_PLANE_INTERNAL_TOKEN=internal-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          echo "CHATWOOT_CI_TOKEN=chatwoot-api-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          echo "CHATWOOT_WEBHOOK_CI_SECRET=chatwoot-hook-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          echo "MATRIX_CLIENT_CI_TOKEN=matrix-client-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+      - name: Validate Phase 5 topology and script
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase5.yaml config -q
+          bash -n scripts/phase5-integration.sh
+      - name: Run Chatwoot to Matrix integration
+        run: bash scripts/phase5-integration.sh
+      - name: Dump Phase 5 logs on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase5.yaml logs --no-color || true
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase5.yaml down -v --remove-orphans || true
