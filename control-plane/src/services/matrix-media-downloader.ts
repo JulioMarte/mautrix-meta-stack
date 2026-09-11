@@ -25,7 +25,15 @@ function validatedHomeserverBase(raw: string): URL {
   if (!new Set(["http:", "https:"]).has(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("MATRIX_MEDIA_BASE_URL_INVALID");
   }
-  url.pathname = url.pathname.replace(/\/+$/, "");
+  return url;
+}
+
+function appendPath(base: URL, path: string): URL {
+  const url = new URL(base.toString());
+  const prefix = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${prefix}${path.startsWith("/") ? path : `/${path}`}`;
+  url.search = "";
+  url.hash = "";
   return url;
 }
 
@@ -113,8 +121,7 @@ export class HttpMatrixMediaDownloader implements MatrixMediaDownloader {
   async download(attachment: Attachment): Promise<DownloadedAttachment> {
     if (!attachment.url) throw new Error("MATRIX_MEDIA_URI_REQUIRED");
     const { serverName, mediaId } = parseMxc(attachment.url);
-    const path = `${this.base.pathname}/_matrix/client/v1/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}`;
-    const initialUrl = new URL(path, `${this.base.origin}/`);
+    const initialUrl = appendPath(this.base, `/_matrix/client/v1/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}`);
     let response = await this.fetchWithTimeout(initialUrl, true, "manual");
 
     if (response.status === 307 || response.status === 308) {
