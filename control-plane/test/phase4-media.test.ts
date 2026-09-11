@@ -27,9 +27,9 @@ function normalized(sourceEventId: string) {
 describe("Phase 4 Matrix media downloader", () => {
   test("downloads authenticated mxc media through the v1 client media endpoint", async () => {
     const calls: Array<{ url: URL; authorization: string | null; redirect: RequestRedirect | undefined }> = [];
-    const fetchStub: typeof fetch = async (input, init) => {
+    const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       calls.push({ url: new URL(String(input)), authorization: new Headers(init?.headers).get("authorization"), redirect: init?.redirect });
-      return new Response(new TextEncoder().encode("voice-bytes"), { status: 200, headers: { "content-type": "audio/ogg", "content-length": "11" } });
+      return new Response("voice-bytes", { status: 200, headers: { "content-type": "audio/ogg", "content-length": "11" } });
     };
     const downloader = new HttpMatrixMediaDownloader({
       MATRIX_MEDIA_BASE_URL: "http://synapse:8008",
@@ -48,10 +48,10 @@ describe("Phase 4 Matrix media downloader", () => {
 
   test("rejects arbitrary http attachment URLs and oversized media", async () => {
     let calls = 0;
-    const downloader = new HttpMatrixMediaDownloader({ MATRIX_MEDIA_ACCESS_TOKEN: "token", MATRIX_MEDIA_MAX_BYTES: "4" }, (async () => {
+    const downloader = new HttpMatrixMediaDownloader({ MATRIX_MEDIA_ACCESS_TOKEN: "token", MATRIX_MEDIA_MAX_BYTES: "4" }, async () => {
       calls++;
-      return new Response(new Uint8Array([1, 2, 3, 4, 5]), { headers: { "content-length": "5" } });
-    }) as typeof fetch);
+      return new Response("12345", { headers: { "content-length": "5" } });
+    });
     await expect(downloader.download({ kind: "file", url: "https://evil.test/file.pdf" })).rejects.toThrow("MATRIX_MEDIA_URI_INVALID");
     expect(calls).toBe(0);
     await expect(downloader.download({ kind: "file", url: "mxc://example.test/id", fileName: "x.pdf" })).rejects.toThrow("MATRIX_MEDIA_TOO_LARGE");
@@ -62,18 +62,18 @@ describe("Phase 4 Chatwoot multipart attachments", () => {
   test("uploads image, voice note and PDF as attachments[] while preserving correlation", async () => {
     const media: MatrixMediaDownloader = {
       async download(attachment) {
-        const bytes = new TextEncoder().encode(`${attachment.kind}-bytes`);
+        const content = `${attachment.kind}-bytes`;
         return {
-          blob: new Blob([bytes], { type: attachment.mimeType ?? "application/octet-stream" }),
+          blob: new Blob([content], { type: attachment.mimeType ?? "application/octet-stream" }),
           fileName: attachment.fileName ?? `${attachment.kind}.bin`,
           mimeType: attachment.mimeType ?? "application/octet-stream",
-          sizeBytes: bytes.byteLength
+          sizeBytes: content.length
         };
       }
     };
     let postedForm: FormData | null = null;
     let listCount = 0;
-    const fetchStub: typeof fetch = async (input, init) => {
+    const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const path = new URL(String(input)).pathname;
       if (path.endsWith("/messages") && (init?.method ?? "GET") === "GET") {
         listCount++;
@@ -110,7 +110,7 @@ describe("Phase 4 Chatwoot multipart attachments", () => {
   test("refuses more than Chatwoot's 15 attachment model limit before posting", async () => {
     const media: MatrixMediaDownloader = { async download() { return { blob: new Blob(["x"]), fileName: "x", mimeType: "application/octet-stream", sizeBytes: 1 }; } };
     let posts = 0;
-    const fetchStub: typeof fetch = async (input, init) => {
+    const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const path = new URL(String(input)).pathname;
       if (path.endsWith("/messages") && (init?.method ?? "GET") === "GET") return jsonResponse({ payload: [] });
       if (init?.method === "POST") posts++;
