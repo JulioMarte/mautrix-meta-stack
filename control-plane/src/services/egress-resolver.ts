@@ -1,8 +1,28 @@
+import { isIP } from "node:net";
 import type { EgressProfileRepository, MetaConnectionRepository, SecretProvider, TrafficClass } from "../domain/models";
 
 export type ResolveInput = { metaAccountId?: string; loginId?: string; reason: string; trafficClass: TrafficClass };
 export type ResolveResult = { proxyUrl: string; assignmentId: string; connectionId: string };
 export type ResolverErrorCode = "IDENTITY_REQUIRED" | "IDENTITY_CONFLICT" | "CONNECTION_NOT_ACTIVE" | "EGRESS_ASSIGNMENT_REQUIRED" | "EGRESS_UNHEALTHY" | "EGRESS_SECRET_MISSING" | "EGRESS_CONFIGURATION_INVALID" | "DIRECT_EGRESS_NOT_SUPPORTED";
+
+const supportedProxySchemes = new Set(["http", "https", "socks5"]);
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+export function normalizeProxyScheme(scheme: string): string | null {
+  if (!scheme || scheme !== scheme.trim()) return null;
+  const normalized = scheme.toLowerCase();
+  return supportedProxySchemes.has(normalized) ? normalized : null;
+}
+
+export function normalizeProxyHost(host: string): string | null {
+  if (!host || host !== host.trim() || host.length > 253 || /[\s/@?#]/.test(host)) return null;
+  const ipVersion = isIP(host);
+  if (ipVersion === 4) return host;
+  if (ipVersion === 6) return `[${host.toLowerCase()}]`;
+  const labels = host.split(".");
+  if (labels.some((label) => !dnsLabel.test(label))) return null;
+  return host.toLowerCase();
+}
 
 export class ResolverError extends Error {
   constructor(public readonly code: ResolverErrorCode) { super(code); }
@@ -22,7 +42,9 @@ export class EgressResolver {
     const profile = this.egress.findById(connection.egressProfileId);
     if (!profile) throw new ResolverError("EGRESS_ASSIGNMENT_REQUIRED");
     if (profile.status !== "healthy") throw new ResolverError("EGRESS_UNHEALTHY");
-    if (!/^[a-z][a-z0-9+.-]*$/i.test(profile.scheme) || !profile.host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
+    const scheme = normalizeProxyScheme(profile.scheme);
+    const host = normalizeProxyHost(profile.host);
+    if (!scheme || !host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
 
     let auth = "";
     if (profile.secretRef) {
@@ -33,6 +55,6 @@ export class EgressResolver {
     } else if (profile.username) {
       throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
     }
-    return { proxyUrl: `${profile.scheme}://${auth}${profile.host}:${profile.port}`, assignmentId: profile.id, connectionId: connection.id };
+    return { proxyUrl: `${scheme}://${auth}${host}:${profile.port}`, assignmentId: profile.id, connectionId: connection.id };
   }
 }

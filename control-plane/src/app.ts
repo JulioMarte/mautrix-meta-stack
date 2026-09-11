@@ -5,7 +5,7 @@ import type { EgressStatus, TrafficClass } from "./domain/models";
 import { LATEST_SCHEMA_VERSION, schemaVersion } from "./persistence/migrations";
 import { SQLiteAuditRepository, SQLiteEgressProfileRepository, SQLiteMetaConnectionRepository, SQLiteTenantRepository } from "./persistence/sqlite-repositories";
 import { EnvironmentSecretProvider, isSupportedSecretRef } from "./security/secrets";
-import { EgressResolver, ResolverError } from "./services/egress-resolver";
+import { EgressResolver, normalizeProxyHost, normalizeProxyScheme, ResolverError } from "./services/egress-resolver";
 
 function bearerToken(request: Request): string | null {
   const value = request.headers.get("authorization");
@@ -67,10 +67,18 @@ export function createApp(db: Database, adminToken: string, internalToken = "", 
       if (!adminAuthorized(request)) return unauthorized(set);
       const input = body as Record<string, unknown>;
       if (typeof input.provider !== "string" || typeof input.scheme !== "string" || typeof input.host !== "string" || typeof input.port !== "number" || !Number.isInteger(input.port) || input.port < 1 || input.port > 65535) return safeError(set, 400, "INVALID_EGRESS_PROFILE", "provider, scheme, host and valid port are required");
-      if (input.secretRef != null && (typeof input.secretRef !== "string" || !isSupportedSecretRef(input.secretRef))) return safeError(set, 400, "INVALID_SECRET_REF", "Only env:VARIABLE secret references are supported");
+      const normalizedScheme = normalizeProxyScheme(input.scheme);
+      if (!normalizedScheme) return safeError(set, 400, "INVALID_EGRESS_SCHEME", "Proxy scheme must be http, https or socks5");
+      const normalizedHost = normalizeProxyHost(input.host);
+      if (!normalizedHost) return safeError(set, 400, "INVALID_EGRESS_HOST", "Proxy host must be a valid DNS name or IP address");
+      if (input.secretRef != null && (typeof input.secretRef !== "string" || !isSupportedSecretRef(input.secretRef))) return safeError(set, 400, "INVALID_SECRET_REF", "Only env:EGRESS_PROXY_* secret references are supported");
+      const username = typeof input.username === "string" && input.username.length > 0 ? input.username : null;
+      const secretRef = typeof input.secretRef === "string" ? input.secretRef : null;
+      if ((username === null) !== (secretRef === null)) return safeError(set, 400, "INVALID_PROXY_AUTH", "Proxy username and secretRef must be configured together");
       if (input.status != null && (typeof input.status !== "string" || !egressStatuses.has(input.status as EgressStatus))) return safeError(set, 400, "INVALID_EGRESS_STATUS", "Unsupported egress status");
       const status: EgressStatus = (input.status as EgressStatus | undefined) ?? "healthy";
-      const profile = egress.create({ provider: input.provider, scheme: input.scheme, host: input.host, port: input.port, username: typeof input.username === "string" ? input.username : null, secretRef: typeof input.secretRef === "string" ? input.secretRef : null, country: typeof input.country === "string" ? input.country : null, region: typeof input.region === "string" ? input.region : null, stickySessionId: typeof input.stickySessionId === "string" ? input.stickySessionId : null, expectedExitIp: typeof input.expectedExitIp === "string" ? input.expectedExitIp : null, status });
+      const persistedHost = normalizedHost.startsWith("[") ? normalizedHost.slice(1, -1) : normalizedHost;
+      const profile = egress.create({ provider: input.provider, scheme: normalizedScheme, host: persistedHost, port: input.port, username, secretRef, country: typeof input.country === "string" ? input.country : null, region: typeof input.region === "string" ? input.region : null, stickySessionId: typeof input.stickySessionId === "string" ? input.stickySessionId : null, expectedExitIp: typeof input.expectedExitIp === "string" ? input.expectedExitIp : null, status });
       set.status = 201;
       return { data: { ...profile, secretRef: profile.secretRef ? "[configured]" : null } };
     })

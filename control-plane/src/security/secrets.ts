@@ -1,6 +1,10 @@
 import type { SecretProvider } from "../domain/models";
 
-const ENV_REF = /^env:([A-Z][A-Z0-9_]*)$/;
+// Only variables explicitly dedicated to proxy egress may be dereferenced from
+// persisted secretRef values. This prevents a management-plane profile from
+// turning unrelated service credentials (for example CONTROL_PLANE_INTERNAL_TOKEN)
+// into outbound proxy authentication material.
+const ENV_REF = /^env:(EGRESS_PROXY_[A-Z0-9_]*)$/;
 
 export class EnvironmentSecretProvider implements SecretProvider {
   constructor(private readonly env: Record<string, string | undefined> = process.env) {}
