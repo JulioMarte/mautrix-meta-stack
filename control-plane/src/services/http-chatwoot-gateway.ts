@@ -6,7 +6,7 @@ const THREAD_ATTRIBUTE = "mautrix_meta_remote_thread_id";
 const EVENT_ATTRIBUTE = "mautrix_meta_source_event_id";
 const MAX_ATTACHMENTS_PER_MESSAGE = 15;
 
-type FetchLike = typeof fetch;
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 type ContactRecord = {
   id: number | string;
