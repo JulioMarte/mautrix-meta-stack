@@ -11,6 +11,7 @@ let nextContact = 1;
 let nextConversation = 1;
 let nextMessage = 1;
 let failAfterNextMessageCreate = false;
+let delayNextMessageCreateMs = 0;
 
 function json(value: unknown, status = 200) { return Response.json(value, { status }); }
 function authorized(req: Request) { return expectedToken.length > 0 && req.headers.get("api_access_token") === expectedToken; }
@@ -49,6 +50,13 @@ Bun.serve({
     if (url.pathname === "/health") return json({ status: "ok" });
     if (url.pathname === "/_test/state") return json({ contacts, conversations, messages });
     if (url.pathname === "/_test/fail-after-next-message-create" && req.method === "POST") { failAfterNextMessageCreate = true; return json({ ok: true }); }
+    if (url.pathname === "/_test/delay-next-message-create" && req.method === "POST") {
+      const input = await body(req);
+      const ms = Number(input.ms);
+      if (!Number.isSafeInteger(ms) || ms < 1 || ms > 30_000) return json({ error: "invalid delay" }, 400);
+      delayNextMessageCreateMs = ms;
+      return json({ ok: true });
+    }
     if (!authorized(req)) return json({ error: "unauthorized" }, 401);
 
     if (url.pathname === "/files/agent.pdf" && req.method === "GET") {
@@ -111,6 +119,12 @@ Bun.serve({
       const conversationId = Number(rest[1]);
       const conversation = conversations.find((c) => c.accountId === accountId && c.id === conversationId);
       if (!conversation) return json({}, 404);
+      if (delayNextMessageCreateMs > 0) {
+        const delay = delayNextMessageCreateMs;
+        delayNextMessageCreateMs = 0;
+        await Bun.sleep(delay);
+        return json({ error: "injected delayed timeout" }, 504);
+      }
       const input = await messageBody(req);
       const existing = messages.find((m) => m.accountId === accountId && m.conversationId === conversationId && m.sourceEventId === input.sourceEventId);
       const message = existing ?? { id: nextMessage++, accountId, inboxId: conversation.inboxId, conversationId, content: input.content, sourceEventId: input.sourceEventId, attachments: input.attachments, voiceMessage: input.voiceMessage };
