@@ -39,8 +39,23 @@ function bridgeState(receiver = "login-a") {
   }];
 }
 
-function service(onHandle?: () => void): MatrixToChatwootService {
-  return { async handle() { onHandle?.(); return { status: "delivered", processedEventId: "p", conversationBindingId: "c", chatwootMessageId: "m" }; } } as unknown as MatrixToChatwootService;
+function metaText(eventId: string, body = eventId) {
+  return {
+    type: "m.room.message",
+    event_id: eventId,
+    sender: "@facebook_2000:matrix.example.com",
+    origin_server_ts: 1_700_000_000_000,
+    content: {
+      msgtype: "m.text",
+      body,
+      "com.mautrix_meta_stack.provenance": { source: "meta" },
+      "com.mautrix_meta_stack.remote_sender_id": "2000"
+    }
+  };
+}
+
+function service(onHandle?: (event: any) => void): MatrixToChatwootService {
+  return { async handle(event: any) { onHandle?.(event); return { status: "delivered", processedEventId: "p", conversationBindingId: "c", chatwootMessageId: "m" }; } } as unknown as MatrixToChatwootService;
 }
 
 describe("Matrix sync hardening", () => {
@@ -60,6 +75,89 @@ describe("Matrix sync hardening", () => {
     expect(deliveries).toBe(0);
   });
 
+  test("recovers a limited timeline across pages, preserves order, and deduplicates overlap before advancing checkpoint", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    const delivered: string[] = [];
+    const ranges: Array<[string, string, string, number]> = [];
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": {
+        state: { events: bridgeState() },
+        timeline: { limited: true, prev_batch: "p1", events: [metaText("$overlap"), metaText("$current")] }
+      } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages(roomId: string, from: string, to: string, limit: number) {
+        ranges.push([roomId, from, to, limit]);
+        if (from === "s1") return { start: "s1", end: "mid", chunk: [metaText("$missed-1"), metaText("$overlap")] };
+        if (from === "mid") return { start: "mid", end: "p1", chunk: [metaText("$missed-2"), metaText("$overlap")] };
+        throw new Error(`unexpected recovery cursor ${from}`);
+      }
+    }, attribution, rooms, checkpoints, service((event) => delivered.push(event.eventId)), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
+
+    const result = await ingestor.runOnce();
+    expect(result.eventsDelivered).toBe(4);
+    expect(delivered).toEqual(["$missed-1", "$overlap", "$missed-2", "$current"]);
+    expect(ranges).toEqual([
+      ["!room:matrix.example.com", "s1", "p1", 100],
+      ["!room:matrix.example.com", "mid", "p1", 100]
+    ]);
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s2");
+  });
+
+  test("non-converging gap recovery fails closed and preserves checkpoint", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let deliveries = 0;
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": {
+        state: { events: bridgeState() },
+        timeline: { limited: true, prev_batch: "p1", events: [metaText("$current")] }
+      } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages(_roomId: string, from: string) { return { start: from, end: from, chunk: [metaText("$missed")] }; }
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
+
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_GAP_NOT_CONVERGED");
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
+  test("bounded gap recovery rejects oversized history before side effects and preserves checkpoint", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let deliveries = 0;
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": {
+        state: { events: bridgeState() },
+        timeline: { limited: true, prev_batch: "p1", events: [] }
+      } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages() { return { start: "s1", end: "p1", chunk: [metaText("$one"), metaText("$two")] }; }
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), {
+      MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com",
+      MATRIX_SYNC_MAX_GAP_EVENTS: "1"
+    });
+
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_GAP_TOO_LARGE");
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
   test("unknown bridge login is ignored without side effects or blocking checkpoint advancement", async () => {
     const { rooms, checkpoints, attribution } = setup();
     checkpoints.save("ingestor", "s1");
@@ -69,18 +167,7 @@ describe("Matrix sync hardening", () => {
       next_batch: "s2",
       rooms: { join: { "!unknown:matrix.example.com": {
         state: { events: unknownState },
-        timeline: { events: [{
-          type: "m.room.message",
-          event_id: "$unknown",
-          sender: "@facebook_2000:matrix.example.com",
-          origin_server_ts: 1_700_000_000_000,
-          content: {
-            msgtype: "m.text",
-            body: "must not route",
-            "com.mautrix_meta_stack.provenance": { source: "meta" },
-            "com.mautrix_meta_stack.remote_sender_id": "2000"
-          }
-        }] }
+        timeline: { events: [metaText("$unknown", "must not route")] }
       } }, invite: {} }
     };
     const ingestor = new MatrixSyncIngestor("ingestor", {
