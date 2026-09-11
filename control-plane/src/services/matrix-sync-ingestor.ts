@@ -115,8 +115,20 @@ export class MatrixSyncIngestor {
     if (!consumerId.trim() || consumerId.trim() !== consumerId) throw new Error("MATRIX_SYNC_CONSUMER_ID_INVALID");
   }
 
-  private async verifyRoom(roomId: string, room: MatrixJoinedRoom): Promise<MatrixRoomBinding | null> {
+  private async bindFromCurrentState(roomId: string, stateEvents: MatrixRawEvent[]): Promise<MatrixRoomBinding | null> {
+    let events = stateEvents;
+    if (!bridgeStatePresent(events)) events = await this.sync.roomState(roomId);
+    try { return this.attribution.bindRoom(roomId, events); }
+    catch (error) {
+      if (error instanceof Error && ["MATRIX_BRIDGE_STATE_NOT_FOUND", "MATRIX_BRIDGE_CONNECTION_NOT_ACTIVE"].includes(error.message)) return null;
+      throw error;
+    }
+  }
+
+  private async verifyRoom(roomId: string, room: MatrixJoinedRoom, requireCurrentState: boolean): Promise<MatrixRoomBinding | null> {
     const stateEvents = room.state?.events ?? [];
+    if (requireCurrentState) return this.bindFromCurrentState(roomId, stateEvents);
+
     const existing = this.roomBindings.findByRoomId(roomId);
     if (bridgeStatePresent(stateEvents)) {
       try { return this.attribution.bindRoom(roomId, stateEvents); }
@@ -126,18 +138,13 @@ export class MatrixSyncIngestor {
       }
     }
     if (existing) return existing;
-    const fullState = await this.sync.roomState(roomId);
-    try { return this.attribution.bindRoom(roomId, fullState); }
-    catch (error) {
-      if (error instanceof Error && ["MATRIX_BRIDGE_STATE_NOT_FOUND", "MATRIX_BRIDGE_CONNECTION_NOT_ACTIVE"].includes(error.message)) return null;
-      throw error;
-    }
+    return this.bindFromCurrentState(roomId, stateEvents);
   }
 
-  private async reconcileRooms(response: MatrixSyncResponse): Promise<number> {
+  private async reconcileRooms(response: MatrixSyncResponse, requireCurrentState: boolean): Promise<number> {
     let roomsBound = 0;
     for (const [roomId, room] of Object.entries(response.rooms.join)) {
-      const binding = await this.verifyRoom(roomId, room);
+      const binding = await this.verifyRoom(roomId, room, requireCurrentState);
       if (binding) roomsBound++;
     }
     return roomsBound;
@@ -177,7 +184,7 @@ export class MatrixSyncIngestor {
     const checkpoint = this.checkpoints.get(this.consumerId);
     if (!checkpoint) {
       const response = await this.sync.sync(null, { timelineLimit: 0 });
-      const roomsBound = await this.reconcileRooms(response);
+      const roomsBound = await this.reconcileRooms(response, true);
       this.checkpoints.save(this.consumerId, response.next_batch);
       return {
         status: "bootstrapped",
@@ -199,7 +206,7 @@ export class MatrixSyncIngestor {
     let eventsDelivered = 0;
     let eventsIgnored = 0;
     for (const [roomId, room] of Object.entries(response.rooms.join)) {
-      const binding = await this.verifyRoom(roomId, room);
+      const binding = await this.verifyRoom(roomId, room, false);
       if (!binding) {
         eventsIgnored += room.timeline?.events?.length ?? 0;
         continue;
