@@ -62,15 +62,20 @@ func TestPhase6TwoAccountsUseDistinctResolvedTransports(t *testing.T) {
         q := r.URL.Query()
         account := q.Get("meta_account_id")
         loginID := q.Get("login_id")
+        trafficClass := q.Get("traffic_class")
+        if trafficClass == "login" && loginID != "" {
+            t.Fatalf("first-login must not claim a persisted login ID yet: %v", q)
+        }
+        if trafficClass == "messaging" && loginID != account {
+            t.Fatalf("established messaging must carry account and login identity: %v", q)
+        }
         if account == "111" {
             resolverAHits.Add(1)
-            if loginID != "111" { t.Fatalf("tenant A login context mismatch: %v", q) }
             _ = json.NewEncoder(w).Encode(respGetProxy{ProxyURL: proxyA.URL})
             return
         }
         if account == "222" {
             resolverBHits.Add(1)
-            if loginID != "222" { t.Fatalf("tenant B login context mismatch: %v", q) }
             _ = json.NewEncoder(w).Encode(respGetProxy{ProxyURL: proxyB.URL})
             return
         }
@@ -94,7 +99,8 @@ func TestPhase6TwoAccountsUseDistinctResolvedTransports(t *testing.T) {
     cookiesA, clientA := makeAccount("111")
     cookiesB, clientB := makeAccount("222")
 
-    // First-login HTTP clients must select account-specific transports.
+    // First-login HTTP clients must select account-specific transports using only
+    // the provider identity that exists before BridgeV2 persists UserLogin.ID.
     if err := clientA.Main.configureLoginProxy(clientA.Client, cookiesA, true); err != nil { t.Fatal(err) }
     if err := clientB.Main.configureLoginProxy(clientB.Client, cookiesB, true); err != nil { t.Fatal(err) }
     for name, mc := range map[string]*MetaClient{"A": clientA, "B": clientB} {
@@ -108,7 +114,8 @@ func TestPhase6TwoAccountsUseDistinctResolvedTransports(t *testing.T) {
         if string(body) != expected { t.Fatalf("tenant %s login used wrong proxy: %q", name, body) }
     }
 
-    // Established/reconnect websocket HTTP clients must preserve the same split.
+    // Established/reconnect websocket HTTP clients must add UserLogin.ID and
+    // preserve the same tenant split.
     if !clientA.updateMessagingProxy("reconnect-cache") { t.Fatal("tenant A messaging proxy setup failed") }
     if !clientB.updateMessagingProxy("reconnect-cache") { t.Fatal("tenant B messaging proxy setup failed") }
     for name, mc := range map[string]*MetaClient{"A": clientA, "B": clientB} {
