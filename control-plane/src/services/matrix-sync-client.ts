@@ -12,9 +12,16 @@ export type MatrixJoinedRoom = {
   timeline?: { events?: MatrixRawEvent[]; limited?: boolean; prev_batch?: string };
 };
 
+export type MatrixInvitedRoom = {
+  invite_state?: { events?: MatrixRawEvent[] };
+};
+
 export type MatrixSyncResponse = {
   next_batch: string;
-  rooms: { join: Record<string, MatrixJoinedRoom> };
+  rooms: {
+    join: Record<string, MatrixJoinedRoom>;
+    invite: Record<string, MatrixInvitedRoom>;
+  };
 };
 
 export type MatrixSyncFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -90,7 +97,9 @@ function parseSyncResponse(value: unknown): MatrixSyncResponse {
   if (typeof root.next_batch !== "string" || !root.next_batch) throw new Error("MATRIX_SYNC_RESPONSE_INVALID");
   const rawRooms = root.rooms && typeof root.rooms === "object" ? root.rooms as Record<string, unknown> : {};
   const rawJoin = rawRooms.join && typeof rawRooms.join === "object" ? rawRooms.join as Record<string, unknown> : {};
+  const rawInvite = rawRooms.invite && typeof rawRooms.invite === "object" ? rawRooms.invite as Record<string, unknown> : {};
   const join: Record<string, MatrixJoinedRoom> = {};
+  const invite: Record<string, MatrixInvitedRoom> = {};
   for (const [roomId, rawRoom] of Object.entries(rawJoin)) {
     if (!roomId.startsWith("!") || !rawRoom || typeof rawRoom !== "object") continue;
     const room = rawRoom as Record<string, unknown>;
@@ -105,7 +114,13 @@ function parseSyncResponse(value: unknown): MatrixSyncResponse {
       }
     };
   }
-  return { next_batch: root.next_batch, rooms: { join } };
+  for (const [roomId, rawRoom] of Object.entries(rawInvite)) {
+    if (!roomId.startsWith("!") || !rawRoom || typeof rawRoom !== "object") continue;
+    const room = rawRoom as Record<string, unknown>;
+    const inviteState = room.invite_state && typeof room.invite_state === "object" ? room.invite_state as Record<string, unknown> : {};
+    invite[roomId] = { invite_state: { events: parseEvents(inviteState.events) } };
+  }
+  return { next_batch: root.next_batch, rooms: { join, invite } };
 }
 
 export class HttpMatrixSyncClient {
@@ -124,14 +139,18 @@ export class HttpMatrixSyncClient {
     if (this.requestTimeoutMs <= this.serverTimeoutMs) throw new Error("MATRIX_SYNC_TIMEOUT_CONFIGURATION_INVALID");
   }
 
-  private async request(url: URL): Promise<Response> {
+  private async request(url: URL, init: RequestInit = {}): Promise<Response> {
     if (!this.token) throw new Error("MATRIX_SYNC_ACCESS_TOKEN_MISSING");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
+      const headers = new Headers(init.headers);
+      headers.set("authorization", `Bearer ${this.token}`);
+      headers.set("accept", "application/json");
       return await this.fetchImpl(url, {
-        method: "GET",
-        headers: { authorization: `Bearer ${this.token}`, accept: "application/json" },
+        ...init,
+        method: init.method ?? "GET",
+        headers,
         signal: controller.signal,
         redirect: "error"
       });
@@ -177,5 +196,23 @@ export class HttpMatrixSyncClient {
     const value = await readBoundedJson(response, this.maxResponseBytes);
     if (!Array.isArray(value)) throw new Error("MATRIX_ROOM_STATE_INVALID");
     return parseEvents(value);
+  }
+
+  async joinRoom(roomId: string): Promise<void> {
+    if (!roomId.startsWith("!")) throw new Error("MATRIX_ROOM_ID_INVALID");
+    const url = appendPath(this.base, `/_matrix/client/v3/join/${encodeURIComponent(roomId)}`);
+    const response = await this.request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      if (response.status === 401 || response.status === 403) throw new Error("MATRIX_SYNC_UNAUTHORIZED");
+      throw new Error(`MATRIX_JOIN_HTTP_${response.status}`);
+    }
+    const value = await readBoundedJson(response, this.maxResponseBytes);
+    if (!value || typeof value !== "object" || typeof (value as Record<string, unknown>).room_id !== "string") throw new Error("MATRIX_JOIN_RESPONSE_INVALID");
+    if ((value as Record<string, unknown>).room_id !== roomId) throw new Error("MATRIX_JOIN_ROOM_MISMATCH");
   }
 }
