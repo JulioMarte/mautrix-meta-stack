@@ -37,3 +37,4 @@ jobs:
           test/phase5.test.ts
           test/chatwoot-tenancy-contract.test.ts
           test/chatwoot-tenancy-disabled-history.test.ts
+          test/chatwoot-tenancy-current-binding.test.ts
