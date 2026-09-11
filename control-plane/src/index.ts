@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createApp } from "./app";
+import { createPhase5App } from "./phase5-app";
 import { openDatabase } from "./persistence/database";
 import { ChatwootEnvironmentSecretProvider } from "./security/secrets";
 import { HttpChatwootGateway } from "./services/http-chatwoot-gateway";
@@ -22,7 +23,9 @@ const chatwootGateway = new HttpChatwootGateway(
   8_000,
   new HttpMatrixMediaDownloader(process.env)
 );
-const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway }).listen({ hostname: "0.0.0.0", port });
-console.log(JSON.stringify({ operation: "startup", result: "ok", port, schema: 1 }));
+const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway })
+  .use(createPhase5App(db, adminToken, process.env))
+  .listen({ hostname: "0.0.0.0", port });
+console.log(JSON.stringify({ operation: "startup", result: "ok", port, schema: 2 }));
 
 process.on("SIGTERM", () => { app.stop(); db.close(); process.exit(0); });
