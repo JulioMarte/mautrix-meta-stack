@@ -37,6 +37,21 @@ export class MatrixRoomAttributionService {
     this.protocolIds = configuredProtocols(env.MATRIX_BRIDGE_PROTOCOL_IDS);
   }
 
+  isTrustedInvite(events: MatrixRawEvent[], syncUserMxid: string): boolean {
+    if (!syncUserMxid.startsWith("@") || !syncUserMxid.includes(":")) throw new Error("MATRIX_SYNC_USER_MXID_INVALID");
+    let trusted = 0;
+    let conflicting = 0;
+    for (const event of events) {
+      if (event.type !== "m.room.member" || event.state_key !== syncUserMxid) continue;
+      if (!event.content || typeof event.content !== "object") continue;
+      const membership = stringField((event.content as Record<string, unknown>).membership);
+      if (membership !== "invite") continue;
+      if (event.sender === this.bridgeBotMxid) trusted++;
+      else conflicting++;
+    }
+    return trusted === 1 && conflicting === 0;
+  }
+
   parseBridgeIdentity(events: MatrixRawEvent[]): BridgeRoomIdentity | null {
     const matches: BridgeRoomIdentity[] = [];
     for (const event of events) {
