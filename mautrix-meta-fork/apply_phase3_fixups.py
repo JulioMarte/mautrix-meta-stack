@@ -49,8 +49,29 @@ def main() -> None:
 
     replace_exact(
         client,
+        '''func (m *MetaClient) proxyContext(trafficClass ProxyTrafficClass) ProxyContext {\n\tmetaAccountID := ""\n\tif m.LoginMeta != nil && m.LoginMeta.Cookies != nil && m.LoginMeta.Cookies.GetUserID() != 0 {\n\t\tmetaAccountID = fmt.Sprint(m.LoginMeta.Cookies.GetUserID())\n\t}\n\treturn ProxyContext{\n\t\tMetaAccountID: metaAccountID,\n\t\tLoginID:       string(m.UserLogin.ID),\n\t\tTrafficClass:  trafficClass,\n\t}\n}\n''',
+        '''func (m *MetaClient) proxyContext(trafficClass ProxyTrafficClass) ProxyContext {\n\tmetaAccountID := ""\n\tif m.LoginMeta != nil && m.LoginMeta.Cookies != nil && m.LoginMeta.Cookies.GetUserID() != 0 {\n\t\tmetaAccountID = fmt.Sprint(m.LoginMeta.Cookies.GetUserID())\n\t}\n\tloginID := ""\n\tif m.UserLogin != nil && m.UserLogin.UserLogin != nil {\n\t\tloginID = string(m.UserLogin.ID)\n\t}\n\treturn ProxyContext{\n\t\tMetaAccountID: metaAccountID,\n\t\tLoginID:       loginID,\n\t\tTrafficClass:  trafficClass,\n\t}\n}\n\nfunc (m *MetaClient) updateMessagingProxy(reason string) bool {\n\tif !m.Main.Config.ProxyOther || (m.Main.Config.GetProxyFrom == "" && m.Main.Config.Proxy == "") {\n\t\treturn true\n\t}\n\tif m.Client == nil {\n\t\treturn false\n\t}\n\tm.Client.GetHTTP().GetNewProxy = m.Main.getProxy(m.proxyContext(ProxyTrafficMessaging))\n\treturn m.Client.GetHTTP().UpdateProxy(reason)\n}\n''',
+        1,
+    )
+
+    replace_exact(
+        client,
         '''\t\t} else {\n\t\t\tzerolog.Ctx(ctx).Debug().\n\t\t\t\tTime("last_used", lastUsed).\n\t\t\t\tMsg("Reconnecting with cached state")\n\t\t\tm.connectWithCache(ctx)\n\t\t\treturn\n\t\t}\n''',
-        '''\t\t} else {\n\t\t\tzerolog.Ctx(ctx).Debug().\n\t\t\t\tTime("last_used", lastUsed).\n\t\t\t\tMsg("Reconnecting with cached state")\n\t\t\tif m.Main.Config.ProxyOther && (m.Main.Config.GetProxyFrom != "" || m.Main.Config.Proxy != "") {\n\t\t\t\tcli.GetHTTP().GetNewProxy = m.Main.getProxy(m.proxyContext(ProxyTrafficMessaging))\n\t\t\t\tif !cli.GetHTTP().UpdateProxy("reconnect-cache") {\n\t\t\t\t\tm.UserLogin.BridgeState.Send(status.BridgeState{\n\t\t\t\t\t\tStateEvent: status.StateUnknownError,\n\t\t\t\t\t\tError:      MetaProxyUpdateFail,\n\t\t\t\t\t})\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t}\n\t\t\tm.connectWithCache(ctx)\n\t\t\treturn\n\t\t}\n''',
+        '''\t\t} else {\n\t\t\tzerolog.Ctx(ctx).Debug().\n\t\t\t\tTime("last_used", lastUsed).\n\t\t\t\tMsg("Reconnecting with cached state")\n\t\t\tif !m.updateMessagingProxy("reconnect-cache") {\n\t\t\t\tm.UserLogin.BridgeState.Send(status.BridgeState{\n\t\t\t\t\tStateEvent: status.StateUnknownError,\n\t\t\t\t\tError:      MetaProxyUpdateFail,\n\t\t\t\t})\n\t\t\t\treturn\n\t\t\t}\n\t\t\tm.connectWithCache(ctx)\n\t\t\treturn\n\t\t}\n''',
+        1,
+    )
+    replace_exact(
+        client,
+        '''\tif m.Main.Config.ProxyOther && (m.Main.Config.GetProxyFrom != "" || m.Main.Config.Proxy != "") {\n\t\tcli.GetHTTP().GetNewProxy = m.Main.getProxy(m.proxyContext(ProxyTrafficMessaging))\n\t\tif !cli.GetHTTP().UpdateProxy("connect") {\n\t\t\tm.UserLogin.BridgeState.Send(status.BridgeState{\n\t\t\t\tStateEvent: status.StateUnknownError,\n\t\t\t\tError:      MetaProxyUpdateFail,\n\t\t\t})\n\t\t\treturn\n\t\t}\n\t}\n''',
+        '''\tif !m.updateMessagingProxy("connect") {\n\t\tm.UserLogin.BridgeState.Send(status.BridgeState{\n\t\t\tStateEvent: status.StateUnknownError,\n\t\t\tError:      MetaProxyUpdateFail,\n\t\t})\n\t\treturn\n\t}\n''',
+        1,
+    )
+
+    login = root / "pkg/connector/login.go"
+    replace_exact(
+        login,
+        '''func getMessagixClient(log zerolog.Logger, conn *MetaConnector, c *cookies.Cookies, useProxy bool) (*messagix.Client, error) {\n\tclient := messagix.NewClient(c, log, conn.getMessagixConfig())\n\tif useProxy && (conn.Config.GetProxyFrom != "" || conn.Config.Proxy != "") {\n\t\tmetaAccountID := c.GetUserID()\n\t\tif conn.Config.GetProxyFrom != "" && metaAccountID == 0 {\n\t\t\treturn nil, fmt.Errorf("stable account identity is required before proxy-enabled login")\n\t\t}\n\t\tclient.GetHTTP().GetNewProxy = conn.getProxy(ProxyContext{\n\t\t\tMetaAccountID: fmt.Sprint(metaAccountID),\n\t\t\tTrafficClass:  ProxyTrafficLogin,\n\t\t})\n\t\tif !client.GetHTTP().UpdateProxy("login") {\n\t\t\treturn nil, fmt.Errorf("failed to update proxy")\n\t\t}\n\t}\n\treturn client, nil\n}\n''',
+        '''func (conn *MetaConnector) configureLoginProxy(client *messagix.Client, c *cookies.Cookies, useProxy bool) error {\n\tif !useProxy || (conn.Config.GetProxyFrom == "" && conn.Config.Proxy == "") {\n\t\treturn nil\n\t}\n\tmetaAccountID := c.GetUserID()\n\tif conn.Config.GetProxyFrom != "" && metaAccountID == 0 {\n\t\treturn fmt.Errorf("stable account identity is required before proxy-enabled login")\n\t}\n\tclient.GetHTTP().GetNewProxy = conn.getProxy(ProxyContext{\n\t\tMetaAccountID: fmt.Sprint(metaAccountID),\n\t\tTrafficClass:  ProxyTrafficLogin,\n\t})\n\tif !client.GetHTTP().UpdateProxy("login") {\n\t\treturn fmt.Errorf("failed to update proxy")\n\t}\n\treturn nil\n}\n\nfunc getMessagixClient(log zerolog.Logger, conn *MetaConnector, c *cookies.Cookies, useProxy bool) (*messagix.Client, error) {\n\tclient := messagix.NewClient(c, log, conn.getMessagixConfig())\n\tif err := conn.configureLoginProxy(client, c, useProxy); err != nil {\n\t\treturn nil, err\n\t}\n\treturn client, nil\n}\n''',
         1,
     )
 
@@ -89,6 +110,64 @@ def main() -> None:
         connector_test,
         "TestDynamicProxyResolverFailsWithoutIdentityOrToken",
         r'''
+
+func makePhase3TestClient(c *cookies.Cookies) *messagix.Client {
+    log := zerolog.Nop()
+    return messagix.NewClient(c, log, &messagix.Config{ClientSettings: exhttp.SensibleClientSettings})
+}
+
+func TestLoginProxySetupUsesCookieIdentityBeforeProviderRequest(t *testing.T) {
+    const token = "phase3-login-path-token"
+    oldToken := os.Getenv("MAUTRIX_META_EGRESS_TOKEN")
+    t.Cleanup(func() { _ = os.Setenv("MAUTRIX_META_EGRESS_TOKEN", oldToken) })
+    if err := os.Setenv("MAUTRIX_META_EGRESS_TOKEN", token); err != nil { t.Fatal(err) }
+
+    var hits atomic.Int32
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        hits.Add(1)
+        if r.URL.Query().Get("meta_account_id") != "123" { t.Fatalf("missing cookie account identity") }
+        if r.URL.Query().Get("traffic_class") != "login" { t.Fatalf("wrong traffic class") }
+        if r.URL.Query().Get("reason") != "login" { t.Fatalf("wrong login reason") }
+        _ = json.NewEncoder(w).Encode(respGetProxy{ProxyURL: "http://127.0.0.1:9"})
+    }))
+    defer server.Close()
+
+    c := &cookies.Cookies{Platform: types.Facebook}
+    c.UpdateValues(map[cookies.MetaCookieName]string{cookies.FBCookieCUser: "123"})
+    conn := &MetaConnector{Config: Config{GetProxyFrom: server.URL, ProxyOther: true}}
+    client := makePhase3TestClient(c)
+    if err := conn.configureLoginProxy(client, c, true); err != nil { t.Fatal(err) }
+    if hits.Load() != 1 { t.Fatalf("expected exactly one pre-provider resolver call, got %d", hits.Load()) }
+}
+
+func TestCachedReconnectProxySetupUsesStableAccountAndLoginIdentity(t *testing.T) {
+    const token = "phase3-reconnect-path-token"
+    oldToken := os.Getenv("MAUTRIX_META_EGRESS_TOKEN")
+    t.Cleanup(func() { _ = os.Setenv("MAUTRIX_META_EGRESS_TOKEN", oldToken) })
+    if err := os.Setenv("MAUTRIX_META_EGRESS_TOKEN", token); err != nil { t.Fatal(err) }
+
+    var hits atomic.Int32
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        hits.Add(1)
+        q := r.URL.Query()
+        if q.Get("meta_account_id") != "123" || q.Get("login_id") != "123" { t.Fatalf("wrong reconnect identity: %v", q) }
+        if q.Get("traffic_class") != "messaging" || q.Get("reason") != "reconnect-cache" { t.Fatalf("wrong reconnect context: %v", q) }
+        _ = json.NewEncoder(w).Encode(respGetProxy{ProxyURL: "http://127.0.0.1:9"})
+    }))
+    defer server.Close()
+
+    c := &cookies.Cookies{Platform: types.Facebook}
+    c.UpdateValues(map[cookies.MetaCookieName]string{cookies.FBCookieCUser: "123"})
+    conn := &MetaConnector{Config: Config{GetProxyFrom: server.URL, ProxyOther: true}}
+    metaClient := &MetaClient{
+        Main: conn,
+        Client: makePhase3TestClient(c),
+        LoginMeta: &metaid.UserLoginMetadata{Platform: types.Facebook, Cookies: c},
+        UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{ID: "123"}},
+    }
+    if !metaClient.updateMessagingProxy("reconnect-cache") { t.Fatal("cached reconnect proxy update failed") }
+    if hits.Load() != 1 { t.Fatalf("expected exactly one cached reconnect resolver call, got %d", hits.Load()) }
+}
 
 func TestDynamicProxyResolverHasBoundedTimeout(t *testing.T) {
     const token = "phase3-timeout-test-token"
@@ -162,7 +241,7 @@ func TestDynamicEgressConfigRejectsUnsupportedIdentityModes(t *testing.T) {
     replace_exact(
         connector_test,
         '"os"\n    "testing"',
-        '"os"\n    "testing"\n    "time"\n\n    "go.mau.fi/mautrix-meta/pkg/messagix/types"',
+        '''"os"\n    "sync/atomic"\n    "testing"\n    "time"\n\n    "github.com/rs/zerolog"\n    "go.mau.fi/util/exhttp"\n    "maunium.net/go/mautrix/bridgev2"\n    "maunium.net/go/mautrix/bridgev2/database"\n\n    "go.mau.fi/mautrix-meta/pkg/messagix"\n    "go.mau.fi/mautrix-meta/pkg/messagix/cookies"\n    "go.mau.fi/mautrix-meta/pkg/messagix/types"\n    "go.mau.fi/mautrix-meta/pkg/metaid"''',
         1,
     )
 
