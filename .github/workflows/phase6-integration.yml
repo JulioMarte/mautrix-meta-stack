@@ -63,14 +63,21 @@ jobs:
       - name: Create ephemeral multi-tenant credentials
         shell: bash
         run: |
-          echo "CONTROL_PLANE_ADMIN_TOKEN=admin-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "CONTROL_PLANE_INTERNAL_TOKEN=internal-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "CHATWOOT_CI_TOKEN=chatwoot-api-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "CHATWOOT_WEBHOOK_PHASE6_A_SECRET=hook-a-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "CHATWOOT_WEBHOOK_PHASE6_B_SECRET=hook-b-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "MATRIX_CLIENT_CI_TOKEN=matrix-client-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "EGRESS_PROXY_PHASE6_A_PASSWORD=proxy-a-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-          echo "EGRESS_PROXY_PHASE6_B_PASSWORD=proxy-b-$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          set -eu
+          emit_secret() {
+            local name="$1" prefix="$2" value
+            value="${prefix}$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          }
+          emit_secret CONTROL_PLANE_ADMIN_TOKEN admin-
+          emit_secret CONTROL_PLANE_INTERNAL_TOKEN internal-
+          emit_secret CHATWOOT_CI_TOKEN chatwoot-api-
+          emit_secret CHATWOOT_WEBHOOK_PHASE6_A_SECRET hook-a-
+          emit_secret CHATWOOT_WEBHOOK_PHASE6_B_SECRET hook-b-
+          emit_secret MATRIX_CLIENT_CI_TOKEN matrix-client-
+          emit_secret EGRESS_PROXY_PHASE6_A_PASSWORD proxy-a-
+          emit_secret EGRESS_PROXY_PHASE6_B_PASSWORD proxy-b-
       - name: Validate Phase 6 topology and script
         run: |
           docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase6.yaml config -q
