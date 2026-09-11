@@ -182,6 +182,7 @@ export class MatrixSyncIngestor {
     if (bridgeStatePresent(stateEvents)) {
       try { return this.attribution.bindRoom(roomId, stateEvents); }
       catch (error) {
+        if (error instanceof Error && error.message === "MATRIX_BRIDGE_CONNECTION_NOT_ACTIVE") return null;
         if (error instanceof Error && error.message === "MATRIX_BRIDGE_STATE_NOT_FOUND" && existing) return existing;
         throw error;
       }
