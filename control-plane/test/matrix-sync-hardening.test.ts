@@ -75,6 +75,46 @@ describe("Matrix sync hardening", () => {
     expect(deliveries).toBe(0);
   });
 
+  test("limited timeline without prev_batch fails closed before recovery and preserves checkpoint", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let recoveryCalls = 0;
+    let deliveries = 0;
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": { state: { events: bridgeState() }, timeline: { limited: true, events: [metaText("$current")] } } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages() { recoveryCalls++; return { start: "s1", end: null, chunk: [] }; }
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_GAP_PREV_BATCH_REQUIRED");
+    expect(recoveryCalls).toBe(0);
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
+  test("gap recovery transport failure propagates and preserves checkpoint without side effects", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let deliveries = 0;
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": { state: { events: bridgeState() }, timeline: { limited: true, prev_batch: "p1", events: [metaText("$current")] } } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages() { throw new Error("MATRIX_SYNC_REQUEST_FAILED"); }
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_REQUEST_FAILED");
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
   test("recovers a limited timeline across pages, preserves order, and deduplicates overlap before advancing checkpoint", async () => {
     const { rooms, checkpoints, attribution } = setup();
     checkpoints.save("ingestor", "s1");
