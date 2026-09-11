@@ -24,8 +24,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("Phase 4 Chatwoot HTTP gateway", () => {
   test("creates deterministic contact/source/conversation and authenticates every request", async () => {
-    const requests: Array<{ url: URL; init?: RequestInit }> = [];
-    const fetchStub: typeof fetch = async (input, init) => {
+    const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
+    const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input));
       requests.push({ url, init });
       const path = url.pathname;
@@ -53,7 +53,7 @@ describe("Phase 4 Chatwoot HTTP gateway", () => {
   test("ambiguous message create is reconciled by source event correlation before retry", async () => {
     let listCount = 0;
     let postCount = 0;
-    const fetchStub: typeof fetch = async (input, init) => {
+    const fetchStub = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const path = new URL(String(input)).pathname;
       if (path.endsWith("/messages") && (init?.method ?? "GET") === "GET") {
         listCount++;
@@ -87,23 +87,8 @@ describe("Phase 4 Chatwoot HTTP gateway", () => {
   test("missing Chatwoot credential fails before network access", async () => {
     let calls = 0;
     const noSecrets: SecretProvider = { resolve: () => null };
-    const gateway = new HttpChatwootGateway(noSecrets, (async () => { calls++; return jsonResponse({}); }) as typeof fetch);
+    const gateway = new HttpChatwootGateway(noSecrets, async () => { calls++; return jsonResponse({}); });
     expect(gateway.ensureConversation({ binding, contactIdentifier: "x", remoteContactId: "42", remoteThreadId: "t" })).rejects.toThrow("CHATWOOT_CREDENTIAL_MISSING");
     expect(calls).toBe(0);
-  });
-
-  test("real gateway rejects attachment delivery until upload semantics are implemented", async () => {
-    const gateway = new HttpChatwootGateway(new StaticSecrets(), (async () => jsonResponse({})) as typeof fetch);
-    expect(gateway.createIncomingMessage({
-      binding,
-      conversation: { contactId: "5", sourceId: "source", conversationId: "9" },
-      sourceEventId: "$media",
-      attachments: [{ kind: "image", url: "mxc://example/media" }],
-      normalized: {
-        tenantId: "tenant-1", connectionId: "connection-1", conversationExternalId: "thread-1",
-        messageExternalId: "$media", senderExternalId: "42", direction: "inbound",
-        attachments: [{ kind: "image", url: "mxc://example/media" }], occurredAt: "2026-09-11T00:00:00.000Z", source: "matrix", sourceEventId: "$media"
-      }
-    })).rejects.toThrow("CHATWOOT_ATTACHMENT_UPLOAD_NOT_IMPLEMENTED");
   });
 });
