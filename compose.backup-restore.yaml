@@ -1,0 +1,10 @@
+services:
+  control-plane-backup-helper:
+    image: alpine:3.24
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - control-plane-data:/data
+      - ${CONTROL_PLANE_BACKUP_DIR:-./.ci-backup}:/backup
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["true"]
