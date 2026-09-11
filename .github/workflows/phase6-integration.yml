@@ -1,0 +1,92 @@
+name: Phase 6 Multi-tenant production proof
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+concurrency:
+  group: phase6-multitenant-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fork-multi-account-egress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Install upstream native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libolm-dev
+      - name: Build pinned fork test tree
+        run: |
+          set -eu
+          git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
+          git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
+          test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
+          python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase6_multitenant_tests.py /tmp/mautrix-meta
+          cd /tmp/mautrix-meta
+          gofmt -w pkg/connector/proxy_context_test.go
+          git diff --check
+      - name: Prove two account contexts use distinct actual transports
+        working-directory: /tmp/mautrix-meta
+        run: go test ./pkg/connector -run 'TestPhase6TwoAccountsUseDistinctResolvedTransports' -count=1 -v
+
+  multi-tenant-routing-faults:
+    runs-on: ubuntu-latest
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: integration-password
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      TZ: America/Santo_Domingo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create ephemeral multi-tenant credentials
+        shell: bash
+        run: |
+          set -eu
+          emit_secret() {
+            local name="$1" prefix="$2" value
+            value="${prefix}$(openssl rand -hex 24)"
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          }
+          emit_secret CONTROL_PLANE_ADMIN_TOKEN admin-
+          emit_secret CONTROL_PLANE_INTERNAL_TOKEN internal-
+          emit_secret CHATWOOT_CI_TOKEN chatwoot-api-
+          emit_secret CHATWOOT_WEBHOOK_PHASE6_A_SECRET hook-a-
+          emit_secret CHATWOOT_WEBHOOK_PHASE6_B_SECRET hook-b-
+          emit_secret MATRIX_CLIENT_CI_TOKEN matrix-client-
+          emit_secret EGRESS_PROXY_PHASE6_A_PASSWORD proxy-a-
+          emit_secret EGRESS_PROXY_PHASE6_B_PASSWORD proxy-b-
+      - name: Validate Phase 6 topology and script
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase6.yaml config -q
+          bash -n scripts/phase6-integration.sh
+      - name: Run multi-tenant routing and fault injection
+        run: bash scripts/phase6-integration.sh
+      - name: Dump Phase 6 logs on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase6.yaml logs --no-color || true
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase6.yaml down -v --remove-orphans || true

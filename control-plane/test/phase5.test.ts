@@ -61,6 +61,15 @@ describe("Phase 5 Chatwoot -> Matrix service", () => {
     expect(calls[0]).toMatchObject({ roomId: "!room:matrix.example.com", text: "reply", sourceEventId: `${f.binding.id}:900` });
   });
 
+  test("rejects reuse of the same event ID with a different canonical payload before another Matrix side effect", async () => {
+    let sends = 0;
+    const f = fixture({ async send() { sends++; return { eventIds: ["$matrix-event"] }; } });
+    const first = await f.service.handle(f.binding, event("905"));
+    expect(first.status).toBe("delivered");
+    await expect(f.service.handle(f.binding, { ...event("905"), text: "mutated replay" })).rejects.toThrow("EVENT_IDENTITY_CONFLICT");
+    expect(sends).toBe(1);
+  });
+
   test("route mismatch fails before a Matrix side effect", async () => {
     let sends = 0;
     const f = fixture({ async send() { sends++; return { eventIds: ["$x"] }; } });

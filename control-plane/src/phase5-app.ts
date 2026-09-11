@@ -126,7 +126,10 @@ export function createPhase5App(
       try { return { data: await service.handle(binding, parsed.event!) }; }
       catch (cause) {
         const code = cause instanceof Error ? cause.message : "CHATWOOT_TO_MATRIX_FAILED";
-        const terminal = new Set(["CHATWOOT_ROUTE_MISMATCH", "TENANT_NOT_ACTIVE", "CONNECTION_NOT_FOUND", "CONNECTION_NOT_ACTIVE", "CONVERSATION_BINDING_NOT_FOUND", "EMPTY_MESSAGE"]);
+        const terminal = new Set([
+          "CHATWOOT_ROUTE_MISMATCH", "TENANT_NOT_ACTIVE", "CONNECTION_NOT_FOUND", "CONNECTION_NOT_ACTIVE",
+          "CONVERSATION_BINDING_NOT_FOUND", "EMPTY_MESSAGE", "EVENT_IDENTITY_CONFLICT"
+        ]);
         return error(set, terminal.has(code) ? 409 : 503, code, "Chatwoot to Matrix delivery failed");
       }
     }, { parse: "text" });
