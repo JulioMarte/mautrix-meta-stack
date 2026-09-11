@@ -112,6 +112,7 @@ export type Attachment = {
   mimeType?: string;
   fileName?: string;
   sizeBytes?: number;
+  voiceNote?: boolean;
   encryption?: MatrixEncryptedFile;
 };
 
