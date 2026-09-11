@@ -17,6 +17,7 @@ RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && gofmt -w \
         pkg/connector/client.go \
         pkg/connector/config.go \
+        pkg/connector/connector.go \
         pkg/connector/login.go \
         pkg/connector/directmedia.go \
         pkg/connector/events.go \
