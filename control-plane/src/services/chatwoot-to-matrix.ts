@@ -63,7 +63,7 @@ export class ChatwootToMatrixService {
     const connection = this.connections.findById(conversation.metaConnectionId);
     if (!connection || connection.tenantId !== binding.tenantId) throw new Error("CONNECTION_NOT_FOUND");
     if (connection.status !== "active") throw new Error("CONNECTION_NOT_ACTIVE");
-    if (connection.chatwootBindingId !== binding.id) throw new Error("CHATWOOT_ROUTE_MISMATCH");
+    if (conversation.chatwootAccountId !== binding.chatwootAccountId || conversation.chatwootInboxId !== binding.chatwootInboxId) throw new Error("CHATWOOT_ROUTE_MISMATCH");
 
     const sourceEventId = `${binding.id}:${event.messageId}`;
     const claim = this.processedEvents.claim({ source: "chatwoot", sourceEventId, metaConnectionId: connection.id, payloadHash: hash(canonical(event)) });
