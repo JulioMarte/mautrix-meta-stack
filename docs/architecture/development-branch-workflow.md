@@ -6,21 +6,37 @@ Status: normative repository workflow
 
 `dev` is the primary integration branch for all ongoing development. Feature, fix, documentation and experiment branches merge into `dev`, not directly into `main`.
 
-`main` is deployment-triggering state. It receives changes only by deliberate promotion from `dev` after the relevant CI gates are green on the exact candidate commit.
+`main` is deployment-triggering state and represents the currently human-accepted working deployment baseline. It MUST NOT be changed merely because `dev` is green, a phase is complete, or an automated agent considers a candidate deployable.
 
-The normal flow is:
+The normal development flow is:
 
 ```text
 feature/*, fix/*, docs/*
           |
           v
          dev
-          |
-          v
-        main
 ```
 
-Direct feature-to-`main` merges are forbidden except for a narrowly scoped emergency hotfix, and any such exception must be documented and reconciled back into `dev` immediately.
+Promotion from `dev` to `main` is a separate human-controlled release action, not the automatic next step in the development flow.
+
+Direct feature-to-`main` merges are forbidden. Emergency production changes also require explicit human authorization and must be reconciled back into `dev` immediately.
+
+## Mandatory human promotion gate
+
+No agent, CI workflow, bot, automation, or unattended process may merge, fast-forward, reset, or otherwise move `main` to a newer integration state.
+
+A `main` promotion is permitted only after all of the following are true:
+
+1. the exact `dev` candidate has the required deterministic CI evidence;
+2. all known unproven/manual properties are listed explicitly;
+3. controlled staging evidence required by the deployment contract has been reviewed;
+4. rollback/backup implications are understood;
+5. a human owner has evaluated the candidate against the currently working `main` deployment; and
+6. that human gives an explicit instruction to promote the identified candidate SHA to `main`.
+
+Silence, a general instruction to continue development, a request to finish the docs, or a green CI result is never authorization to change `main`.
+
+Until that explicit approval exists, `main` is treated as immutable from the development workflow.
 
 ## Current branch transition
 
@@ -50,8 +66,9 @@ A phase branch may merge into `dev` only when the corresponding gate in `meta-co
 3. Update tests and contracts in the same branch when behavior changes.
 4. Require CI on the exact head commit.
 5. Merge to `dev` only after the phase gate is satisfied.
-6. Promote `dev` to `main` only at an explicit deployable checkpoint.
+6. Treat promotion from `dev` to `main` as a distinct human-controlled release decision.
 7. Never use `main` as a development base when `dev` contains newer integration work.
+8. Never infer permission to change `main` from prior merge permissions on `dev`.
 
 ## Upstream mautrix handling
 
@@ -65,6 +82,8 @@ CI runs on pull requests and on pushes to `dev`, `main`, and active long-lived i
 
 `main` being green does not prove an unmerged phase branch. `dev` being green does not waive a phase-specific acceptance requirement. The exact candidate SHA remains the unit of evidence.
 
+CI may establish technical evidence. CI does not authorize production promotion.
+
 ## Honest status reporting
 
 Use these terms precisely:
@@ -72,7 +91,9 @@ Use these terms precisely:
 - **implemented**: code exists and has relevant automated tests;
 - **phase complete**: every required gate for that phase is green on the exact candidate commit;
 - **integrated**: merged into `dev` and `dev` is green;
-- **deployable checkpoint**: `dev` satisfies the currently claimed deployment contract and is intentionally ready for promotion;
-- **production-ready**: only after the final multi-tenant, failure-path, persistence and egress-isolation proofs required by the branch plan.
+- **technically deployable candidate**: `dev` satisfies the currently claimed automated deployment contract, with all manual/staging gaps explicitly listed;
+- **human-approved release candidate**: the human owner has reviewed the technically deployable candidate and explicitly approved the identified SHA for release evaluation/promotion;
+- **production-ready**: only after the final multi-tenant, failure-path, persistence, egress-isolation and real-environment proofs required by the branch plan and deployment contract are satisfied;
+- **promoted**: `main` was changed only after explicit human authorization for the exact candidate.
 
 Do not collapse these states into one another.
