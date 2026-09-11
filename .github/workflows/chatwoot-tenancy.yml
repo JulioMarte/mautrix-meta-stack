@@ -33,6 +33,7 @@ jobs:
         run: >-
           bun test
           test/phase4.test.ts
+          test/phase4-api.test.ts
           test/phase5.test.ts
           test/chatwoot-tenancy-contract.test.ts
           test/chatwoot-tenancy-disabled-history.test.ts
