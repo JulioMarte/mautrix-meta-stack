@@ -73,7 +73,10 @@ export class MatrixToChatwootService {
       metaConnectionId: connection.id,
       payloadHash: payloadHash(event)
     });
-    if (!claim.claimed) return { status: "duplicate", processedEventId: claim.event.id, priorStatus: claim.event.status };
+    const retrying = !claim.claimed && claim.event.status === "failed_retryable";
+    if (!claim.claimed && !retrying) {
+      return { status: "duplicate", processedEventId: claim.event.id, priorStatus: claim.event.status };
+    }
 
     this.processedEvents.setStatus(claim.event.id, "processing");
 
@@ -91,7 +94,8 @@ export class MatrixToChatwootService {
           ...(event.senderDisplayName ? { displayName: event.senderDisplayName } : {}),
           remoteThreadId: event.remoteThreadId
         });
-        conversationBinding = this.conversationBindings.create({
+        const racedBinding = this.conversationBindings.findByRemoteThread(connection.id, event.remoteThreadId);
+        conversationBinding = racedBinding ?? this.conversationBindings.create({
           tenantId: tenant.id,
           metaConnectionId: connection.id,
           matrixRoomId: event.roomId,
@@ -103,6 +107,13 @@ export class MatrixToChatwootService {
           chatwootSourceId: conversationRef.sourceId,
           chatwootConversationId: conversationRef.conversationId
         });
+        if (conversationBinding.matrixRoomId !== event.roomId) throw new Error("MATRIX_ROOM_BINDING_CONFLICT");
+        if (!conversationBinding.chatwootContactId || !conversationBinding.chatwootSourceId) throw new Error("INCOMPLETE_CONVERSATION_BINDING");
+        conversationRef = {
+          contactId: conversationBinding.chatwootContactId,
+          sourceId: conversationBinding.chatwootSourceId,
+          conversationId: conversationBinding.chatwootConversationId
+        };
       } else {
         if (!conversationBinding.chatwootContactId || !conversationBinding.chatwootSourceId) throw new Error("INCOMPLETE_CONVERSATION_BINDING");
         conversationRef = {
@@ -141,7 +152,8 @@ export class MatrixToChatwootService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       const terminal = [
-        "CROSS_TENANT_CONVERSATION_BINDING", "MATRIX_ROOM_BINDING_CONFLICT", "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
+        "CROSS_TENANT_CONVERSATION_BINDING", "CHATWOOT_ROUTE_MISMATCH", "MATRIX_ROOM_BINDING_CONFLICT",
+        "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
       ].includes(message);
       this.processedEvents.setStatus(claim.event.id, terminal ? "failed_terminal" : "failed_retryable", message);
       throw error;
