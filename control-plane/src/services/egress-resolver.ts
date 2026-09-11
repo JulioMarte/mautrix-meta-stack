@@ -8,6 +8,12 @@ export type ResolverErrorCode = "IDENTITY_REQUIRED" | "IDENTITY_CONFLICT" | "CON
 const supportedProxySchemes = new Set(["http", "https", "socks5"]);
 const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
+export function normalizeProxyScheme(scheme: string): string | null {
+  if (!scheme || scheme !== scheme.trim()) return null;
+  const normalized = scheme.toLowerCase();
+  return supportedProxySchemes.has(normalized) ? normalized : null;
+}
+
 export function normalizeProxyHost(host: string): string | null {
   if (!host || host !== host.trim() || host.length > 253 || /[\s/@?#]/.test(host)) return null;
   const ipVersion = isIP(host);
@@ -36,9 +42,9 @@ export class EgressResolver {
     const profile = this.egress.findById(connection.egressProfileId);
     if (!profile) throw new ResolverError("EGRESS_ASSIGNMENT_REQUIRED");
     if (profile.status !== "healthy") throw new ResolverError("EGRESS_UNHEALTHY");
-    const scheme = profile.scheme.toLowerCase();
+    const scheme = normalizeProxyScheme(profile.scheme);
     const host = normalizeProxyHost(profile.host);
-    if (!supportedProxySchemes.has(scheme) || !host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
+    if (!scheme || !host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
 
     let auth = "";
     if (profile.secretRef) {
