@@ -29,7 +29,15 @@ function validatedBaseUrl(raw: string): URL {
   let url: URL;
   try { url = new URL(raw); } catch { throw new Error("CHATWOOT_BASE_URL_INVALID"); }
   if (!new Set(["http:", "https:"]).has(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("CHATWOOT_BASE_URL_INVALID");
-  url.pathname = url.pathname.replace(/\/+$/, "");
+  return url;
+}
+
+function appendPath(base: URL, path: string): URL {
+  const url = new URL(base.toString());
+  const prefix = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${prefix}${path.startsWith("/") ? path : `/${path}`}`;
+  url.search = "";
+  url.hash = "";
   return url;
 }
 
@@ -58,7 +66,7 @@ export class HttpChatwootGateway implements ChatwootGateway {
     const token = this.secrets.resolve(binding.credentialRef);
     if (!token) throw new Error("CHATWOOT_CREDENTIAL_MISSING");
     const base = validatedBaseUrl(binding.apiBaseUrl);
-    const url = new URL(`${base.pathname}${path}`, `${base.origin}/`);
+    const url = appendPath(base, path);
     if (url.origin !== base.origin) throw new Error("CHATWOOT_REQUEST_ORIGIN_MISMATCH");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
