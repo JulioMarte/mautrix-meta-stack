@@ -3,6 +3,8 @@ export type ConnectionStatus = "draft" | "ready" | "active" | "degraded" | "bloc
 export type EgressPolicy = "direct_allowed" | "proxy_preferred" | "proxy_required";
 export type EgressStatus = "healthy" | "degraded" | "disabled";
 export type TrafficClass = "login" | "messaging" | "media" | "e2ee";
+export type ChatwootBindingStatus = "active" | "disabled";
+export type ProcessedEventStatus = "received" | "processing" | "delivered" | "failed_retryable" | "failed_terminal";
 
 export type Tenant = {
   id: string;
@@ -48,6 +50,87 @@ export type EgressProfile = {
   updatedAt: string;
 };
 
+export type ChatwootBinding = {
+  id: string;
+  tenantId: string;
+  chatwootAccountId: string;
+  chatwootInboxId: string;
+  apiBaseUrl: string;
+  credentialRef: string;
+  status: ChatwootBindingStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ConversationBinding = {
+  id: string;
+  tenantId: string;
+  metaConnectionId: string;
+  matrixRoomId: string;
+  remoteThreadId: string;
+  remoteContactId: string | null;
+  chatwootAccountId: string;
+  chatwootInboxId: string;
+  chatwootContactId: string | null;
+  chatwootSourceId: string | null;
+  chatwootConversationId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProcessedEvent = {
+  id: string;
+  source: "matrix" | "chatwoot";
+  sourceEventId: string;
+  metaConnectionId: string | null;
+  payloadHash: string;
+  status: ProcessedEventStatus;
+  firstSeenAt: string;
+  processedAt: string | null;
+  lastError: string | null;
+};
+
+export type MatrixEncryptedFile = {
+  v: "v2";
+  key: {
+    kty: "oct";
+    alg: "A256CTR";
+    k: string;
+    keyOps: string[];
+    ext: true;
+  };
+  iv: string;
+  hashes: {
+    sha256: string;
+  };
+};
+
+export type Attachment = {
+  id?: string;
+  kind: "image" | "video" | "audio" | "file" | "unknown";
+  url?: string;
+  mimeType?: string;
+  fileName?: string;
+  sizeBytes?: number;
+  voiceNote?: boolean;
+  encryption?: MatrixEncryptedFile;
+};
+
+export type NormalizedMessage = {
+  tenantId: string;
+  connectionId: string;
+  conversationExternalId: string;
+  messageExternalId: string;
+  senderExternalId: string;
+  senderDisplayName?: string;
+  direction: "inbound" | "outbound";
+  text?: string;
+  attachments: Attachment[];
+  occurredAt: string;
+  source: "matrix" | "chatwoot";
+  sourceEventId: string;
+};
+
 export type AuditEvent = {
   id: string;
   tenantId: string | null;
@@ -65,6 +148,7 @@ export interface TenantRepository {
   create(input: { slug: string; name: string }): Tenant;
   findById(id: string): Tenant | null;
   list(): Tenant[];
+  setStatus(id: string, status: TenantStatus): Tenant;
 }
 
 export interface MetaConnectionRepository {
@@ -72,6 +156,7 @@ export interface MetaConnectionRepository {
   findById(id: string): MetaConnection | null;
   findActiveByIdentity(input: { metaAccountId?: string; loginId?: string }): MetaConnection | null;
   assignEgress(connectionId: string, egressProfileId: string): MetaConnection;
+  assignChatwootBinding(connectionId: string, chatwootBindingId: string): MetaConnection;
   setStatus(connectionId: string, status: ConnectionStatus): MetaConnection;
   setProviderIdentity(connectionId: string, input: { metaAccountId?: string; mautrixLoginId?: string }): MetaConnection;
 }
@@ -83,6 +168,25 @@ export interface EgressProfileRepository {
   setStatus(id: string, status: EgressStatus): EgressProfile;
 }
 
+export interface ChatwootBindingRepository {
+  create(input: Omit<ChatwootBinding, "id" | "createdAt" | "updatedAt">): ChatwootBinding;
+  findById(id: string): ChatwootBinding | null;
+  listForTenant(tenantId: string): ChatwootBinding[];
+  setStatus(id: string, status: ChatwootBindingStatus): ChatwootBinding;
+}
+
+export interface ConversationBindingRepository {
+  create(input: Omit<ConversationBinding, "id" | "createdAt" | "updatedAt">): ConversationBinding;
+  findByRemoteThread(metaConnectionId: string, remoteThreadId: string): ConversationBinding | null;
+  findByChatwootConversation(input: { tenantId: string; accountId: string; inboxId: string; conversationId: string }): ConversationBinding | null;
+}
+
+export interface ProcessedEventRepository {
+  claim(input: { source: "matrix" | "chatwoot"; sourceEventId: string; metaConnectionId: string | null; payloadHash: string }): { event: ProcessedEvent; claimed: boolean };
+  find(source: "matrix" | "chatwoot", sourceEventId: string): ProcessedEvent | null;
+  setStatus(id: string, status: ProcessedEventStatus, lastError?: string | null): ProcessedEvent;
+}
+
 export interface AuditRepository {
   record(input: Omit<AuditEvent, "id" | "createdAt">): AuditEvent;
   listForEntity(entityType: string, entityId: string): AuditEvent[];
@@ -91,7 +195,3 @@ export interface AuditRepository {
 export interface SecretProvider {
   resolve(secretRef: string): string | null;
 }
-
-export interface ChatwootBindingRepository {}
-export interface ConversationBindingRepository {}
-export interface ProcessedEventRepository {}

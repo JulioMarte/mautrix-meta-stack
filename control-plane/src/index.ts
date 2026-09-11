@@ -2,6 +2,9 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createApp } from "./app";
 import { openDatabase } from "./persistence/database";
+import { ChatwootEnvironmentSecretProvider } from "./security/secrets";
+import { HttpChatwootGateway } from "./services/http-chatwoot-gateway";
+import { HttpMatrixMediaDownloader } from "./services/matrix-media-downloader";
 
 const databasePath = process.env.CONTROL_PLANE_DB_PATH ?? "/data/control-plane.db";
 const adminToken = process.env.CONTROL_PLANE_ADMIN_TOKEN ?? "";
@@ -13,7 +16,13 @@ if (internalToken.length < 24) throw new Error("CONTROL_PLANE_INTERNAL_TOKEN mus
 if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
 
 const db = openDatabase(databasePath);
-const app = createApp(db, adminToken, internalToken).listen({ hostname: "0.0.0.0", port });
+const chatwootGateway = new HttpChatwootGateway(
+  new ChatwootEnvironmentSecretProvider(process.env),
+  fetch,
+  8_000,
+  new HttpMatrixMediaDownloader(process.env)
+);
+const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway }).listen({ hostname: "0.0.0.0", port });
 console.log(JSON.stringify({ operation: "startup", result: "ok", port, schema: 1 }));
 
 process.on("SIGTERM", () => { app.stop(); db.close(); process.exit(0); });
