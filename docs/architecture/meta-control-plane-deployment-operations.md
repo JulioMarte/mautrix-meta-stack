@@ -24,7 +24,22 @@ The egress resolver and bridge management paths MUST remain internal-only.
 
 ## Coolify/GitHub deployment rule
 
-`main` is the deployment branch. Feature work MUST remain off `main` until its required CI gates pass. A merge to `main` is treated as a deployment-triggering action and therefore should represent a coherent deployable checkpoint.
+`main` is the deployment branch and represents the currently human-accepted working deployment state. Feature work MUST remain off `main` until its required CI gates pass, real-environment requirements are understood, and a human owner explicitly approves promotion of an identified candidate SHA.
+
+A merge to `main` is deployment-triggering and MUST NOT be performed automatically by an agent, CI workflow, bot, or unattended release process. Green `dev` CI is necessary evidence, not promotion authorization.
+
+The default rule is therefore:
+
+```text
+feature/fix/docs -> dev -> automated evidence -> controlled staging/manual review
+                                      |
+                                      +-> human explicitly approves exact SHA
+                                                      |
+                                                      v
+                                                    main
+```
+
+Until the explicit human approval step occurs, `main` remains unchanged even when `dev` is technically deployable.
 
 No deployment procedure may require ad-hoc SSH mutation of container state as the normal path. Required initialization, migrations and configuration belong in repository-controlled Compose/services/scripts plus Coolify secrets/environment.
 
@@ -55,6 +70,8 @@ Mautrix may start independently for basic Matrix service availability, but produ
 ## Backup and restore
 
 Before production designation there must be a tested backup path for the control-plane data volume. Restore proof must show the system recovers tenant records, Meta connection IDs, sticky egress assignments, Chatwoot/conversation bindings, processed-event state and audit history.
+
+The repository CI includes a cold-volume recovery gate that stops the control plane, archives the complete `/data` volume state, destroys the original disposable volume, restores into a fresh volume, starts through the normal initialization path, and verifies the required identity/routing/idempotency/audit state. This deterministic CI proof validates the repository-controlled recovery procedure; production operators still need to validate where real backups are stored, retained and protected.
 
 Backups contain sensitive operational metadata and must be protected accordingly.
 
@@ -92,15 +109,24 @@ After a release that changes networking/routing, verify externally:
 - control-plane public routes are correctly protected;
 - internal resolver is not Internet-accessible;
 - assigned real proxy reports the expected exit country/IP;
-- one controlled Meta message reaches the intended Chatwoot inbox and a reply returns;
+- at least two controlled real Meta logins can coexist in one mautrix process when the branch claims final multi-tenant production readiness;
+- each controlled Meta login uses its intended real egress and no protected path uses host/direct egress;
+- one controlled Meta message reaches the intended Chatwoot inbox and a reply returns to the intended Meta thread;
+- restart/redeploy preserves the live routing identities being evaluated;
 - no unexpected direct-host egress is observed.
 
-These smoke checks complement CI; they do not substitute for it.
+These smoke checks complement CI; they do not substitute for it. CI test doubles cannot prove real Meta account acceptance, provider-specific residential proxy behavior, public exit IP, Coolify/DNS exposure, or the absence of host egress in the actual deployment environment.
+
+A failure or unperformed item in this section means production readiness remains unproven even if all repository CI is green.
 
 ## Rollback/kill switch
 
 Operators need a fast way to disable one connection or all Meta routing without destroying state. A bad deployment should be rollbackable at the application/container level, but no rollback may silently bypass `proxy_required` or discard newer routing/idempotency state.
 
+Before any human-approved `main` promotion, the operator must understand the rollback target and confirm that restoring the prior application state will not require destructive database rollback or discard state written by the candidate.
+
 ## Required CI proofs
 
 CI MUST cover Compose validity, fresh startup, migrations, restart persistence, readiness semantics, absence of required public exposure for internal services where statically testable, backup/restore at least once before production designation, and exact candidate-SHA integration tests.
+
+Passing these proofs makes the candidate eligible for human staging evaluation. It does not authorize or imply a merge to `main`.
