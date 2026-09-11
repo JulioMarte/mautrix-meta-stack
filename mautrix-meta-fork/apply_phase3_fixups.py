@@ -200,7 +200,7 @@ func TestDownloadMediaUsesScopedProxyAndNeverHitsDirectSentinel(t *testing.T) {
     var proxyHits atomic.Int32
     proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         proxyHits.Add(1)
-        if r.URL.String() != direct.URL {
+        if r.URL.String() != direct.URL+"/" {
             t.Errorf("proxy received unexpected target %q", r.URL.String())
         }
         _, _ = io.WriteString(w, "proxied")
