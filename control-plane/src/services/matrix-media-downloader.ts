@@ -1,4 +1,4 @@
-import type { Attachment } from "../domain/models";
+import type { Attachment, MatrixEncryptedFile } from "../domain/models";
 
 export type DownloadedAttachment = {
   blob: Blob;
@@ -56,6 +56,48 @@ function safeFileName(attachment: Attachment): string {
     : attachment.mimeType === "application/pdf" ? ".pdf"
     : "";
   return `attachment${extension}`;
+}
+
+function decodeBase64(raw: string, urlSafe = false): Uint8Array {
+  if (!raw || /\s/.test(raw)) throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID");
+  let value = urlSafe ? raw.replace(/-/g, "+").replace(/_/g, "/") : raw;
+  const remainder = value.length % 4;
+  if (remainder === 1) throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID");
+  if (remainder > 0) value += "=".repeat(4 - remainder);
+  try { return new Uint8Array(Buffer.from(value, "base64")); } catch { throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID"); }
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < left.byteLength; i++) diff |= left[i]! ^ right[i]!;
+  return diff === 0;
+}
+
+async function decryptEncryptedFile(ciphertext: Uint8Array, encrypted: MatrixEncryptedFile): Promise<Uint8Array> {
+  if (encrypted.v !== "v2" || encrypted.key.kty !== "oct" || encrypted.key.alg !== "A256CTR" || encrypted.key.ext !== true || !encrypted.key.keyOps.includes("decrypt")) {
+    throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID");
+  }
+  const keyBytes = decodeBase64(encrypted.key.k, true);
+  const iv = decodeBase64(encrypted.iv);
+  const expectedHash = decodeBase64(encrypted.hashes.sha256);
+  if (keyBytes.byteLength !== 32 || iv.byteLength !== 16 || expectedHash.byteLength !== 32) throw new Error("MATRIX_MEDIA_ENCRYPTION_INVALID");
+
+  const actualHash = new Uint8Array(await crypto.subtle.digest("SHA-256", toArrayBuffer(ciphertext)));
+  if (!constantTimeEqual(actualHash, expectedHash)) throw new Error("MATRIX_MEDIA_HASH_MISMATCH");
+
+  try {
+    const key = await crypto.subtle.importKey("raw", toArrayBuffer(keyBytes), { name: "AES-CTR" }, false, ["decrypt"]);
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-CTR", counter: iv, length: 64 }, key, toArrayBuffer(ciphertext));
+    return new Uint8Array(plaintext);
+  } catch (error) {
+    if (error instanceof Error && error.message === "MATRIX_MEDIA_HASH_MISMATCH") throw error;
+    throw new Error("MATRIX_MEDIA_DECRYPT_FAILED", { cause: error });
+  }
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<Uint8Array> {
@@ -120,6 +162,7 @@ export class HttpMatrixMediaDownloader implements MatrixMediaDownloader {
 
   async download(attachment: Attachment): Promise<DownloadedAttachment> {
     if (!attachment.url) throw new Error("MATRIX_MEDIA_URI_REQUIRED");
+    if (attachment.sizeBytes != null && attachment.sizeBytes > this.maxBytes) throw new Error("MATRIX_MEDIA_TOO_LARGE");
     const { serverName, mediaId } = parseMxc(attachment.url);
     const initialUrl = appendPath(this.base, `/_matrix/client/v1/media/download/${encodeURIComponent(serverName)}/${encodeURIComponent(mediaId)}`);
     let response = await this.fetchWithTimeout(initialUrl, true, "manual");
@@ -140,13 +183,13 @@ export class HttpMatrixMediaDownloader implements MatrixMediaDownloader {
       throw new Error(`MATRIX_MEDIA_HTTP_${response.status}`);
     }
 
-    const bytes = await readBounded(response, this.maxBytes);
-    if (attachment.sizeBytes != null && attachment.sizeBytes > this.maxBytes) throw new Error("MATRIX_MEDIA_TOO_LARGE");
+    const ciphertext = await readBounded(response, this.maxBytes);
+    const bytes = attachment.encryption ? await decryptEncryptedFile(ciphertext, attachment.encryption) : ciphertext;
+    if (bytes.byteLength > this.maxBytes) throw new Error("MATRIX_MEDIA_TOO_LARGE");
     const responseType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
     const mimeType = attachment.mimeType?.trim() || responseType || "application/octet-stream";
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     return {
-      blob: new Blob([buffer], { type: mimeType }),
+      blob: new Blob([toArrayBuffer(bytes)], { type: mimeType }),
       fileName: safeFileName(attachment),
       mimeType,
       sizeBytes: bytes.byteLength
