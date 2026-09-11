@@ -4,6 +4,8 @@ export type ResolveInput = { metaAccountId?: string; loginId?: string; reason: s
 export type ResolveResult = { proxyUrl: string; assignmentId: string; connectionId: string };
 export type ResolverErrorCode = "IDENTITY_REQUIRED" | "IDENTITY_CONFLICT" | "CONNECTION_NOT_ACTIVE" | "EGRESS_ASSIGNMENT_REQUIRED" | "EGRESS_UNHEALTHY" | "EGRESS_SECRET_MISSING" | "EGRESS_CONFIGURATION_INVALID" | "DIRECT_EGRESS_NOT_SUPPORTED";
 
+const supportedProxySchemes = new Set(["http", "https", "socks5"]);
+
 export class ResolverError extends Error {
   constructor(public readonly code: ResolverErrorCode) { super(code); }
 }
@@ -22,7 +24,7 @@ export class EgressResolver {
     const profile = this.egress.findById(connection.egressProfileId);
     if (!profile) throw new ResolverError("EGRESS_ASSIGNMENT_REQUIRED");
     if (profile.status !== "healthy") throw new ResolverError("EGRESS_UNHEALTHY");
-    if (!/^[a-z][a-z0-9+.-]*$/i.test(profile.scheme) || !profile.host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
+    if (!supportedProxySchemes.has(profile.scheme.toLowerCase()) || !profile.host || profile.port < 1 || profile.port > 65535) throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
 
     let auth = "";
     if (profile.secretRef) {
@@ -33,6 +35,6 @@ export class EgressResolver {
     } else if (profile.username) {
       throw new ResolverError("EGRESS_CONFIGURATION_INVALID");
     }
-    return { proxyUrl: `${profile.scheme}://${auth}${profile.host}:${profile.port}`, assignmentId: profile.id, connectionId: connection.id };
+    return { proxyUrl: `${profile.scheme.toLowerCase()}://${auth}${profile.host}:${profile.port}`, assignmentId: profile.id, connectionId: connection.id };
   }
 }
