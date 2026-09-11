@@ -198,6 +198,37 @@ describe("Matrix sync hardening", () => {
     expect(deliveries).toBe(0);
   });
 
+  test("bounded gap recovery stops after the configured page limit and preserves checkpoint", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let recoveryCalls = 0;
+    let deliveries = 0;
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!room:matrix.example.com": {
+        state: { events: bridgeState() },
+        timeline: { limited: true, prev_batch: "p1", events: [metaText("$current")] }
+      } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; },
+      async roomState() { return bridgeState(); },
+      async joinRoom() {},
+      async roomMessages(_roomId: string, from: string) {
+        recoveryCalls++;
+        return { start: from, end: "mid", chunk: [metaText("$missed")] };
+      }
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), {
+      MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com",
+      MATRIX_SYNC_MAX_GAP_PAGES: "1"
+    });
+
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_GAP_TOO_LARGE");
+    expect(recoveryCalls).toBe(1);
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
   test("unknown bridge login is ignored without side effects or blocking checkpoint advancement", async () => {
     const { rooms, checkpoints, attribution } = setup();
     checkpoints.save("ingestor", "s1");
