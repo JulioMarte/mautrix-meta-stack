@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const LATEST_SCHEMA_VERSION = 2;
+export const LATEST_SCHEMA_VERSION = 3;
 
 const migration1 = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -109,6 +109,24 @@ CREATE TABLE IF NOT EXISTS chatwoot_webhook_configs (
 );
 `;
 
+const migration3 = `
+CREATE TABLE IF NOT EXISTS provisioning_claims (
+  id TEXT PRIMARY KEY,
+  secret_digest TEXT NOT NULL UNIQUE,
+  meta_connection_id TEXT NOT NULL REFERENCES meta_connections(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  matrix_owner_mxid TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provisioning_claims_connection
+  ON provisioning_claims(meta_connection_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_provisioning_claims_expiry
+  ON provisioning_claims(expires_at) WHERE used_at IS NULL AND revoked_at IS NULL;
+`;
+
 export function runMigrations(db: Database): void {
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -125,6 +143,13 @@ export function runMigrations(db: Database): void {
     const apply = db.transaction(() => {
       db.exec(migration2);
       db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(2, new Date().toISOString());
+    });
+    apply();
+  }
+  if (!versions.has(3)) {
+    const apply = db.transaction(() => {
+      db.exec(migration3);
+      db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(3, new Date().toISOString());
     });
     apply();
   }
