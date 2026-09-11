@@ -128,7 +128,6 @@ const mx=await (await fetch("http://matrix-client-double:8082/_test/state")).jso
 const mxA=mx.events.filter(e=>e.roomId==="!phase6-a:matrix.example.com"), mxB=mx.events.filter(e=>e.roomId==="!phase6-b:matrix.example.com");
 if(mxA.length!==1||mxB.length!==1||mx.events.length!==2) throw new Error("Matrix destinations crossed tenants or duplicated");
 if(mxA[0].content.body!=="agent A"||mxB[0].content.body!=="agent B") throw new Error("Matrix reply contents crossed tenants");
-
 console.log(JSON.stringify({a:{connectionId:a.connection.id,bindingId:a.binding.id,assignmentId:[...assignments.a][0]},b:{connectionId:b.connection.id,bindingId:b.binding.id,assignmentId:[...assignments.b][0]}}));
 ' > /tmp/phase6-state.json
 
@@ -144,16 +143,15 @@ const direct=await (await fetch("http://direct-egress-sentinel:8083/_test/state"
 '
 "${DC[@]}" exec -T control-plane bun -e 'await fetch("http://proxy-a:8081/_test/up",{method:"POST"})'
 
-# Chatwoot API timeout: pause the only Chatwoot endpoint, require the Matrix ingress
-# to fail rather than route elsewhere, then retry the exact same event after recovery.
-"${DC[@]}" pause chatwoot-double >/dev/null
+# Chatwoot API timeout: delay one message create beyond the gateway timeout,
+# require Matrix ingress to fail retryably, then retry the exact same event.
+"${DC[@]}" exec -T control-plane bun -e 'const r=await fetch("http://chatwoot-double:8080/_test/delay-next-message-create",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ms:9000})});if(!r.ok)process.exit(1)'
 "${DC[@]}" exec -T control-plane bun -e '
 const {Database}=await import("bun:sqlite");const d=new Database("/data/control-plane.db",{readonly:true});const row=d.query("select id from meta_connections where meta_account_id=?").get("meta-phase6-a");d.close();
 const ev={connectionId:row.id,roomId:"!phase6-a:matrix.example.com",remoteThreadId:"thread-phase6-a",remoteContactId:"contact-phase6-a",eventId:"$phase6-timeout-a",senderId:"contact-phase6-a",text:"timeout A",occurredAt:"2026-09-11T14:02:00.000Z",provenance:"meta"};
 const r=await fetch("http://127.0.0.1:3000/internal/v1/matrix/events",{method:"POST",headers:{authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN,"content-type":"application/json"},body:JSON.stringify(ev)});if(r.ok){console.error(await r.text());throw new Error("Chatwoot timeout unexpectedly succeeded")}
 '
-"${DC[@]}" unpause chatwoot-double >/dev/null
-wait_healthy chatwoot-double 30
+sleep 2
 "${DC[@]}" exec -T control-plane bun -e '
 const {Database}=await import("bun:sqlite");const d=new Database("/data/control-plane.db",{readonly:true});const row=d.query("select id from meta_connections where meta_account_id=?").get("meta-phase6-a");d.close();
 const ev={connectionId:row.id,roomId:"!phase6-a:matrix.example.com",remoteThreadId:"thread-phase6-a",remoteContactId:"contact-phase6-a",eventId:"$phase6-timeout-a",senderId:"contact-phase6-a",text:"timeout A",occurredAt:"2026-09-11T14:02:00.000Z",provenance:"meta"};
@@ -169,7 +167,7 @@ wait_healthy control-plane 90
 import {createHmac} from "node:crypto";
 const {Database}=await import("bun:sqlite");const d=new Database("/data/control-plane.db",{readonly:true});
 const conns=d.query("select id,meta_account_id,mautrix_login_id from meta_connections where meta_account_id in (?,?) order by meta_account_id").all("meta-phase6-a","meta-phase6-b");
-const rows=d.query("select cb.id as binding_id,cb.chatwoot_account_id,cb.chatwoot_inbox_id,conv.chatwoot_conversation_id,conv.matrix_room_id from chatwoot_bindings cb join conversation_bindings conv on conv.chatwoot_account_id=cb.chatwoot_account_id and conv.chatwoot_inbox_id=cb.chatwoot_inbox_id where cb.chatwoot_inbox_id in (?,?) order by cb.chatwoot_inbox_id").all("10","20");d.close();
+const rows=d.query("select cb.id as binding_id,cb.chatwoot_account_id,cb.chatwoot_inbox_id,conv.chatwoot_conversation_id,conv.matrix_room_id from chatwoot_bindings cb join conversation_bindings conv on conv.tenant_id=cb.tenant_id and conv.chatwoot_account_id=cb.chatwoot_account_id and conv.chatwoot_inbox_id=cb.chatwoot_inbox_id where cb.chatwoot_inbox_id in (?,?) order by cb.chatwoot_inbox_id").all("10","20");d.close();
 if(conns.length!==2||rows.length!==2) throw new Error("restart lost durable routing identity");
 const internal={authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN,"content-type":"application/json"};
 for(const [i,c] of conns.entries()){
