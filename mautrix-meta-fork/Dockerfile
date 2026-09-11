@@ -11,8 +11,10 @@ RUN git clone --filter=blob:none https://github.com/mautrix/meta.git mautrix-met
 
 COPY mautrix-meta-fork/apply_patch.py /patch/apply_patch.py
 COPY mautrix-meta-fork/apply_phase3_fixups.py /patch/apply_phase3_fixups.py
+COPY mautrix-meta-fork/apply_phase3_transport_tests.py /patch/apply_phase3_transport_tests.py
 RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_fixups.py /src/mautrix-meta \
+    && python3 /patch/apply_phase3_transport_tests.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
     && gofmt -w \
         pkg/connector/client.go \
