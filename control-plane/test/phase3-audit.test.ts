@@ -44,6 +44,14 @@ describe("Phase 3 audit hardening", () => {
     expect(() => resolver.resolve({ metaAccountId: "meta-a", loginId: "login-b", reason: "connect", trafficClass: "messaging" })).toThrow("IDENTITY_CONFLICT");
   });
 
+  test("identity ownership on an inactive connection still conflicts globally", () => {
+    const first = activeConnection("meta-a");
+    const second = activeConnection("meta-b", "login-b");
+    second.connections.setStatus(second.connection.id, "disabled");
+    const resolver = new EgressResolver(first.connections, first.egress, new EnvironmentSecretProvider({}));
+    expect(() => resolver.resolve({ metaAccountId: "meta-a", loginId: "login-b", reason: "connect", trafficClass: "messaging" })).toThrow("IDENTITY_CONFLICT");
+  });
+
   test("management API rejects unusable proxy profiles before persistence", async () => {
     const database = freshDb();
     const app = createApp(database, "admin-token-123456789", "internal-token-123456789012345", {});
