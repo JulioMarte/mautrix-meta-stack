@@ -167,8 +167,8 @@ export class MatrixToChatwootService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       const terminal = [
-        "CROSS_TENANT_CONVERSATION_BINDING", "CHATWOOT_ROUTE_MISMATCH", "CHATWOOT_ROUTE_AMBIGUOUS", "MATRIX_ROOM_BINDING_CONFLICT",
-        "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
+        "CROSS_TENANT_CONVERSATION_BINDING", "CHATWOOT_ROUTE_MISMATCH", "CHATWOOT_ROUTE_AMBIGUOUS", "CHATWOOT_BINDING_NOT_ACTIVE",
+        "MATRIX_ROOM_BINDING_CONFLICT", "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
       ].includes(message);
       this.processedEvents.setStatus(claim.event.id, terminal ? "failed_terminal" : "failed_retryable", message);
       throw error;
