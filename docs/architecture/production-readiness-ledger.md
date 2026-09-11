@@ -12,7 +12,7 @@ A human owner must explicitly approve the exact candidate SHA after reviewing th
 
 ## Integrated `dev` baseline
 
-The current integrated baseline is `dev@b492a71bd127063fb6444a24bbc3a7c764b33a31`.
+The current integrated baseline is `dev@af129d133aa863f0818b7ec96c0cb9524b90a378`.
 
 Integrated deterministic evidence includes:
 
@@ -20,61 +20,73 @@ Integrated deterministic evidence includes:
 - sticky per-connection fail-closed egress resolution and secret redaction;
 - deterministic mautrix-meta reconstruction from pinned upstream `ed37c9e6ce47e83dc75b9abea7b636302715b9bc`;
 - account-aware login/messaging/media/E2EE proxy-context tests and direct-egress sentinels;
-- Matrix -> Chatwoot behavior beginning at the normalized internal Matrix event boundary;
 - signed Chatwoot -> Matrix routing, attachments, provenance, duplicate suppression and ambiguous-response reconciliation;
 - two-tenant A/B routing/egress, restart persistence, assigned-proxy failure and secret-canary checks;
 - cold backup/restore of the full control-plane data volume in a disposable environment;
-- pre-Meta provisioning claims: one-time digest-only authority, exact connection binding, bootstrap egress before provider traffic, login-ID binding and direct-sentinel proof.
+- pre-Meta provisioning claims: one-time digest-only authority, exact connection binding, bootstrap egress before provider traffic, login-ID binding and direct-sentinel proof;
+- real Matrix/Synapse Client-Server ingestion using a dedicated Matrix service identity, verified bridge room attribution, durable sync checkpoints and bounded gap recovery;
+- disposable Synapse acceptance with two tenants/two rooms, trusted invite/join, unbound-room rejection, text/PDF/voice-note normalization and checkpoint persistence;
+- backup/restore coverage for Matrix room attribution and sync checkpoint state.
 
 These facts are strong engineering evidence. They are not equivalent to the global Definition of Done.
 
-## Current implementation branch: real Matrix/Synapse ingestion
+## Integrated Matrix/Synapse ingestion
 
-`feature/matrix-synapse-ingestion` closes the major gap between the normalized internal Phase 4 boundary and actual Synapse Client-Server ingestion.
+PR #17 is merged to `dev@af129d133aa863f0818b7ec96c0cb9524b90a378`. The post-merge workflow set has no failed runs.
 
-**Current status:** implemented on branch and undergoing final exact-SHA acceptance. It is not integrated until PR #17 merges to `dev` and the resulting post-merge `dev` SHA is green.
-
-Implemented behavior includes:
+Integrated behavior includes:
 
 - schema v4 `matrix_room_bindings` and `matrix_sync_checkpoints`;
 - standard `/sync` client using a dedicated Matrix service identity;
 - bridge-bot-only trusted invitation auto-join rather than global Application Service visibility;
 - exact room attribution from bridge-authored `m.bridge`/`uk.half-shot.bridge` state: `channel.receiver -> mautrix_login_id -> meta_connection`, with `channel.id -> remote_thread_id`;
 - strict persisted room/thread/login/tenant conflict rejection;
-- an unknown/inactive bridge login is treated as an unattributable room with zero downstream side effects and no room binding, without allowing that room to deny service to unrelated valid rooms in the same sync batch;
+- unknown/inactive bridge logins treated as unattributable rooms with zero downstream side effects, without allowing one invalid room to block unrelated valid rooms in the same sync batch;
 - bootstrap sync with timeline limit zero and durable `next_batch` checkpointing;
-- bounded recovery of `limited` timelines using forward `/messages` pagination from the persisted checkpoint to `prev_batch`, with event-ID deduplication across recovered pages and the current timeline;
+- bounded recovery of `limited` timelines using forward `/messages` pagination from the persisted checkpoint to `prev_batch`, with event-ID deduplication across recovered pages and current timeline;
 - recovery failure, missing range information, non-converging pagination or oversized history leaves the checkpoint unchanged;
 - runtime long-poll loop, bounded backoff, shutdown handling and Matrix-aware readiness;
-- fork metadata on every remote bridged message part carrying explicit Meta provenance and provider remote sender ID;
+- fork metadata on bridged message parts carrying explicit Meta provenance and provider remote sender ID;
 - ordinary Matrix and Chatwoot-originated events excluded from Meta inbound routing;
 - text, image/video/audio/file metadata, encrypted-file metadata and Matrix voice-note semantics;
-- encrypted Matrix media fails closed if its v2/JWK metadata is unusable, including a missing `decrypt` key operation, and the checkpoint is not advanced;
-- deterministic hardening tests prove successful multi-page gap recovery, first-seen ordering, overlap deduplication, unavailable recovery, non-converging pagination and oversized-gap checkpoint safety;
-- a composed batch-retry regression proves that a retryable downstream Chatwoot failure leaves `next_batch` unchanged, replay deduplicates already-delivered earlier events, and only the failed event performs its side effect on recovery;
-- real disposable Synapse acceptance covering authentication, trusted invite/join, two tenants/two rooms, same numeric remote contact across tenants, unbound-room rejection, text/PDF/voice-note normalization and checkpoint persistence after SQLite reopen;
-- cold backup/restore acceptance explicitly seeds and verifies `matrix_room_bindings` and `matrix_sync_checkpoints` after destruction of the original volume and restoration into a fresh volume;
-- Validate, Phase 6 and Docker build the same Matrix-enabled fork variant.
+- encrypted Matrix media fails closed if its v2/JWK metadata is unusable, with the checkpoint left unchanged;
+- composed retry proof: downstream Chatwoot failure leaves `next_batch` unchanged, replay deduplicates already-delivered events and only the failed event repeats its side effect;
+- the same Matrix-enabled fork variant is exercised by Validate, Phase 6 and Docker builds.
 
-The bootstrap policy intentionally begins ingestion from the first persisted `/sync` token with timeline limit zero. Historical messages that predate initial ingestion startup are not replayed automatically; adding backfill would require a separate explicit policy for historical CRM side effects.
+The bootstrap policy intentionally starts at the first persisted `/sync` token with timeline limit zero. Historical messages predating initial ingestion startup are not replayed automatically. Historical CRM backfill would require a separate explicit policy.
 
-The exact branch candidate must finish green after the final documentation SHA; do not treat the above as integrated evidence yet.
+## Current implementation branch: Chatwoot tenancy completion
+
+`feature/chatwoot-tenancy-completion` closes the remaining deterministic Chatwoot tenancy/migration gap.
+
+**Current status:** implementation and focused tests exist on the branch; it is not integrated until an exact-head PR to `dev` and the resulting post-merge `dev` SHA are green.
+
+Implemented/proven behavior includes:
+
+- colliding account/inbox/conversation/contact-looking IDs across different tenant contexts do not cross-route;
+- deterministic remote-contact identity remains scoped by tenant + Meta connection + remote contact;
+- webhook/binding mismatches fail closed before Matrix side effects;
+- a connection migration from Chatwoot binding A to B preserves historical thread routing through A while new threads use B;
+- Chatwoot replies arriving through historical binding A still target the original Matrix room after the connection points to B;
+- binding B cannot claim a historical A conversation merely because numeric conversation IDs collide;
+- another tenant with colliding numeric IDs cannot claim the conversation;
+- if historical binding A is disabled, new delivery for that historical thread fails terminally with no Chatwoot side effect and no silent fallback to B;
+- a dedicated `Chatwoot tenancy acceptance` workflow runs the focused contract alongside broader Phase 4/5/6 regressions.
+
+The current MVP deliberately supports at most one `(account_id, inbox_id)` binding per tenant. Simultaneously configuring two different Chatwoot installations with the same numeric account+inbox IDs inside one tenant is outside the MVP and would require promoting installation/binding identity into the persistent conversation key.
 
 ## Remaining blocking gaps
 
-### 1. Targeted Chatwoot tenancy contract completion
+### 1. Chatwoot tenancy integration evidence
 
-The normative Chatwoot tenancy contract still requires explicit coverage beyond the current A/B topology, including:
+The deterministic tenancy gap is implemented on `feature/chatwoot-tenancy-completion`, but it is not integrated evidence until:
 
-- colliding numeric Chatwoot account/inbox/conversation IDs across separate tenant contexts;
-- webhook/binding mismatch rejection across tenants;
-- tenant-isolated remote-contact identity;
-- cross-binding conversation rejection;
-- explicit semantics for changing an active inbox without silently rewriting historical conversation bindings.
+- the final documentation SHA passes `Chatwoot tenancy acceptance` and inherited regressions;
+- a PR targets `dev` and passes exact-head checks;
+- the PR is merged only to `dev` with head-SHA protection;
+- the resulting `dev` merge SHA passes the post-merge acceptance matrix.
 
-Existing code may satisfy some of these properties. Missing evidence must be added; runtime changes should be made only if those tests expose defects.
-
-**Status:** remaining deterministic technical/coverage blocker after Matrix ingestion integrates.
+**Status:** final deterministic integration blocker.
 
 ### 2. Real Meta/provider deployment evidence
 
@@ -109,13 +121,13 @@ The repository proves the recovery algorithm on disposable Docker volumes, inclu
 
 ## Completion sequence from current state
 
-1. finish exact-SHA Matrix/Synapse ingestion acceptance and all inherited regressions;
-2. merge PR #17 only to `dev` with an exact-head guard, then require post-merge `dev` checks green;
-3. create a focused branch from that green `dev` and close the remaining Chatwoot tenancy assertions with tests first and code fixes only where required;
-4. rerun the complete repository acceptance matrix on one exact resulting `dev` SHA;
-5. prepare a staging checklist for every assertion CI cannot make;
-6. human operator performs controlled staging with at least two disposable real Meta accounts and real egress endpoints;
-7. perform the real off-host backup/restore operational drill and capture evidence;
+1. finish exact-SHA Chatwoot tenancy acceptance and inherited regressions;
+2. open a PR only to `dev`, require all exact-head checks including Phase 3/4/5/6, provisioning, Matrix ingestion, recovery and tenancy, then merge with an exact-head guard;
+3. require the complete repository acceptance matrix green on the resulting `dev` SHA;
+4. prepare a staging checklist for every assertion CI cannot make;
+5. human operator performs controlled staging with at least two disposable real Meta accounts and two real egress endpoints;
+6. verify real public exit IP/country, reconnect stickiness, provider media/avatar/E2EE behavior and the complete Meta -> Matrix -> Chatwoot -> Matrix -> Meta round trip;
+7. perform the real off-host backup/restore operational drill and capture evidence for encryption/access/retention/restore permissions and actual volume identifiers;
 8. human owner evaluates the exact `dev` candidate against the currently working `main` deployment;
 9. only an explicit human instruction approving the exact SHA may authorize any later `main` promotion.
 
@@ -123,6 +135,6 @@ The repository proves the recovery algorithm on disposable Docker volumes, inclu
 
 The repository is **not production-ready yet** under its own normative documents.
 
-Provisioning is integrated in `dev`. Real Matrix/Synapse ingestion is implemented on PR #17 but still requires final exact-SHA acceptance, integration to `dev`, and post-merge `dev` evidence. After that, targeted Chatwoot tenancy coverage, real Meta/provider staging and real production-operations evidence remain outstanding.
+Provisioning and real Matrix/Synapse ingestion are integrated in `dev`. The final deterministic Chatwoot tenancy/migration blocker is implemented on `feature/chatwoot-tenancy-completion` but still requires exact-head integration evidence. After that, the remaining mandatory blockers are controlled real-provider staging and real production backup/deployment operations.
 
 No CI result or merge to `dev` changes the human-controlled `main` promotion rule.
