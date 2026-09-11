@@ -15,12 +15,14 @@ COPY mautrix-meta-fork/apply_phase3_transport_tests.py /patch/apply_phase3_trans
 COPY mautrix-meta-fork/apply_phase3_resolver_hardening.py /patch/apply_phase3_resolver_hardening.py
 COPY mautrix-meta-fork/apply_provisioning_bootstrap.py /patch/apply_provisioning_bootstrap.py
 COPY mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /patch/apply_provisioning_bootstrap_fixups.py
+COPY mautrix-meta-fork/apply_matrix_ingestion_metadata.py /patch/apply_matrix_ingestion_metadata.py
 RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_fixups.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_transport_tests.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_resolver_hardening.py /src/mautrix-meta \
     && python3 /patch/apply_provisioning_bootstrap.py /src/mautrix-meta \
     && python3 /patch/apply_provisioning_bootstrap_fixups.py /src/mautrix-meta \
+    && python3 /patch/apply_matrix_ingestion_metadata.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
     && gofmt -w \
         pkg/connector/client.go \
@@ -31,6 +33,7 @@ RUN python3 /patch/apply_patch.py /src/mautrix-meta \
         pkg/connector/provisioning_test.go \
         pkg/connector/directmedia.go \
         pkg/connector/events.go \
+        pkg/connector/matrix_ingestion_metadata_test.go \
         pkg/connector/userinfo.go \
         pkg/connector/chatinfo.go \
         pkg/connector/handlemeta.go \
