@@ -53,22 +53,26 @@ wait_healthy synapse 120
 wait_healthy control-plane 90
 wait_healthy mautrix-meta 120
 
-# Establish one active account assignment. The canary credential stays inside the
-# control plane response and is never printed by this script.
+# Establish one active account assignment using only the provider identity known
+# before first login. The BridgeV2 login ID is deliberately left unbound here so
+# the later resolver call proves progressive identity resolution without relying
+# on a pre-populated mautrix_login_id fixture.
 "${phase3_dc[@]}" exec -T control-plane bun -e '
   const base="http://127.0.0.1:3000";
   const headers={authorization:`Bearer ${process.env.CONTROL_PLANE_ADMIN_TOKEN}`,"content-type":"application/json"};
   const post=async(path,body)=>{const r=await fetch(base+path,{method:"POST",headers,body:JSON.stringify(body)});if(!r.ok){console.error(path,r.status);process.exit(1)}return (await r.json()).data};
   const tenant=await post("/api/v1/tenants",{slug:"phase3-mautrix",name:"Phase 3 Mautrix"});
   const profile=await post("/api/v1/egress-profiles",{provider:"fixture",scheme:"socks5",host:"proxy-ci.test",port:1080,username:"ci",secretRef:"env:EGRESS_PROXY_CI_PASSWORD",status:"healthy"});
-  const connection=await post("/api/v1/meta-connections",{tenantId:tenant.id,matrixOwnerMxid:"@phase3:matrix.example.com",metaAccountId:"123",mautrixLoginId:"123"});
+  const connection=await post("/api/v1/meta-connections",{tenantId:tenant.id,matrixOwnerMxid:"@phase3:matrix.example.com",metaAccountId:"123"});
+  if(connection.mautrixLoginId!==null) process.exit(1);
   await post(`/api/v1/meta-connections/${connection.id}/egress`,{egressProfileId:profile.id});
   await post(`/api/v1/meta-connections/${connection.id}/activate`,{});
 '
 
 # Check the actual patched runtime container: configuration, service credential,
-# network reachability and authenticated resolver behavior. Store the response in
-# a temporary file and assert it without emitting proxy credentials to logs.
+# network reachability and authenticated resolver behavior. The resolver receives
+# both the known provider account and the newly available deterministic BridgeV2
+# login ID even though only the provider identity was prebound above.
 "${phase3_dc[@]}" exec -T mautrix-meta /bin/sh -c '
   set -eu
   test -n "$MAUTRIX_META_EGRESS_TOKEN"
