@@ -92,10 +92,9 @@ async function decryptEncryptedFile(ciphertext: Uint8Array, encrypted: MatrixEnc
 
   try {
     const key = await crypto.subtle.importKey("raw", toArrayBuffer(keyBytes), { name: "AES-CTR" }, false, ["decrypt"]);
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-CTR", counter: iv, length: 64 }, key, toArrayBuffer(ciphertext));
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-CTR", counter: toArrayBuffer(iv), length: 64 }, key, toArrayBuffer(ciphertext));
     return new Uint8Array(plaintext);
   } catch (error) {
-    if (error instanceof Error && error.message === "MATRIX_MEDIA_HASH_MISMATCH") throw error;
     throw new Error("MATRIX_MEDIA_DECRYPT_FAILED", { cause: error });
   }
 }
