@@ -29,8 +29,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Typecheck Matrix ingestion surface
         run: bun run typecheck
-      - name: Prove Matrix persistence, sync and attribution invariants
-        run: bun test test/matrix-ingestion-persistence.test.ts test/matrix-sync-attribution.test.ts
+      - name: Prove Matrix persistence, sync, attribution and runtime boundaries
+        run: bun test test/matrix-ingestion-persistence.test.ts test/matrix-sync-attribution.test.ts test/matrix-sync-ingestor.test.ts
 
   fork-matrix-ingestion-contract:
     runs-on: ubuntu-latest
@@ -66,6 +66,94 @@ jobs:
             pkg/connector/matrix_ingestion_metadata_test.go \
             pkg/connector/matrix_ingestor_membership_test.go
           git diff --check
-      - name: Prove sender metadata and Matrix ingestor configuration
+      - name: Prove sender provenance metadata and Matrix ingestor configuration
         working-directory: /tmp/mautrix-meta
-        run: go test ./pkg/connector -run 'TestAnnotateMatrixRemoteSender|TestMatrixIngestorMXIDValidation'
+        run: go test ./pkg/connector -run 'TestAnnotateMatrixRemoteEvent|TestMatrixIngestorMXIDValidation' -count=1 -v
+
+  live-synapse-ingestion:
+    runs-on: ubuntu-latest
+    env:
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MATRIX_SERVER_NAME: matrix.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install control-plane dependencies
+        working-directory: control-plane
+        run: bun install --frozen-lockfile
+      - name: Create ephemeral Matrix credentials
+        shell: bash
+        run: |
+          set -eu
+          BOT_PASSWORD="bot-$(openssl rand -hex 24)"
+          SYNC_PASSWORD="sync-$(openssl rand -hex 24)"
+          echo "::add-mask::$BOT_PASSWORD"
+          echo "::add-mask::$SYNC_PASSWORD"
+          echo "MATRIX_LIVE_BOT_PASSWORD=$BOT_PASSWORD" >> "$GITHUB_ENV"
+          echo "MATRIX_LIVE_SYNC_PASSWORD=$SYNC_PASSWORD" >> "$GITHUB_ENV"
+      - name: Start disposable Synapse and create service users
+        shell: bash
+        run: |
+          set -eu
+          data=/tmp/matrix-synapse-data
+          rm -rf "$data"
+          mkdir -p "$data"
+          docker run --rm --user 0:0 \
+            -e SYNAPSE_SERVER_NAME="$MATRIX_SERVER_NAME" \
+            -e SYNAPSE_REPORT_STATS=no \
+            -e SYNAPSE_CONFIG_PATH=/data/homeserver.yaml \
+            -v "$data:/data" \
+            "$SYNAPSE_IMAGE" generate
+          chown -R 991:991 "$data"
+          docker run -d --name matrix-sync-synapse \
+            -e SYNAPSE_CONFIG_PATH=/data/homeserver.yaml \
+            -e UID=991 -e GID=991 \
+            -p 8008:8008 \
+            -v "$data:/data" \
+            "$SYNAPSE_IMAGE"
+          end=$((SECONDS + 120))
+          until curl -fsS http://127.0.0.1:8008/health >/dev/null; do
+            if [ "$SECONDS" -ge "$end" ]; then
+              docker logs matrix-sync-synapse || true
+              exit 1
+            fi
+            sleep 2
+          done
+          docker exec -u 991:991 matrix-sync-synapse register_new_matrix_user \
+            http://127.0.0.1:8008 -c /data/homeserver.yaml \
+            -u metabot -p "$MATRIX_LIVE_BOT_PASSWORD" -a --exists-ok
+          docker exec -u 991:991 matrix-sync-synapse register_new_matrix_user \
+            http://127.0.0.1:8008 -c /data/homeserver.yaml \
+            -u ingestor -p "$MATRIX_LIVE_SYNC_PASSWORD" --no-admin --exists-ok
+      - name: Login live Matrix users and mask access tokens
+        shell: bash
+        run: |
+          set -eu
+          login() {
+            local user="$1" password="$2"
+            curl -fsS http://127.0.0.1:8008/_matrix/client/v3/login \
+              -H 'content-type: application/json' \
+              --data "$(jq -nc --arg u "$user" --arg p "$password" '{type:"m.login.password",identifier:{type:"m.id.user",user:$u},password:$p}')"
+          }
+          bot_json="$(login metabot "$MATRIX_LIVE_BOT_PASSWORD")"
+          sync_json="$(login ingestor "$MATRIX_LIVE_SYNC_PASSWORD")"
+          bot_token="$(printf '%s' "$bot_json" | jq -er .access_token)"
+          sync_token="$(printf '%s' "$sync_json" | jq -er .access_token)"
+          echo "::add-mask::$bot_token"
+          echo "::add-mask::$sync_token"
+          echo "MATRIX_LIVE_BASE_URL=http://127.0.0.1:8008" >> "$GITHUB_ENV"
+          echo "MATRIX_LIVE_BOT_ACCESS_TOKEN=$bot_token" >> "$GITHUB_ENV"
+          echo "MATRIX_LIVE_SYNC_ACCESS_TOKEN=$sync_token" >> "$GITHUB_ENV"
+          echo "MATRIX_LIVE_BOT_MXID=@metabot:$MATRIX_SERVER_NAME" >> "$GITHUB_ENV"
+          echo "MATRIX_LIVE_SYNC_MXID=@ingestor:$MATRIX_SERVER_NAME" >> "$GITHUB_ENV"
+      - name: Prove real Synapse invite, join, attribution, timeline and restart persistence
+        working-directory: control-plane
+        run: bun test test/matrix-synapse-live.test.ts
+      - name: Dump Synapse logs on failure
+        if: failure()
+        run: docker logs matrix-sync-synapse || true
+      - name: Cleanup Synapse
+        if: always()
+        run: docker rm -f matrix-sync-synapse >/dev/null 2>&1 || true
