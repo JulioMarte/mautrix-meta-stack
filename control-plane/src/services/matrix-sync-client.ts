@@ -18,11 +18,18 @@ export type MatrixSyncResponse = {
 };
 
 export type MatrixSyncFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type MatrixSyncOptions = { timelineLimit?: number };
 
 function positiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function timelineLimit(raw: number | undefined): number {
+  const value = raw ?? 100;
+  if (!Number.isSafeInteger(value) || value < 0 || value > 1000) throw new Error("MATRIX_SYNC_TIMELINE_LIMIT_INVALID");
+  return value;
 }
 
 function validateBase(raw: string): URL {
@@ -134,13 +141,14 @@ export class HttpMatrixSyncClient {
     } finally { clearTimeout(timer); }
   }
 
-  async sync(since: string | null): Promise<MatrixSyncResponse> {
+  async sync(since: string | null, options: MatrixSyncOptions = {}): Promise<MatrixSyncResponse> {
+    const limit = timelineLimit(options.timelineLimit);
     const url = appendPath(this.base, "/_matrix/client/v3/sync");
     url.searchParams.set("timeout", String(this.serverTimeoutMs));
     url.searchParams.set("filter", JSON.stringify({
       room: {
         state: { types: ["m.bridge", "uk.half-shot.bridge"] },
-        timeline: { types: ["m.room.message"], limit: 100 },
+        timeline: { types: ["m.room.message"], limit },
         ephemeral: { types: [] },
         account_data: { types: [] }
       },
