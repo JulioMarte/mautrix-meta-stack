@@ -1,0 +1,76 @@
+name: Provisioning bootstrap acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+concurrency:
+  group: provisioning-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control-plane-provisioning:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies from lockfile
+        run: bun install --frozen-lockfile
+      - name: Typecheck provisioning surface
+        run: bun run typecheck
+      - name: Prove provisioning claim invariants
+        run: bun test test/provisioning.test.ts
+
+  mautrix-provisioning-login:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Install upstream native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libolm-dev
+      - name: Build deterministic patched test tree
+        run: |
+          set -eu
+          git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
+          git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
+          test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
+          python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
+          cd /tmp/mautrix-meta
+          gofmt -w \
+            pkg/connector/client.go \
+            pkg/connector/config.go \
+            pkg/connector/connector.go \
+            pkg/connector/login.go \
+            pkg/connector/provisioning.go \
+            pkg/connector/provisioning_test.go \
+            pkg/connector/proxy_context_test.go
+          git diff --check
+      - name: Prove provisioning step order and fail-closed transport
+        working-directory: /tmp/mautrix-meta
+        run: go test ./pkg/connector -run 'TestDynamicLoginRequiresProvisioningClaimBeforeCookies|TestProvisioningConsumeUsesPrivateClientAndBootstrapProxy|TestProvisioningConsumeFailurePreventsAnyProviderTransport|TestBindProvisionedLoginCarriesExactConnectionAndIdentity' -count=1 -v
+      - name: Run connector regression suite
+        working-directory: /tmp/mautrix-meta
+        run: go test ./pkg/connector -count=1
