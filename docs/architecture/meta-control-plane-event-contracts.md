@@ -29,6 +29,7 @@ type Attachment = {
   mimeType?: string
   fileName?: string
   sizeBytes?: number
+  voiceNote?: boolean
   encryption?: MatrixEncryptedFile
 }
 
@@ -49,6 +50,8 @@ type NormalizedMessage = {
 ```
 
 `messageExternalId` and `sourceEventId` MUST preserve provider identifiers needed for deduplication and correlation. Internal database IDs MUST not replace remote identities.
+
+`voiceNote` is explicit semantic metadata, not a filename or MIME inference. It MAY be true only when `kind` is `audio`; when true, the Chatwoot adapter MUST request native voice-message semantics while still uploading the audio as a normal binary attachment.
 
 ## Matrix -> Chatwoot
 
