@@ -1,12 +1,12 @@
 # Meta Control Plane Data Model and Migration Contract
 
-Status: normative for `feature/meta-control-plane`
+Status: normative for `dev` integration
 Initial engine: `bun:sqlite`
-Current schema version: `3`
+Current schema version: `4`
 
 ## Data ownership
 
-The control plane owns tenant configuration, connector metadata, provisioning claims, egress assignments, Chatwoot routing, processed-event idempotency and audit history. It MUST NOT own Meta session cookies or duplicate mautrix session state.
+The control plane owns tenant configuration, connector metadata, provisioning claims, Matrix room attribution/checkpoints, egress assignments, Chatwoot routing, processed-event idempotency and audit history. It MUST NOT own Meta session cookies or duplicate mautrix session state.
 
 ## Required entities
 
@@ -40,11 +40,39 @@ Invariants:
 - used claims remain as audit/security history and are not reusable;
 - claim rows never contain Meta cookies or proxy credentials.
 
+### matrix_room_bindings
+
+Schema v4 adds the Matrix-side routing authority required before a Chatwoot conversation exists.
+
+Fields: `matrix_room_id`, `tenant_id`, `meta_connection_id`, `remote_thread_id`, `mautrix_login_id`, `bridge_state_key`, `source_event_id`, `verified_at`, `created_at`, `updated_at`.
+
+Invariants:
+
+- `matrix_room_id` is globally unique in the control-plane database;
+- `(meta_connection_id, remote_thread_id)` is unique;
+- `tenant_id` MUST equal the referenced connection tenant;
+- `mautrix_login_id` MUST equal the current bound login identity of the referenced connection;
+- a binding may only be created/reverified from bridge state produced by the configured bridge bot and accepted protocol;
+- re-observing the identical room/connection/thread/login association is idempotent and updates verification metadata;
+- any contradictory room, connection, remote-thread or login association MUST fail closed rather than mutate ownership silently.
+
+This entity is intentionally separate from `conversation_bindings`: room attribution must be known before the first Chatwoot conversation is created.
+
+### matrix_sync_checkpoints
+
+Schema v4 also stores durable transport progress for each Matrix ingestion consumer.
+
+Fields: `consumer_id`, `next_batch`, `updated_at`.
+
+`consumer_id` is unique. `next_batch` is the Synapse `/sync` continuation token. It is not an idempotency key and MUST NOT replace `processed_events`.
+
+A checkpoint MUST only advance after the corresponding sync batch is handled without a retry-required failure. A limited timeline/gap, malformed Meta-provenance event, attribution conflict or downstream retryable failure MUST leave the previous checkpoint intact.
+
 ### egress_profiles
 
 Fields: `id`, `provider`, `scheme`, `host`, `port`, `username`, `secret_ref`, `country`, `region`, `sticky_session_id`, `expected_exit_ip`, `last_verified_exit_ip`, `status`, `last_checked_at`, `failure_count`, `created_at`, `updated_at`.
 
-A credential-bearing proxy URI MUST NOT be the canonical persisted representation. `secret_ref` points outside the SQLite database to a credential source dedicated to proxy egress. The initial environment-backed provider accepts only references of the form `env:EGRESS_PROXY_*`; it MUST NOT dereference arbitrary process environment variables such as control-plane service tokens. This namespace boundary prevents an egress profile from turning unrelated application credentials into outbound proxy authentication material.
+A credential-bearing proxy URI MUST NOT be the canonical persisted representation. `secret_ref` points outside the SQLite database to a credential source dedicated to proxy egress. The initial environment-backed provider accepts only references of the form `env:EGRESS_PROXY_*`; it MUST NOT dereference arbitrary process environment variables such as control-plane service tokens.
 
 A proxy username and `secret_ref` MUST either both be configured or both be absent. Scheme, host and port MUST be validated before persistence and again before resolution so malformed persisted configuration cannot become an ambiguous proxy authority.
 
@@ -60,25 +88,29 @@ Fields: `id`, `tenant_id`, `meta_connection_id`, `matrix_room_id`, `remote_threa
 
 Required uniqueness MUST prevent one provider conversation from being ambiguously mapped to multiple Chatwoot conversations for the same connection.
 
+A `conversation_binding` does not establish Matrix room ownership; when runtime events originate from Synapse, `matrix_room_bindings` is the pre-CRM attribution authority.
+
 ### processed_events
 
 Fields: `id`, `source`, `source_event_id`, `meta_connection_id`, `payload_hash`, `status`, `first_seen_at`, `processed_at`, `last_error`.
 
-`(source, source_event_id)` MUST be unique. Processing code MUST use this table to make externally visible side effects replay-safe.
+`(source, source_event_id)` MUST be unique. Processing code MUST use this table to make externally visible side effects replay-safe. Matrix `/sync` checkpointing and processed-event idempotency are complementary and MUST remain separate.
 
 ### audit_events
 
 Fields: `id`, `tenant_id`, `actor_type`, `actor_id`, `action`, `entity_type`, `entity_id`, `before_json`, `after_json`, `created_at`.
 
-Changes to egress assignment, connection status, Chatwoot binding and provisioning authority MUST produce audit events. Audit payloads MUST NOT include raw provisioning claims, Meta cookies or secret-bearing proxy URLs.
+Changes to egress assignment, connection status, Chatwoot binding and provisioning authority MUST produce audit events. Audit payloads MUST NOT include raw provisioning claims, Meta cookies, Matrix access tokens or secret-bearing proxy URLs.
 
 ## Referential invariants
 
-A `meta_connection` MUST NOT reference an egress or Chatwoot binding from another tenant. A `conversation_binding` MUST match the tenant of its referenced Meta connection. Cross-tenant associations MUST fail at the repository/service boundary and SHOULD also be constrained by foreign keys wherever SQLite permits.
+A `meta_connection` MUST NOT reference an egress or Chatwoot binding from another tenant. A `conversation_binding` and `matrix_room_binding` MUST match the tenant of their referenced Meta connection. Cross-tenant associations MUST fail at the repository/service boundary and SHOULD also be constrained by foreign keys wherever SQLite permits.
 
 Provider identity ownership is global across connection status. Disabling a connection MUST NOT implicitly free its `meta_account_id` or `mautrix_login_id` for another connection. When multiple supplied identities point to different records, resolution MUST fail closed before active-status filtering.
 
 Provisioning adds a stricter pre-authentication invariant: `claim tenant + claim Matrix owner + connection tenant + connection Matrix owner + submitted c_user` must resolve to one non-conflicting connection. Matrix owner identity alone is never a selector for a Meta connection.
+
+Matrix room attribution adds another independent invariant: `m.bridge channel.receiver` must resolve to one active `mautrix_login_id`; a room name, alias, ghost MXID format or Matrix sender display name MUST NOT select a connection.
 
 ## Migration discipline
 
@@ -90,9 +122,9 @@ Migration tests MUST prove fresh-database creation and upgrade from every suppor
 
 ## Repository boundary
 
-Domain/application services SHOULD depend on repository/service boundaries rather than distributing SQLite statements through unrelated runtime code. SQLite adapters are the initial implementation, not the domain contract. Provisioning is currently isolated in its own Elysia module and transaction boundary rather than mixed into Meta cookie handling.
+Domain/application services SHOULD depend on repository/service boundaries rather than distributing SQLite statements through unrelated runtime code. SQLite adapters are the initial implementation, not the domain contract.
 
-Required persistent boundaries include tenants, Meta connections, provisioning claims, egress profiles, Chatwoot bindings, conversation bindings, processed events and audit events.
+Required persistent boundaries include tenants, Meta connections, provisioning claims, Matrix room bindings, Matrix sync checkpoints, egress profiles, Chatwoot bindings, conversation bindings, processed events and audit events.
 
 ## PostgreSQL portability
 
@@ -100,8 +132,8 @@ Avoid SQLite-specific semantics in domain rules. IDs, timestamps, uniqueness, fo
 
 ## Retention
 
-The MVP may retain audit, consumed provisioning-claim metadata and processed-event metadata indefinitely because expected volume is low, but payload bodies SHOULD be minimized. Raw webhook bodies, raw provisioning secrets, Meta cookies or message contents MUST NOT be retained merely for debugging unless a later retention policy explicitly requires them.
+The MVP may retain audit, consumed provisioning-claim metadata, Matrix room/checkpoint metadata and processed-event metadata indefinitely because expected volume is low, but payload bodies SHOULD be minimized. Raw webhook bodies, Matrix access tokens, raw provisioning secrets, Meta cookies or message contents MUST NOT be retained merely for debugging unless a later retention policy explicitly requires them.
 
 ## Required CI proofs
 
-CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, provisioning digest-only storage, forged/expired/used/revoked claim rejection, cross-tenant/owner binding rejection, same-account re-login behavior, conflicting-account rejection and upgrade behavior across supported schema versions.
+CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, provisioning digest-only storage, forged/expired/used/revoked claim rejection, cross-tenant/owner provisioning rejection, same-account re-login behavior, conflicting-account rejection, Matrix room binding idempotency/conflict rules, sync checkpoint persistence/restart behavior, two-tenant room attribution against a disposable Synapse and upgrade behavior across supported schema versions.

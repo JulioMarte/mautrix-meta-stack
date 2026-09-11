@@ -55,7 +55,7 @@ jobs:
           git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
           git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
           test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
-      - name: Apply deterministic account-aware egress and provisioning delta
+      - name: Apply deterministic account-aware egress, provisioning and Matrix ingestion delta
         run: |
           python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
@@ -63,6 +63,8 @@ jobs:
           python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_matrix_ingestion_metadata.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_matrix_ingestor_membership.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
             pkg/connector/client.go \
@@ -76,6 +78,8 @@ jobs:
             pkg/connector/userinfo.go \
             pkg/connector/chatinfo.go \
             pkg/connector/handlemeta.go \
+            pkg/connector/matrix_ingestion_metadata_test.go \
+            pkg/connector/matrix_ingestor_membership_test.go \
             pkg/connector/proxy_context_test.go \
             pkg/msgconv/mediadl/contextkey.go \
             pkg/msgconv/mediadl/download.go \

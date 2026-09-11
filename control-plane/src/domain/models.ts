@@ -62,6 +62,25 @@ export type ChatwootBinding = {
   updatedAt: string;
 };
 
+export type MatrixRoomBinding = {
+  matrixRoomId: string;
+  tenantId: string;
+  metaConnectionId: string;
+  remoteThreadId: string;
+  mautrixLoginId: string;
+  bridgeStateKey: string;
+  sourceEventId: string | null;
+  verifiedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MatrixSyncCheckpoint = {
+  consumerId: string;
+  nextBatch: string;
+  updatedAt: string;
+};
+
 export type ConversationBinding = {
   id: string;
   tenantId: string;
@@ -173,6 +192,18 @@ export interface ChatwootBindingRepository {
   findById(id: string): ChatwootBinding | null;
   listForTenant(tenantId: string): ChatwootBinding[];
   setStatus(id: string, status: ChatwootBindingStatus): ChatwootBinding;
+}
+
+export interface MatrixRoomBindingRepository {
+  bindVerified(input: Omit<MatrixRoomBinding, "verifiedAt" | "createdAt" | "updatedAt">): MatrixRoomBinding;
+  findByRoomId(matrixRoomId: string): MatrixRoomBinding | null;
+  findByRemoteThread(metaConnectionId: string, remoteThreadId: string): MatrixRoomBinding | null;
+  list(): MatrixRoomBinding[];
+}
+
+export interface MatrixSyncCheckpointRepository {
+  get(consumerId: string): MatrixSyncCheckpoint | null;
+  save(consumerId: string, nextBatch: string): MatrixSyncCheckpoint;
 }
 
 export interface ConversationBindingRepository {

@@ -19,7 +19,8 @@ The branch is not ready for implementation unless these documents are coherent w
 - `meta-control-plane-threat-failure-model.md` — trust boundaries, leakage/cross-tenant threats, dependency failures, crash semantics and required fault injection.
 - `meta-control-plane-deployment-operations.md` — Coolify topology, state, secrets, startup, backup/restore, upgrade, smoke tests, rollback and human-controlled deployment promotion.
 - `meta-control-plane-onboarding-identity-binding.md` — pre-Meta bootstrap identity, provisioning claims, first-login binding, re-login and conflict semantics.
-- `meta-control-plane-matrix-adapter.md` — Matrix service identity, ingestion mechanism boundary, room attribution, checkpoints, restart and outbound send semantics.
+- `meta-control-plane-matrix-adapter.md` — Matrix service identity, `/sync` ingestion, room attribution, bounded gap recovery, checkpoints, restart and outbound send semantics.
+- `matrix-ingestion-implementation-discoveries.md` — operational findings from the real Synapse ingestion implementation, including unattributable-room isolation and gap-recovery checkpoint safety.
 - `meta-control-plane-chatwoot-tenancy.md` — Chatwoot account/inbox tenancy, contact/conversation identity, webhook routing, migration and retry semantics.
 
 ## Normative invariants spanning all documents
@@ -39,7 +40,7 @@ The branch is not ready for implementation unless these documents are coherent w
 13. A Meta login must be associated with exactly one pre-created `meta_connection` before the first Meta-bound request; Matrix identity alone is not sufficient when one user can own multiple Meta logins.
 14. Matrix room names/display names are never routing authority; room attribution requires persisted stable identifiers and verifiable bridge/Matrix metadata.
 15. Chatwoot inbox/conversation IDs are always interpreted in their tenant + installation/account context; numeric IDs alone are not security boundaries.
-16. Unknown, ambiguous or conflicting identity/binding information fails closed rather than being guessed or overwritten.
+16. Unknown, ambiguous or conflicting identity/binding information fails closed rather than being guessed or overwritten. An unknown/inactive Matrix bridge login therefore produces no route or side effect; it is not guessed and does not gain authority merely by blocking unrelated valid rooms.
 17. Chatwoot webhook signing secrets are distinct from Chatwoot API credentials and use a dedicated secret-reference namespace.
 18. A multi-tenant acceptance claim requires observable A/B side effects at the egress and routing boundaries; resolver/database state alone is insufficient evidence.
 19. Green repository CI is necessary but not sufficient for production readiness when a normative contract still requires real-provider or deployed-environment evidence.
@@ -60,6 +61,7 @@ Before Phase 1 starts, reviewers should be able to answer unambiguously:
 - How does the control plane ingest Matrix events?
 - How is a Matrix room attributed to exactly one Meta connection?
 - How does Matrix event consumption recover across restart without duplicate delivery?
+- How does a limited Matrix timeline recover missing history without advancing the checkpoint past unseen events?
 - How is a remote Meta contact/thread mapped to Chatwoot contact/source/conversation objects?
 - What Chatwoot account/inbox isolation model is being used?
 - How are duplicate Matrix events and Chatwoot webhooks handled?
@@ -77,8 +79,6 @@ If any answer requires guessing from implementation instead of these documents, 
 The following do not block Phase 1 but MUST be specified before their corresponding production capability is claimed complete:
 
 - concrete proxy-provider adapter(s) and credential provisioning workflow;
-- exact Matrix ingestion transport choice (`/sync`/sliding sync vs application-service style) before Phase 4 acceptance;
-- exact bridge metadata/state signal used to prove room attribution before Phase 4 acceptance;
 - exact deterministic Chatwoot source/contact identity derivation after validating the deployed API behavior;
 - production operator RBAC beyond the initial protected admin surface;
 - data retention durations once message volume and compliance requirements are known;
@@ -88,6 +88,6 @@ The following do not block Phase 1 but MUST be specified before their correspond
 
 The Chatwoot webhook authentication mechanism is no longer deferred: Phase 5 fixes the supported contract to Chatwoot's timestamped HMAC-SHA256 signature over the raw request body, with a binding-specific secret configured under `env:CHATWOOT_WEBHOOK_*`.
 
-The current readiness audit confirms that the provisioning-claim bootstrap contract and the concrete Matrix ingestion/room-attribution contract are still implementation blockers, not merely documentation tasks. Their exact status is tracked in `production-readiness-ledger.md`.
+The provisioning-claim bootstrap contract is implemented and integrated in `dev`. The concrete Matrix ingestion transport and room-attribution contracts are no longer deferred; they are specified in `meta-control-plane-matrix-adapter.md` and implemented on PR #17, whose integration status is tracked in `production-readiness-ledger.md`.
 
 Deferral means these are explicitly not assumed. Any implementation depending on one of them must first turn the deferred item into a concrete reviewed contract.
