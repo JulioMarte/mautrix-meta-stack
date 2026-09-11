@@ -1,0 +1,40 @@
+name: Chatwoot tenancy acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [dev]
+  push:
+    branches:
+      - feature/chatwoot-tenancy-completion
+      - 'fix/**'
+      - dev
+
+concurrency:
+  group: chatwoot-tenancy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tenancy-contract:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install dependencies from lockfile
+        run: bun install --frozen-lockfile
+      - name: Typecheck control plane
+        run: bun run typecheck
+      - name: Prove Chatwoot tenant isolation and migration semantics
+        run: >-
+          bun test
+          test/phase4.test.ts
+          test/phase4-api.test.ts
+          test/phase5.test.ts
+          test/chatwoot-tenancy-contract.test.ts
+          test/chatwoot-tenancy-disabled-history.test.ts
+          test/chatwoot-tenancy-current-binding.test.ts

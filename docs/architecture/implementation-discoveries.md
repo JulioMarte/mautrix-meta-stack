@@ -144,6 +144,14 @@ The first provisioning patch reconstructed upstream cookie URL regex literals an
 
 Implication: patch application success is not enough; every touched tree must run `gofmt`, `git diff --check` and Go compilation/tests. Runtime feature restrictions do not remove compile obligations from untouched static modes. The provisioning fixup remains explicit maintenance debt and should be consolidated into a cleaner patch applicator after behavior is stable.
 
+## 2026-09-11 — Chatwoot binding migration must preserve historical route authority
+
+The original Matrix-to-Chatwoot implementation correctly persisted account/inbox/conversation identifiers in `conversation_bindings`, but when a connection's active Chatwoot binding changed from A to B it still sent messages for an existing A conversation using B's API base URL and credential. In the reverse direction, Chatwoot-to-Matrix required the webhook binding to equal the connection's *current* binding, so an agent reply from historical A was rejected immediately after the connection moved to B.
+
+This combination violated the tenancy contract in both directions: an old thread could be addressed with the wrong credentials outbound, while its legitimate historical webhook was rejected inbound.
+
+Implication: the persisted conversation route is historical authority for an existing thread. Matrix-to-Chatwoot resolves the tenant-scoped binding matching the persisted account/inbox for existing conversations; only newly discovered threads use the connection's current binding. Chatwoot-to-Matrix authenticates and scopes lookup through the webhook binding plus tenant/account/inbox/conversation and does not require that binding to remain the connection's current destination. If a historical binding is deliberately disabled, new delivery for that old thread fails terminally and never falls through to the current binding. Focused CI uses deliberately colliding numeric IDs to prove that another tenant or binding cannot claim the historical route.
+
 ## Updating this record
 
 Add a discovery when CI, upstream inspection, deployment behavior or a real integration boundary disproves an assumption or establishes a reusable operational constraint. Avoid using this document as a substitute for changing a normative contract when behavior or architecture actually changes.

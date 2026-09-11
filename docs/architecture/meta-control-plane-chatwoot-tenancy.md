@@ -10,7 +10,9 @@ This document defines how control-plane tenants map into Chatwoot and prevents t
 
 The MVP MAY use one Chatwoot installation and one Chatwoot account/workspace containing multiple API inboxes, provided every binding is explicitly tenant-scoped in the control plane.
 
-The control plane MUST NOT assume that numeric Chatwoot IDs are globally unique across installations/accounts. Every persistent Chatwoot reference therefore carries the relevant `api_base_url`/installation identity and `chatwoot_account_id` in addition to inbox/conversation IDs.
+The control plane MUST NOT assume that numeric Chatwoot IDs are globally unique across installations/accounts. Every persistent Chatwoot route is resolved through tenant scope plus the configured `chatwoot_binding`, which carries installation/API-base, account and inbox context. Conversation state retains the account/inbox/conversation identifiers needed to resolve that tenant-scoped binding after restart.
+
+The current MVP schema intentionally permits at most one `(chatwoot_account_id, chatwoot_inbox_id)` binding per tenant. Therefore two different Chatwoot installations using the same numeric account+inbox IDs inside the *same tenant* are not a supported simultaneous configuration. Supporting that future topology requires making installation/binding identity an explicit conversation key. This limitation does not permit cross-tenant ambiguity: separate tenants may use identical numeric IDs and must remain isolated.
 
 A future deployment may choose one Chatwoot account per tenant for stronger administrative isolation. That choice must not require changing the normalized messaging domain model.
 
@@ -29,7 +31,7 @@ tenant
 
 A `meta_connection` may reference only a `chatwoot_binding` owned by the same tenant.
 
-A `conversation_binding` must retain the Chatwoot account, inbox, source/contact and conversation identifiers necessary to address the same conversation deterministically after restart.
+A `conversation_binding` must retain the Chatwoot account, inbox, source/contact and conversation identifiers necessary to address the same conversation deterministically after restart. For an existing conversation, those persisted identifiers are historical routing authority; the connection's *current* Chatwoot binding is not allowed to silently remap the thread.
 
 ## API inbox model
 
@@ -37,7 +39,7 @@ The control plane uses Chatwoot API inbox semantics for bridged conversations. T
 
 The implementation MUST make creation retry-safe. A transient timeout must not cause duplicate contacts or conversations on retry.
 
-Where Chatwoot provides a caller-controlled stable source/contact identifier, the adapter SHOULD derive it deterministically from a tenant-scoped provider identity rather than a random value. The exact derivation must be documented before Phase 4 completion.
+Where Chatwoot provides a caller-controlled stable source/contact identifier, the adapter SHOULD derive it deterministically from a tenant-scoped provider identity rather than a random value. The current derivation hashes `tenant_id + meta_connection_id + remote_contact_id`, so the same remote Meta ID under different tenants or connections yields a different Chatwoot contact identifier.
 
 ## Contact identity
 
@@ -57,7 +59,7 @@ At minimum the uniqueness contract is equivalent to:
 (meta_connection_id, remote_thread_id) -> one active conversation_binding
 ```
 
-A Chatwoot conversation ID by itself is never sufficient to infer tenant ownership.
+A Chatwoot conversation ID by itself is never sufficient to infer tenant ownership. Webhook lookup therefore includes tenant/binding context plus account, inbox and conversation ID.
 
 ## Webhook ingress
 
@@ -65,7 +67,7 @@ The webhook endpoint receives account-level Chatwoot events and MUST first deter
 
 Only events from explicitly configured account/inbox surfaces are eligible for routing. Unknown account, inbox or conversation identifiers fail closed and produce observable diagnostics.
 
-The exact authenticity mechanism depends on the deployed Chatwoot version/capabilities and remains a release-blocking contract for Phase 5. Network allowlisting alone is not sufficient authentication where a stronger supported mechanism exists.
+Webhook authenticity uses the Chatwoot-supported timestamped HMAC signature configured per `chatwoot_binding`. The webhook secret is separate from the Chatwoot API credential and is resolved from the dedicated `CHATWOOT_WEBHOOK_*` secret namespace. Network allowlisting alone is not sufficient authentication.
 
 ## Agent reply eligibility
 
@@ -96,7 +98,17 @@ Re-enabling must reuse existing bindings unless an operator explicitly migrates 
 
 Changing an active connection from inbox/account A to B is a privileged audited operation.
 
-The implementation MUST define whether existing remote threads keep their historical conversation bindings or are explicitly migrated. Silent remapping of existing conversations is forbidden. For the MVP, the safer default is to preserve existing bindings and apply the new destination only to explicitly migrated or newly discovered conversations.
+Silent remapping of existing conversations is forbidden. The implemented MVP policy is:
+
+- a thread first discovered while A is current persists A's account/inbox/conversation route;
+- changing the connection's current binding to B does not rewrite that historical `conversation_binding`;
+- later Matrix/Meta messages for the existing thread continue through A while A remains active;
+- Chatwoot agent replies arriving through A continue routing to the historical Matrix room even when the connection's current binding is B;
+- newly discovered remote threads after the change use B;
+- a webhook through B cannot claim a historical A conversation merely because numeric conversation IDs collide;
+- if historical binding A is disabled, new delivery for that historical conversation fails closed and terminally. It MUST NOT silently fall through to B.
+
+Explicit migration of an existing conversation from A to B is not implemented in the MVP. Such a feature would require an audited migration operation that creates/reconciles the destination objects and deliberately changes persisted historical routing.
 
 ## Credential scope
 
@@ -116,4 +128,9 @@ CI MUST prove:
 - incoming Meta-originated Chatwoot messages are not echoed back to Matrix;
 - agent replies target the exact bound Matrix room;
 - disabling a tenant/connection blocks new Chatwoot routing;
-- changing an inbox does not silently rewrite historical conversation bindings.
+- changing an inbox does not silently rewrite historical conversation bindings;
+- a historical conversation remains routable through its original active binding after the connection changes to a new binding;
+- another binding or tenant with colliding numeric IDs cannot claim that historical conversation;
+- disabling the historical binding fails terminally without a side effect or fallback to the current binding.
+
+The dedicated `Chatwoot tenancy acceptance` workflow executes the focused tenancy/migration contract in addition to the broader Phase 4, Phase 5 and Phase 6 integration lanes.

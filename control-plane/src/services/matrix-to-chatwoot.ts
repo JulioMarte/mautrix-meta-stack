@@ -1,5 +1,5 @@
 import type {
-  Attachment, ChatwootBindingRepository, ConversationBindingRepository, MetaConnectionRepository,
+  Attachment, ChatwootBinding, ChatwootBindingRepository, ConversationBindingRepository, MetaConnectionRepository,
   NormalizedMessage, ProcessedEventRepository, TenantRepository
 } from "../domain/models";
 import { deterministicChatwootContactIdentifier, type ChatwootGateway } from "./chatwoot-gateway";
@@ -53,6 +53,24 @@ export class MatrixToChatwootService {
     private readonly chatwoot: ChatwootGateway
   ) {}
 
+  private historicalBinding(tenantId: string, accountId: string, inboxId: string): ChatwootBinding {
+    const matches = this.chatwootBindings.listForTenant(tenantId).filter((binding) =>
+      binding.chatwootAccountId === accountId && binding.chatwootInboxId === inboxId
+    );
+    if (matches.length !== 1) throw new Error(matches.length === 0 ? "CHATWOOT_BINDING_NOT_ACTIVE" : "CHATWOOT_ROUTE_AMBIGUOUS");
+    const binding = matches[0]!;
+    if (binding.status !== "active") throw new Error("CHATWOOT_BINDING_NOT_ACTIVE");
+    return binding;
+  }
+
+  private currentBinding(connection: { chatwootBindingId: string | null; tenantId: string }): ChatwootBinding {
+    if (!connection.chatwootBindingId) throw new Error("CHATWOOT_BINDING_REQUIRED");
+    const binding = this.chatwootBindings.findById(connection.chatwootBindingId);
+    if (!binding || binding.status !== "active") throw new Error("CHATWOOT_BINDING_NOT_ACTIVE");
+    if (binding.tenantId !== connection.tenantId) throw new Error("CROSS_TENANT_CHATWOOT_BINDING");
+    return binding;
+  }
+
   async handle(event: MatrixInboundEvent): Promise<MatrixToChatwootResult> {
     if (event.provenance === "chatwoot") return { status: "ignored_echo" };
 
@@ -61,11 +79,6 @@ export class MatrixToChatwootService {
     const tenant = this.tenants.findById(connection.tenantId);
     if (!tenant || tenant.status !== "active") throw new Error("TENANT_NOT_ACTIVE");
     if (connection.status !== "active") throw new Error("CONNECTION_NOT_ACTIVE");
-    if (!connection.chatwootBindingId) throw new Error("CHATWOOT_BINDING_REQUIRED");
-
-    const chatwootBinding = this.chatwootBindings.findById(connection.chatwootBindingId);
-    if (!chatwootBinding || chatwootBinding.status !== "active") throw new Error("CHATWOOT_BINDING_NOT_ACTIVE");
-    if (chatwootBinding.tenantId !== connection.tenantId) throw new Error("CROSS_TENANT_CHATWOOT_BINDING");
 
     const claim = this.processedEvents.claim({
       source: "matrix",
@@ -85,10 +98,13 @@ export class MatrixToChatwootService {
       if (conversationBinding && conversationBinding.tenantId !== connection.tenantId) throw new Error("CROSS_TENANT_CONVERSATION_BINDING");
       if (conversationBinding && conversationBinding.matrixRoomId !== event.roomId) throw new Error("MATRIX_ROOM_BINDING_CONFLICT");
 
+      let deliveryBinding: ChatwootBinding;
       let conversationRef;
       if (!conversationBinding) {
+        const currentChatwootBinding = this.currentBinding(connection);
+        deliveryBinding = currentChatwootBinding;
         conversationRef = await this.chatwoot.ensureConversation({
-          binding: chatwootBinding,
+          binding: currentChatwootBinding,
           contactIdentifier: deterministicChatwootContactIdentifier({ tenantId: tenant.id, connectionId: connection.id, remoteContactId: event.remoteContactId }),
           remoteContactId: event.remoteContactId,
           ...(event.senderDisplayName ? { displayName: event.senderDisplayName } : {}),
@@ -101,20 +117,24 @@ export class MatrixToChatwootService {
           matrixRoomId: event.roomId,
           remoteThreadId: event.remoteThreadId,
           remoteContactId: event.remoteContactId,
-          chatwootAccountId: chatwootBinding.chatwootAccountId,
-          chatwootInboxId: chatwootBinding.chatwootInboxId,
+          chatwootAccountId: currentChatwootBinding.chatwootAccountId,
+          chatwootInboxId: currentChatwootBinding.chatwootInboxId,
           chatwootContactId: conversationRef.contactId,
           chatwootSourceId: conversationRef.sourceId,
           chatwootConversationId: conversationRef.conversationId
         });
         if (conversationBinding.matrixRoomId !== event.roomId) throw new Error("MATRIX_ROOM_BINDING_CONFLICT");
         if (!conversationBinding.chatwootContactId || !conversationBinding.chatwootSourceId) throw new Error("INCOMPLETE_CONVERSATION_BINDING");
+        if (racedBinding) {
+          deliveryBinding = this.historicalBinding(tenant.id, conversationBinding.chatwootAccountId, conversationBinding.chatwootInboxId);
+        }
         conversationRef = {
           contactId: conversationBinding.chatwootContactId,
           sourceId: conversationBinding.chatwootSourceId,
           conversationId: conversationBinding.chatwootConversationId
         };
       } else {
+        deliveryBinding = this.historicalBinding(tenant.id, conversationBinding.chatwootAccountId, conversationBinding.chatwootInboxId);
         if (!conversationBinding.chatwootContactId || !conversationBinding.chatwootSourceId) throw new Error("INCOMPLETE_CONVERSATION_BINDING");
         conversationRef = {
           contactId: conversationBinding.chatwootContactId,
@@ -140,7 +160,7 @@ export class MatrixToChatwootService {
       if (!normalized.text && normalized.attachments.length === 0) throw new Error("EMPTY_MESSAGE");
 
       const delivered = await this.chatwoot.createIncomingMessage({
-        binding: chatwootBinding,
+        binding: deliveryBinding,
         conversation: conversationRef,
         sourceEventId: event.eventId,
         ...(event.text ? { text: event.text } : {}),
@@ -152,8 +172,9 @@ export class MatrixToChatwootService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       const terminal = [
-        "CROSS_TENANT_CONVERSATION_BINDING", "CHATWOOT_ROUTE_MISMATCH", "MATRIX_ROOM_BINDING_CONFLICT",
-        "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
+        "CHATWOOT_BINDING_REQUIRED", "CROSS_TENANT_CHATWOOT_BINDING", "CROSS_TENANT_CONVERSATION_BINDING",
+        "CHATWOOT_ROUTE_MISMATCH", "CHATWOOT_ROUTE_AMBIGUOUS", "CHATWOOT_BINDING_NOT_ACTIVE",
+        "MATRIX_ROOM_BINDING_CONFLICT", "INCOMPLETE_CONVERSATION_BINDING", "EMPTY_MESSAGE"
       ].includes(message);
       this.processedEvents.setStatus(claim.event.id, terminal ? "failed_terminal" : "failed_retryable", message);
       throw error;
