@@ -12,13 +12,14 @@ import type { HttpMatrixSyncClient, MatrixJoinedRoom, MatrixRawEvent, MatrixSync
 const REMOTE_SENDER_ID_KEY = "com.mautrix_meta_stack.remote_sender_id";
 const PROVENANCE_KEY = "com.mautrix_meta_stack.provenance";
 
-type MatrixSyncTransport = Pick<HttpMatrixSyncClient, "sync" | "roomState">;
+type MatrixSyncTransport = Pick<HttpMatrixSyncClient, "sync" | "roomState" | "joinRoom">;
 
 export type MatrixSyncRunResult = {
   status: "bootstrapped" | "processed";
   fromCheckpoint: string | null;
   nextCheckpoint: string;
   roomsSeen: number;
+  roomsJoined: number;
   roomsBound: number;
   eventsDelivered: number;
   eventsIgnored: number;
@@ -104,15 +105,31 @@ function bridgeStatePresent(events: MatrixRawEvent[]): boolean {
 }
 
 export class MatrixSyncIngestor {
+  private readonly syncUserMxid: string;
+
   constructor(
     private readonly consumerId: string,
     private readonly sync: MatrixSyncTransport,
     private readonly attribution: MatrixRoomAttributionService,
     private readonly roomBindings: MatrixRoomBindingRepository,
     private readonly checkpoints: MatrixSyncCheckpointRepository,
-    private readonly matrixToChatwoot: MatrixToChatwootService
+    private readonly matrixToChatwoot: MatrixToChatwootService,
+    env: Record<string, string | undefined> = process.env
   ) {
     if (!consumerId.trim() || consumerId.trim() !== consumerId) throw new Error("MATRIX_SYNC_CONSUMER_ID_INVALID");
+    this.syncUserMxid = env.MATRIX_SYNC_USER_MXID ?? "";
+    if (!this.syncUserMxid.startsWith("@") || !this.syncUserMxid.includes(":")) throw new Error("MATRIX_SYNC_USER_MXID_INVALID");
+  }
+
+  private async acceptTrustedInvites(response: MatrixSyncResponse): Promise<number> {
+    let roomsJoined = 0;
+    for (const [roomId, room] of Object.entries(response.rooms.invite)) {
+      const events = room.invite_state?.events ?? [];
+      if (!this.attribution.isTrustedInvite(events, this.syncUserMxid)) continue;
+      await this.sync.joinRoom(roomId);
+      roomsJoined++;
+    }
+    return roomsJoined;
   }
 
   private async bindFromCurrentState(roomId: string, stateEvents: MatrixRawEvent[]): Promise<MatrixRoomBinding | null> {
@@ -186,13 +203,15 @@ export class MatrixSyncIngestor {
     const checkpoint = this.checkpoints.get(this.consumerId);
     if (!checkpoint) {
       const response = await this.sync.sync(null, { timelineLimit: 0 });
+      const roomsJoined = await this.acceptTrustedInvites(response);
       const roomsBound = await this.reconcileRooms(response, true);
       this.checkpoints.save(this.consumerId, response.next_batch);
       return {
         status: "bootstrapped",
         fromCheckpoint: null,
         nextCheckpoint: response.next_batch,
-        roomsSeen: Object.keys(response.rooms.join).length,
+        roomsSeen: Object.keys(response.rooms.join).length + Object.keys(response.rooms.invite).length,
+        roomsJoined,
         roomsBound,
         eventsDelivered: 0,
         eventsIgnored: 0
@@ -200,6 +219,7 @@ export class MatrixSyncIngestor {
     }
 
     const response = await this.sync.sync(checkpoint.nextBatch, { timelineLimit: 100 });
+    const roomsJoined = await this.acceptTrustedInvites(response);
     for (const room of Object.values(response.rooms.join)) {
       if (room.timeline?.limited) throw new Error("MATRIX_SYNC_TIMELINE_GAP");
     }
@@ -226,7 +246,8 @@ export class MatrixSyncIngestor {
       status: "processed",
       fromCheckpoint: checkpoint.nextBatch,
       nextCheckpoint: response.next_batch,
-      roomsSeen: Object.keys(response.rooms.join).length,
+      roomsSeen: Object.keys(response.rooms.join).length + Object.keys(response.rooms.invite).length,
+      roomsJoined,
       roomsBound,
       eventsDelivered,
       eventsIgnored
