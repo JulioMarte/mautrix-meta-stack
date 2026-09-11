@@ -94,9 +94,9 @@ function occurredAt(raw: unknown): string {
   return date.toISOString();
 }
 
-function isChatwootEcho(content: Record<string, unknown>): boolean {
+function provenanceSource(content: Record<string, unknown>): string | null {
   const provenance = record(content[PROVENANCE_KEY]);
-  return provenance?.source === "chatwoot";
+  return nonEmptyString(provenance?.source);
 }
 
 function bridgeStatePresent(events: MatrixRawEvent[]): boolean {
@@ -156,7 +156,9 @@ export class MatrixSyncIngestor {
     const sender = nonEmptyString(event.sender);
     const content = record(event.content);
     if (!eventId || !sender || !content) return "ignored";
-    if (isChatwootEcho(content)) return "ignored";
+
+    const provenance = provenanceSource(content);
+    if (provenance !== "meta") return "ignored";
 
     const remoteContactId = nonEmptyString(content[REMOTE_SENDER_ID_KEY]);
     if (!remoteContactId) throw new Error("MATRIX_REMOTE_SENDER_ID_REQUIRED");
