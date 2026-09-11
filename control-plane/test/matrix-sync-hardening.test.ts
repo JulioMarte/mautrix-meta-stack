@@ -29,13 +29,13 @@ function setup() {
   return { rooms, checkpoints, attribution };
 }
 
-function bridgeState() {
+function bridgeState(receiver = "login-a") {
   return [{
     type: "m.bridge",
     event_id: "$bridge",
     state_key: "facebookgo://thread-a",
     sender: "@metabot:matrix.example.com",
-    content: { protocol: { id: "facebookgo" }, channel: { id: "thread-a", receiver: "login-a" } }
+    content: { protocol: { id: "facebookgo" }, channel: { id: "thread-a", receiver } }
   }];
 }
 
@@ -44,7 +44,7 @@ function service(onHandle?: () => void): MatrixToChatwootService {
 }
 
 describe("Matrix sync hardening", () => {
-  test("limited timeline fails closed without advancing checkpoint", async () => {
+  test("limited timeline fails closed without recovery transport and without advancing checkpoint", async () => {
     const { rooms, checkpoints, attribution } = setup();
     checkpoints.save("ingestor", "s1");
     let deliveries = 0;
@@ -55,8 +55,43 @@ describe("Matrix sync hardening", () => {
     const ingestor = new MatrixSyncIngestor("ingestor", {
       async sync() { return response; }, async roomState() { return bridgeState(); }, async joinRoom() {}
     }, attribution, rooms, checkpoints, service(() => { deliveries++; }), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
-    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_TIMELINE_GAP");
+    await expect(ingestor.runOnce()).rejects.toThrow("MATRIX_SYNC_GAP_RECOVERY_UNAVAILABLE");
     expect(checkpoints.get("ingestor")?.nextBatch).toBe("s1");
+    expect(deliveries).toBe(0);
+  });
+
+  test("unknown bridge login is ignored without side effects or blocking checkpoint advancement", async () => {
+    const { rooms, checkpoints, attribution } = setup();
+    checkpoints.save("ingestor", "s1");
+    let deliveries = 0;
+    const unknownState = bridgeState("login-does-not-exist");
+    const response: MatrixSyncResponse = {
+      next_batch: "s2",
+      rooms: { join: { "!unknown:matrix.example.com": {
+        state: { events: unknownState },
+        timeline: { events: [{
+          type: "m.room.message",
+          event_id: "$unknown",
+          sender: "@facebook_2000:matrix.example.com",
+          origin_server_ts: 1_700_000_000_000,
+          content: {
+            msgtype: "m.text",
+            body: "must not route",
+            "com.mautrix_meta_stack.provenance": { source: "meta" },
+            "com.mautrix_meta_stack.remote_sender_id": "2000"
+          }
+        }] }
+      } }, invite: {} }
+    };
+    const ingestor = new MatrixSyncIngestor("ingestor", {
+      async sync() { return response; }, async roomState() { return unknownState; }, async joinRoom() {}
+    }, attribution, rooms, checkpoints, service(() => { deliveries++; }), { MATRIX_SYNC_USER_MXID: "@ingestor:matrix.example.com" });
+    const result = await ingestor.runOnce();
+    expect(result.status).toBe("processed");
+    expect(result.eventsDelivered).toBe(0);
+    expect(result.eventsIgnored).toBe(1);
+    expect(checkpoints.get("ingestor")?.nextBatch).toBe("s2");
+    expect(rooms.findByRoomId("!unknown:matrix.example.com")).toBeNull();
     expect(deliveries).toBe(0);
   });
 
