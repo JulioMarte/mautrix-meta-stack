@@ -46,7 +46,8 @@ function parseEncryptedFile(raw: Record<string, unknown>): { url: string; encryp
   if (
     !url || !url.startsWith("mxc://") || raw.v !== "v2" || !key || !hashes ||
     key.kty !== "oct" || key.alg !== "A256CTR" || key.ext !== true ||
-    typeof key.k !== "string" || typeof raw.iv !== "string" || typeof hashes.sha256 !== "string"
+    typeof key.k !== "string" || typeof raw.iv !== "string" || typeof hashes.sha256 !== "string" ||
+    !keyOps.includes("decrypt")
   ) return null;
   return {
     url,
