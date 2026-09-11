@@ -18,6 +18,9 @@ trap cleanup EXIT
 docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
 
 # Configure only this integration topology for dynamic account-aware egress.
+# Messenger Lite is intentionally disabled: on the pinned upstream it performs
+# network I/O before a stable account identity exists, so dynamic egress cannot
+# safely bind that first request yet.
 docker compose -f compose.yaml run --rm --no-deps --entrypoint /bin/sh mautrix-configure -c '
   set -eu
   yq -i '\''
@@ -25,7 +28,7 @@ docker compose -f compose.yaml run --rm --no-deps --entrypoint /bin/sh mautrix-c
     .network.proxy_other = true |
     .network.proxy_media = true |
     .network.proxy_e2ee = true |
-    .network.proxy_messenger_lite = true
+    .network.proxy_messenger_lite = false
   '\'' /data/config.yaml
 '
 
@@ -73,6 +76,7 @@ wait_healthy mautrix-meta 120
   test "$(yq ".network.proxy_other" /data/config.yaml)" = "true"
   test "$(yq ".network.proxy_media" /data/config.yaml)" = "true"
   test "$(yq ".network.proxy_e2ee" /data/config.yaml)" = "true"
+  test "$(yq ".network.proxy_messenger_lite" /data/config.yaml)" = "false"
   curl -fsS -H "Authorization: Bearer $MAUTRIX_META_EGRESS_TOKEN" \
     "http://control-plane:3000/internal/v1/egress/resolve?meta_account_id=123&login_id=123&reason=connect&traffic_class=messaging" \
     -o /tmp/phase3-resolver.json
