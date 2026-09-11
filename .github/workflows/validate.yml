@@ -59,9 +59,12 @@ jobs:
         run: |
           python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
             pkg/connector/client.go \
+            pkg/connector/config.go \
+            pkg/connector/connector.go \
             pkg/connector/login.go \
             pkg/connector/directmedia.go \
             pkg/connector/events.go \
