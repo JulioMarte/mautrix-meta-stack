@@ -58,6 +58,7 @@ jobs:
           python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
             pkg/connector/client.go \
