@@ -89,4 +89,41 @@ describe("Phase 4 API boundary", () => {
     expect(response.status).toBe(409);
     expect((await response.json()).error.code).toBe("CROSS_TENANT_CHATWOOT_BINDING");
   });
+
+  test("disabled historical Chatwoot route is exposed as terminal HTTP 409", async () => {
+    db = new Database(":memory:", { strict: true });
+    runMigrations(db);
+    const gateway = new RecordingGateway();
+    const admin = "admin-token-123456789";
+    const internal = "internal-token-123456789012345";
+    const app = createApp(db, admin, internal, {}, { chatwootGateway: gateway });
+
+    const tenant = (await (await post(app, "/api/v1/tenants", admin, { slug: "migration-api", name: "Migration API" })).json()).data;
+    const connection = (await (await post(app, "/api/v1/meta-connections", admin, { tenantId: tenant.id, matrixOwnerMxid: "@owner:test", metaAccountId: "migration-api" })).json()).data;
+    const egress = (await (await post(app, "/api/v1/egress-profiles", admin, { provider: "fixture", scheme: "http", host: "proxy.test", port: 8080, status: "healthy" })).json()).data;
+    await post(app, `/api/v1/meta-connections/${connection.id}/egress`, admin, { egressProfileId: egress.id });
+
+    const oldBinding = (await (await post(app, "/api/v1/chatwoot-bindings", admin, {
+      tenantId: tenant.id, chatwootAccountId: "1", chatwootInboxId: "10", apiBaseUrl: "https://chatwoot.test", credentialRef: "env:CHATWOOT_OLD_TOKEN"
+    })).json()).data;
+    await post(app, `/api/v1/meta-connections/${connection.id}/chatwoot`, admin, { chatwootBindingId: oldBinding.id });
+    await post(app, `/api/v1/meta-connections/${connection.id}/activate`, admin, {});
+
+    const firstBody = {
+      connectionId: connection.id, roomId: "!history:test", remoteThreadId: "history-thread", remoteContactId: "42",
+      eventId: "$history-1", senderId: "42", text: "first", occurredAt: "2026-09-11T04:00:00.000Z", provenance: "meta"
+    };
+    expect((await post(app, "/internal/v1/matrix/events", internal, firstBody)).status).toBe(200);
+
+    const newBinding = (await (await post(app, "/api/v1/chatwoot-bindings", admin, {
+      tenantId: tenant.id, chatwootAccountId: "1", chatwootInboxId: "20", apiBaseUrl: "https://chatwoot.test", credentialRef: "env:CHATWOOT_NEW_TOKEN"
+    })).json()).data;
+    await post(app, `/api/v1/meta-connections/${connection.id}/chatwoot`, admin, { chatwootBindingId: newBinding.id });
+    db.query("UPDATE chatwoot_bindings SET status = 'disabled' WHERE id = ?").run(oldBinding.id);
+
+    const response = await post(app, "/internal/v1/matrix/events", internal, { ...firstBody, eventId: "$history-2", text: "second" });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("CHATWOOT_BINDING_NOT_ACTIVE");
+    expect(gateway.messages).toHaveLength(1);
+  });
 });
