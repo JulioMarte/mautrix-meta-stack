@@ -32,7 +32,7 @@ jobs:
       - name: Prove Matrix persistence, sync and attribution invariants
         run: bun test test/matrix-ingestion-persistence.test.ts test/matrix-sync-attribution.test.ts
 
-  fork-matrix-sender-metadata:
+  fork-matrix-ingestion-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,9 +57,15 @@ jobs:
           python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_matrix_ingestion_metadata.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_matrix_ingestor_membership.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
-          gofmt -w pkg/connector/events.go pkg/connector/matrix_ingestion_metadata_test.go
+          gofmt -w \
+            pkg/connector/config.go \
+            pkg/connector/connector.go \
+            pkg/connector/events.go \
+            pkg/connector/matrix_ingestion_metadata_test.go \
+            pkg/connector/matrix_ingestor_membership_test.go
           git diff --check
-      - name: Prove remote sender metadata reaches every converted part
+      - name: Prove sender metadata and Matrix ingestor configuration
         working-directory: /tmp/mautrix-meta
-        run: go test ./pkg/connector -run 'TestAnnotateMatrixRemoteSender'
+        run: go test ./pkg/connector -run 'TestAnnotateMatrixRemoteSender|TestMatrixIngestorMXIDValidation'
