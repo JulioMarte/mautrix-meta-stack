@@ -74,10 +74,12 @@ export class SQLiteMetaConnectionRepository implements MetaConnectionRepository 
     const values: string[] = [];
     if (input.metaAccountId) { clauses.push("mc.meta_account_id = ?"); values.push(input.metaAccountId); }
     if (input.loginId) { clauses.push("mc.mautrix_login_id = ?"); values.push(input.loginId); }
-    const row = this.db.query(`SELECT mc.* FROM meta_connections mc JOIN tenants t ON t.id = mc.tenant_id WHERE t.status = 'active' AND mc.status = 'active' AND (${clauses.join(" OR ")})`).get(...values) as Record<string, unknown> | null;
-    if (!row) return null;
-    const connection = connectionFromRow(row);
-    if (input.metaAccountId && input.loginId && (connection.metaAccountId !== input.metaAccountId || connection.mautrixLoginId !== input.loginId)) throw new Error("IDENTITY_CONFLICT");
+    const rows = this.db.query(`SELECT mc.* FROM meta_connections mc JOIN tenants t ON t.id = mc.tenant_id WHERE t.status = 'active' AND mc.status = 'active' AND (${clauses.join(" OR ")})`).all(...values) as Array<Record<string, unknown>>;
+    if (rows.length === 0) return null;
+    if (rows.length !== 1) throw new Error("IDENTITY_CONFLICT");
+    const connection = connectionFromRow(rows[0]!);
+    if (input.metaAccountId && connection.metaAccountId !== null && connection.metaAccountId !== input.metaAccountId) throw new Error("IDENTITY_CONFLICT");
+    if (input.loginId && connection.mautrixLoginId !== null && connection.mautrixLoginId !== input.loginId) throw new Error("IDENTITY_CONFLICT");
     return connection;
   }
   assignEgress(connectionId: string, egressProfileId: string): MetaConnection {
