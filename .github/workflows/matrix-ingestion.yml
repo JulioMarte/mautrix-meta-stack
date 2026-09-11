@@ -30,7 +30,7 @@ jobs:
       - name: Typecheck Matrix ingestion surface
         run: bun run typecheck
       - name: Prove Matrix persistence, sync, attribution and runtime boundaries
-        run: bun test test/matrix-ingestion-persistence.test.ts test/matrix-sync-attribution.test.ts test/matrix-sync-ingestor.test.ts
+        run: bun test test/matrix-ingestion-persistence.test.ts test/matrix-sync-attribution.test.ts test/matrix-sync-ingestor.test.ts test/matrix-sync-retry-composition.test.ts
 
   fork-matrix-ingestion-contract:
     runs-on: ubuntu-latest
