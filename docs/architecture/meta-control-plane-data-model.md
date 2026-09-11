@@ -27,7 +27,9 @@ Fields: `id`, `tenant_id`, `provider`, `meta_account_id`, `mautrix_login_id`, `m
 
 Fields: `id`, `provider`, `scheme`, `host`, `port`, `username`, `secret_ref`, `country`, `region`, `sticky_session_id`, `expected_exit_ip`, `last_verified_exit_ip`, `status`, `last_checked_at`, `failure_count`, `created_at`, `updated_at`.
 
-A credential-bearing proxy URI MUST NOT be the canonical persisted representation. `secret_ref` points outside the SQLite database to the credential source.
+A credential-bearing proxy URI MUST NOT be the canonical persisted representation. `secret_ref` points outside the SQLite database to a credential source dedicated to proxy egress. The initial environment-backed provider accepts only references of the form `env:EGRESS_PROXY_*`; it MUST NOT dereference arbitrary process environment variables such as control-plane service tokens. This namespace boundary prevents an egress profile from turning unrelated application credentials into outbound proxy authentication material.
+
+A proxy username and `secret_ref` MUST either both be configured or both be absent. Scheme, host and port MUST be validated before persistence and again before resolution so malformed persisted configuration cannot become an ambiguous proxy authority.
 
 ### chatwoot_bindings
 
@@ -57,6 +59,8 @@ Changes to egress assignment, connection status and Chatwoot binding MUST produc
 
 A `meta_connection` MUST NOT reference an egress or Chatwoot binding from another tenant. A `conversation_binding` MUST match the tenant of its referenced Meta connection. Cross-tenant associations MUST fail at the repository/service boundary and SHOULD also be constrained by foreign keys wherever SQLite permits.
 
+Provider identity ownership is global across connection status. Disabling a connection MUST NOT implicitly free its `meta_account_id` or `mautrix_login_id` for another connection. When multiple supplied identities point to different records, resolution MUST fail closed before active-status filtering.
+
 ## Migration discipline
 
 Migrations MUST be ordered, immutable after merge and applied transactionally where SQLite supports it. Startup MUST either apply all pending migrations successfully or fail readiness; partial schema initialization is not acceptable.
@@ -81,4 +85,4 @@ The MVP may retain audit and processed-event metadata indefinitely because expec
 
 ## Required CI proofs
 
-CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, and upgrade behavior once a second schema version exists.
+CI MUST test fresh migration, restart persistence, foreign-key/cross-tenant rejection, uniqueness/idempotency constraints, concurrent duplicate-event claims, egress secret-reference namespace isolation, provider identity conflict behavior across active/inactive records, and upgrade behavior once a second schema version exists.
