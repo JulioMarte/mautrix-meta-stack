@@ -213,6 +213,9 @@ export class HttpChatwootGateway implements ChatwootGateway {
     form.set("private", "false");
     form.set("content_type", "text");
     form.set(`content_attributes[${EVENT_ATTRIBUTE}]`, input.sourceEventId);
+    if (input.attachments.some((attachment) => attachment.kind === "audio" && attachment.voiceNote === true)) {
+      form.set("is_voice_message", "true");
+    }
     for (const attachment of input.attachments) {
       const downloaded = await this.mediaDownloader.download(attachment);
       form.append("attachments[]", downloaded.blob, downloaded.fileName);
