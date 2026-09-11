@@ -80,10 +80,8 @@ describe("Phase 4 Matrix -> Chatwoot", () => {
     const f = fixture();
     const a = f.createRoute("a", "1", "10");
     const b = f.createRoute("b", "1", "10");
-
     await f.service.handle(event(a.connection.id, { eventId: "$a", roomId: "!a:test", remoteThreadId: "thread-a" }));
     await f.service.handle(event(b.connection.id, { eventId: "$b", roomId: "!b:test", remoteThreadId: "thread-b" }));
-
     expect(f.gateway.ensureCalls).toHaveLength(2);
     expect(f.gateway.ensureCalls[0]!.contactIdentifier).not.toBe(f.gateway.ensureCalls[1]!.contactIdentifier);
     expect(f.gateway.messageCalls[0]!.normalized.tenantId).toBe(a.tenant.id);
@@ -173,11 +171,12 @@ describe("Phase 4 Matrix -> Chatwoot", () => {
   test("representative attachment survives normalization", async () => {
     const f = fixture();
     const route = f.createRoute("attachment", "11", "110");
-    await f.service.handle(event(route.connection.id, {
+    const evt = event(route.connection.id, {
       eventId: "$attachment",
-      text: undefined,
       attachments: [{ kind: "image", url: "mxc://example/media", mimeType: "image/jpeg", fileName: "photo.jpg", sizeBytes: 1234 }]
-    }));
+    });
+    delete evt.text;
+    await f.service.handle(evt);
     const normalized = f.gateway.messageCalls[0]!.normalized;
     expect(normalized.text).toBeUndefined();
     expect(normalized.attachments).toEqual([{ kind: "image", url: "mxc://example/media", mimeType: "image/jpeg", fileName: "photo.jpg", sizeBytes: 1234 }]);
