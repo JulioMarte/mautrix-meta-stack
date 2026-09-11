@@ -166,7 +166,7 @@ export class HttpMatrixSyncClient {
     url.searchParams.set("timeout", String(this.serverTimeoutMs));
     url.searchParams.set("filter", JSON.stringify({
       room: {
-        state: { types: ["m.bridge", "uk.half-shot.bridge"] },
+        state: { types: ["m.bridge", "uk.half-shot.bridge", "m.room.member"] },
         timeline: { types: ["m.room.message"], limit },
         ephemeral: { types: [] },
         account_data: { types: [] }
