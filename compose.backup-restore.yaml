@@ -1,4 +1,48 @@
 services:
+  chatwoot-backup-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/chatwoot-double.ts"]
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  matrix-backup-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      MATRIX_CLIENT_CI_TOKEN: ${MATRIX_CLIENT_CI_TOKEN:?MATRIX_CLIENT_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/matrix-client-double.ts"]
+    expose:
+      - "8082"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8082/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  control-plane:
+    depends_on:
+      chatwoot-backup-double:
+        condition: service_healthy
+      matrix-backup-double:
+        condition: service_healthy
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+      MATRIX_CLIENT_BASE_URL: http://matrix-backup-double:8082
+      MATRIX_CLIENT_ACCESS_TOKEN: ${MATRIX_CLIENT_CI_TOKEN:?MATRIX_CLIENT_CI_TOKEN is required}
+      EGRESS_PROXY_BACKUP_PASSWORD: ${EGRESS_PROXY_BACKUP_PASSWORD:?EGRESS_PROXY_BACKUP_PASSWORD is required}
+
   control-plane-backup-helper:
     image: alpine:3.24
     user: "0:0"
