@@ -44,7 +44,7 @@ const route=async(suffix,account,inbox)=>{
 const a=await route("a",1,10); const b=await route("b",1,20);
 const eventA={connectionId:a.c.id,roomId:"!room-a:matrix.example.com",remoteThreadId:"thread-a",remoteContactId:"remote-contact",eventId:"$media-a",senderId:"remote-contact",senderDisplayName:"Alice",text:"attachments",occurredAt:"2026-09-11T11:00:00.000Z",provenance:"meta",attachments:[
  {kind:"image",url:"mxc://matrix.example.com/photo",mimeType:"image/jpeg",fileName:"photo.jpg"},
- {kind:"audio",url:"mxc://matrix.example.com/voice",mimeType:"audio/ogg",fileName:"voice.ogg"},
+ {kind:"audio",url:"mxc://matrix.example.com/voice",mimeType:"audio/ogg",fileName:"voice.ogg",voiceNote:true},
  {kind:"file",url:"mxc://matrix.example.com/pdf",mimeType:"application/pdf",fileName:"invoice.pdf"}
 ]};
 const first=await post("/internal/v1/matrix/events",eventA,internal);
@@ -63,10 +63,11 @@ if(state.messages.length!==2) throw new Error("expected exactly two Chatwoot mes
 const a=state.messages.find((m)=>m.inboxId===10); const b=state.messages.find((m)=>m.inboxId===20);
 if(!a||!b) throw new Error("tenant inbox routing mismatch");
 if(a.attachments.length!==3) throw new Error("expected image, voice and PDF attachments");
+if(a.voiceMessage!==true) throw new Error("voice note was not marked as a native Chatwoot voice message");
 const got=a.attachments.map((x)=>[x.name,x.type,x.content]);
 const expected=[["photo.jpg","image/jpeg","fixture-photo-jpeg"],["voice.ogg","audio/ogg","fixture-voice-ogg"],["invoice.pdf","application/pdf","fixture-pdf-document"]];
 if(JSON.stringify(got)!==JSON.stringify(expected)) { console.error(got); throw new Error("attachment payload mismatch"); }
-if(b.attachments.length!==0 || b.content!=="tenant b") throw new Error("tenant B message mismatch");
+if(b.attachments.length!==0 || b.content!=="tenant b" || b.voiceMessage!==false) throw new Error("tenant B message mismatch");
 '
 
 # Prove ambiguous post-commit Chatwoot errors are reconciled rather than duplicated.
@@ -85,9 +86,9 @@ if(!r.ok){console.error(r.status,await r.text());process.exit(1)} const body=awa
 wait_healthy control-plane 90
 "${DC[@]}" exec -T control-plane bun -e '
 const {Database}=await import("bun:sqlite"); const d=new Database("/data/control-plane.db",{readonly:true}); const row=d.query("select id from meta_connections where meta_account_id = ?").get("meta-phase4-a"); d.close();
-const event={connectionId:row.id,roomId:"!room-a:matrix.example.com",remoteThreadId:"thread-a",remoteContactId:"remote-contact",eventId:"$media-a",senderId:"remote-contact",senderDisplayName:"Alice",text:"attachments",occurredAt:"2026-09-11T11:00:00.000Z",provenance:"meta",attachments:[{kind:"image",url:"mxc://matrix.example.com/photo",mimeType:"image/jpeg",fileName:"photo.jpg"},{kind:"audio",url:"mxc://matrix.example.com/voice",mimeType:"audio/ogg",fileName:"voice.ogg"},{kind:"file",url:"mxc://matrix.example.com/pdf",mimeType:"application/pdf",fileName:"invoice.pdf"}]};
+const event={connectionId:row.id,roomId:"!room-a:matrix.example.com",remoteThreadId:"thread-a",remoteContactId:"remote-contact",eventId:"$media-a",senderId:"remote-contact",senderDisplayName:"Alice",text:"attachments",occurredAt:"2026-09-11T11:00:00.000Z",provenance:"meta",attachments:[{kind:"image",url:"mxc://matrix.example.com/photo",mimeType:"image/jpeg",fileName:"photo.jpg"},{kind:"audio",url:"mxc://matrix.example.com/voice",mimeType:"audio/ogg",fileName:"voice.ogg",voiceNote:true},{kind:"file",url:"mxc://matrix.example.com/pdf",mimeType:"application/pdf",fileName:"invoice.pdf"}]};
 const r=await fetch("http://127.0.0.1:3000/internal/v1/matrix/events",{method:"POST",headers:{authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN,"content-type":"application/json"},body:JSON.stringify(event)});const body=await r.json();if(body.data?.status!=="duplicate"){console.error(body);process.exit(1)}
-const state=await (await fetch("http://chatwoot-double:8080/_test/state")).json();if(state.messages.filter((m)=>m.sourceEventId==="$media-a").length!==1)process.exit(1);
+const state=await (await fetch("http://chatwoot-double:8080/_test/state")).json();const media=state.messages.filter((m)=>m.sourceEventId==="$media-a");if(media.length!==1||media[0].voiceMessage!==true)process.exit(1);
 '
 
 logs="$("${DC[@]}" logs --no-color control-plane chatwoot-double matrix-media-double 2>&1 || true)"
