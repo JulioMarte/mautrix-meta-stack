@@ -55,18 +55,22 @@ jobs:
           git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
           git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
           test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
-      - name: Apply deterministic account-aware egress delta
+      - name: Apply deterministic account-aware egress and provisioning delta
         run: |
           python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
           python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
+          python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
           cd /tmp/mautrix-meta
           gofmt -w \
             pkg/connector/client.go \
             pkg/connector/config.go \
             pkg/connector/connector.go \
             pkg/connector/login.go \
+            pkg/connector/provisioning.go \
+            pkg/connector/provisioning_test.go \
             pkg/connector/directmedia.go \
             pkg/connector/events.go \
             pkg/connector/userinfo.go \
