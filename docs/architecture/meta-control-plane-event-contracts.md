@@ -65,17 +65,19 @@ For a new remote thread the adapter creates or resolves a Chatwoot contact/sourc
 
 ## Chatwoot -> Matrix
 
-The webhook adapter MUST authenticate/validate the incoming request using the strongest mechanism supported by the configured Chatwoot deployment and network topology. Payloads MUST be validated before routing.
+The webhook ingress is binding-specific: the opaque internal `chatwoot_binding` identifier selects the candidate webhook signing configuration before any body field is trusted. The raw request body MUST be authenticated with Chatwoot's timestamped HMAC-SHA256 contract before JSON routing data is consumed. Webhook signing secrets MUST be distinct from Chatwoot API credentials.
 
-Only agent/outgoing messages intended for delivery to Meta are forwarded. Incoming messages that originated from Matrix/Meta MUST not be reflected back.
+Only `message_created` events that are outgoing, non-private and sent by a human Chatwoot `user` are eligible for Matrix delivery. Incoming messages, private notes, bots/system senders and unsupported webhook events MUST NOT produce a Matrix side effect.
 
-The adapter resolves the `conversation_binding` and sends to the exact bound Matrix room. Absence or ambiguity of a binding is a hard routing failure; cross-tenant guessing is forbidden.
+After authentication, the signed Chatwoot account, inbox and conversation identifiers MUST match the selected binding and one persisted tenant-scoped `conversation_binding`. The adapter sends only to that binding's exact Matrix room. Absence, ambiguity or conflict is a hard routing failure; cross-tenant or cross-inbox guessing is forbidden.
+
+Matrix sends MUST use deterministic transaction IDs derived from the binding-scoped Chatwoot message identity so a retry after an ambiguous homeserver response reuses the same downstream idempotency key. Every Chatwoot-originated Matrix event MUST carry explicit provenance containing `source = "chatwoot"` and the stable source event identifier; the Matrix -> Chatwoot direction MUST suppress events carrying that provenance.
 
 ## Idempotency
 
 Before an externally visible side effect, the service SHOULD atomically claim `(source, source_event_id)` in `processed_events`. Duplicate claims MUST return the prior processing state rather than repeat delivery.
 
-Retries after ambiguous network failure MUST either use a downstream idempotency/correlation key where supported or reconcile the remote result before resending.
+Retries after ambiguous network failure MUST either use a downstream idempotency/correlation key where supported or reconcile the remote result before resending. For Chatwoot -> Matrix, the Matrix transaction ID is the downstream idempotency key and MUST remain stable across retries.
 
 The system MUST distinguish `received`, `processing`, `delivered`, `failed_retryable`, and `failed_terminal` or equivalent states so crash recovery is deterministic.
 
@@ -89,7 +91,7 @@ Phase 4 Matrix -> Chatwoot supports binary image, video, audio/voice-note and ge
 
 The adapter MUST NOT forward an `mxc://` URI as though it were a public Chatwoot attachment. It must retrieve the bytes from the configured Matrix homeserver using the authenticated Matrix client-media download endpoint, then submit the files to Chatwoot as `multipart/form-data` fields named `attachments[]` on the same conversation-message endpoint used for text.
 
-Media retrieval MUST:
+Matrix media retrieval MUST:
 
 - accept only Matrix Content URIs (`mxc://`) from the normalized event; arbitrary event-provided `http://` or `https://` download URLs are forbidden;
 - authenticate to the configured homeserver using a header-carried access token, never a query-string token;
@@ -102,7 +104,9 @@ For Matrix encrypted attachments (`EncryptedFile` v2), the normalized adapter MU
 
 The current Chatwoot model permits at most 15 attachments on one message. The adapter therefore fails before the Chatwoot POST when more than 15 attachments are supplied, rather than relying on a provider-side partial failure.
 
-Media bytes, Matrix access tokens, Chatwoot API tokens and private media URLs MUST NOT be logged.
+For Chatwoot -> Matrix attachments, the initial attachment `data_url` MUST be same-origin with the configured Chatwoot API base URL. The control plane MAY follow one explicit cross-origin redirect only to HTTPS storage. It MUST strip the Chatwoot API token before following a cross-origin redirect. Download and Matrix upload operations MUST use bounded timeouts and size limits. Downloaded bytes are uploaded to Matrix and represented as the corresponding `m.image`, `m.audio`, `m.video` or `m.file` room event.
+
+Media bytes, Matrix access tokens, Chatwoot API tokens, Chatwoot webhook signing secrets and private media URLs MUST NOT be logged.
 
 ## Conversation identity
 
@@ -122,15 +126,17 @@ A binding from tenant A MUST never satisfy a lookup for tenant B even if remote 
 
 ## Loop prevention
 
-Loop prevention MUST use explicit provenance/correlation data, not heuristics based only on message text, sender display name or timestamps.
+Loop prevention MUST use explicit provenance/correlation data, not heuristics based only on message text, sender display name or timestamps. Chatwoot-originated Matrix events MUST carry an explicit provenance marker that survives the Matrix boundary sufficiently for the Matrix adapter to suppress the reflected event.
 
 ## Failure handling
 
 Chatwoot unavailable -> retain retryable state; do not acknowledge permanent delivery internally.
-Matrix unavailable -> retain retryable state.
+Matrix unavailable -> retain retryable state and reuse the same Matrix transaction ID on retry.
 Binding missing/ambiguous -> terminal or operator-action-required state, never guess.
 Tenant/connection disabled -> do not deliver.
 Duplicate event -> no new downstream side effect.
+Invalid/stale Chatwoot webhook signature -> reject before routing and cause no Matrix side effect.
+Chatwoot attachment route mismatch -> fail closed before Matrix upload.
 Matrix media unavailable -> retryable unless the event/media metadata is structurally invalid.
 Matrix encrypted-media hash mismatch -> terminal/operator-visible failure; never upload unverified bytes.
 
@@ -139,3 +145,5 @@ Matrix encrypted-media hash mismatch -> terminal/operator-visible failure; never
 CI MUST prove inbound and outbound normalization, two-tenant routing separation, duplicate webhook/event suppression, restart recovery, missing-binding failure, echo-loop prevention, retry behavior and at least text plus representative image, audio/voice-note and file/PDF attachment paths before claiming bidirectional messaging complete.
 
 For Matrix -> Chatwoot attachment support specifically, CI MUST observe a real multipart HTTP request at a Chatwoot-compatible boundary, authenticated Matrix media retrieval, exact tenant/inbox routing, duplicate suppression, retry reconciliation after an ambiguous Chatwoot response, restart persistence and encrypted-media hash/decryption behavior.
+
+For Chatwoot -> Matrix specifically, CI MUST observe a valid signed webhook at the public ingress and a real Matrix-compatible room-send boundary. It MUST prove exact account/inbox/conversation-to-room routing, representative binary attachment upload, invalid-signature rejection, private/unsupported-message suppression, duplicate suppression, deterministic transaction-ID reconciliation after an ambiguous Matrix response, restart persistence, explicit provenance/echo suppression and absence of credential leakage in logs.

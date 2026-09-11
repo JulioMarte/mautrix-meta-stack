@@ -10,7 +10,8 @@ function resolveEnvRef(pattern: RegExp, secretRef: string, env: Record<string, s
 // Persisted egress references may only dereference variables explicitly dedicated
 // to proxy credentials. Unrelated control-plane tokens must never become proxy auth.
 const EGRESS_ENV_REF = /^env:(EGRESS_PROXY_[A-Z0-9_]*)$/;
-const CHATWOOT_ENV_REF = /^env:(CHATWOOT_[A-Z0-9_]*)$/;
+const CHATWOOT_ENV_REF = /^env:(CHATWOOT_(?!WEBHOOK_)[A-Z0-9_]*)$/;
+const CHATWOOT_WEBHOOK_ENV_REF = /^env:(CHATWOOT_WEBHOOK_[A-Z0-9_]*)$/;
 
 export class EnvironmentSecretProvider implements SecretProvider {
   constructor(private readonly env: Record<string, string | undefined> = process.env) {}
@@ -22,8 +23,14 @@ export class ChatwootEnvironmentSecretProvider implements SecretProvider {
   resolve(secretRef: string): string | null { return resolveEnvRef(CHATWOOT_ENV_REF, secretRef, this.env); }
 }
 
+export class ChatwootWebhookEnvironmentSecretProvider implements SecretProvider {
+  constructor(private readonly env: Record<string, string | undefined> = process.env) {}
+  resolve(secretRef: string): string | null { return resolveEnvRef(CHATWOOT_WEBHOOK_ENV_REF, secretRef, this.env); }
+}
+
 export function isSupportedSecretRef(value: string): boolean { return EGRESS_ENV_REF.test(value); }
 export function isSupportedChatwootSecretRef(value: string): boolean { return CHATWOOT_ENV_REF.test(value); }
+export function isSupportedChatwootWebhookSecretRef(value: string): boolean { return CHATWOOT_WEBHOOK_ENV_REF.test(value); }
 
 export function redactUri(value: string): string {
   try {

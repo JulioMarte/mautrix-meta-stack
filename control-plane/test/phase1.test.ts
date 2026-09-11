@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createApp } from "../src/app";
-import { runMigrations, schemaVersion } from "../src/persistence/migrations";
+import { LATEST_SCHEMA_VERSION, runMigrations, schemaVersion } from "../src/persistence/migrations";
 import { SQLiteMetaConnectionRepository, SQLiteTenantRepository } from "../src/persistence/sqlite-repositories";
 
 let db: Database | undefined;
@@ -16,9 +16,9 @@ function freshDb() {
 describe("Phase 1 persistence", () => {
   test("migrations create and remain idempotent", () => {
     const database = freshDb();
-    expect(schemaVersion(database)).toBe(1);
+    expect(schemaVersion(database)).toBe(LATEST_SCHEMA_VERSION);
     runMigrations(database);
-    expect(schemaVersion(database)).toBe(1);
+    expect(schemaVersion(database)).toBe(LATEST_SCHEMA_VERSION);
   });
 
   test("repositories persist tenant and configuration records", () => {
@@ -40,7 +40,7 @@ describe("Phase 1 HTTP surface", () => {
     expect((await app.handle(new Request("http://localhost/health/live"))).status).toBe(200);
     const ready = await app.handle(new Request("http://localhost/health/ready"));
     expect(ready.status).toBe(200);
-    expect(await ready.json()).toMatchObject({ status: "ready", schemaVersion: 1 });
+    expect(await ready.json()).toMatchObject({ status: "ready", schemaVersion: LATEST_SCHEMA_VERSION });
   });
 
   test("admin and management API reject unauthorized access", async () => {

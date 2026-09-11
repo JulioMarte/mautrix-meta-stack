@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const LATEST_SCHEMA_VERSION = 1;
+export const LATEST_SCHEMA_VERSION = 2;
 
 const migration1 = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -101,6 +101,14 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 `;
 
+const migration2 = `
+CREATE TABLE IF NOT EXISTS chatwoot_webhook_configs (
+  binding_id TEXT PRIMARY KEY REFERENCES chatwoot_bindings(id) ON DELETE CASCADE,
+  secret_ref TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 export function runMigrations(db: Database): void {
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -110,6 +118,13 @@ export function runMigrations(db: Database): void {
     const apply = db.transaction(() => {
       db.exec(migration1);
       db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(1, new Date().toISOString());
+    });
+    apply();
+  }
+  if (!versions.has(2)) {
+    const apply = db.transaction(() => {
+      db.exec(migration2);
+      db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(2, new Date().toISOString());
     });
     apply();
   }

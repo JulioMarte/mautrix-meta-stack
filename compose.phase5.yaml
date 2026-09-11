@@ -1,0 +1,46 @@
+services:
+  chatwoot-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/chatwoot-double.ts"]
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  matrix-client-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      MATRIX_CLIENT_CI_TOKEN: ${MATRIX_CLIENT_CI_TOKEN:?MATRIX_CLIENT_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/matrix-client-double.ts"]
+    expose:
+      - "8082"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8082/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  control-plane:
+    depends_on:
+      chatwoot-double:
+        condition: service_healthy
+      matrix-client-double:
+        condition: service_healthy
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+      CHATWOOT_WEBHOOK_CI_SECRET: ${CHATWOOT_WEBHOOK_CI_SECRET:?CHATWOOT_WEBHOOK_CI_SECRET is required}
+      MATRIX_CLIENT_BASE_URL: http://matrix-client-double:8082
+      MATRIX_CLIENT_ACCESS_TOKEN: ${MATRIX_CLIENT_CI_TOKEN:?MATRIX_CLIENT_CI_TOKEN is required}
+      MATRIX_CLIENT_TIMEOUT_MS: "5000"
+      MATRIX_CLIENT_MAX_BYTES: "10485760"

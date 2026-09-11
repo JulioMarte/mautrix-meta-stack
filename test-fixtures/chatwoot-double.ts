@@ -51,6 +51,13 @@ Bun.serve({
     if (url.pathname === "/_test/fail-after-next-message-create" && req.method === "POST") { failAfterNextMessageCreate = true; return json({ ok: true }); }
     if (!authorized(req)) return json({ error: "unauthorized" }, 401);
 
+    if (url.pathname === "/files/agent.pdf" && req.method === "GET") {
+      return new Response("phase5-agent-pdf", { status: 200, headers: { "content-type": "application/pdf" } });
+    }
+    if (url.pathname === "/files/agent.ogg" && req.method === "GET") {
+      return new Response("phase5-agent-voice", { status: 200, headers: { "content-type": "audio/ogg" } });
+    }
+
     const p = pathParts(url);
     const accountIndex = p.indexOf("accounts");
     if (accountIndex < 0) return json({ error: "not found" }, 404);
