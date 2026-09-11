@@ -56,7 +56,7 @@ The gate is green only when it proves all of the following on the same candidate
 9. A protocol-level Chatwoot timeout marks the Matrix event retryable; retrying the exact event after recovery produces exactly one Chatwoot message.
 10. Restart preserves connection identity, conversation binding, sticky egress resolution and processed-event state.
 11. An exact canonical webhook replay after restart remains a duplicate.
-12. Reusing a processed webhook ID with a changed canonical payload fails closed rather than being treated as a duplicate or new event.
+12. Reusing a processed webhook ID with a changed canonical payload is a terminal identity conflict: it returns HTTP `409` with `EVENT_IDENTITY_CONFLICT` and produces no additional Matrix side effect. It is not classified as a retryable dependency failure.
 13. Synthetic credential canaries do not appear in captured service logs; the workflow also masks generated canaries from normal Actions output.
 
 ## Fault-injection design
@@ -65,7 +65,7 @@ Faults are injected at protocol boundaries rather than by mutating application i
 
 - **assigned proxy unavailable:** the selected proxy double returns failure while the direct sentinel remains available;
 - **Chatwoot timeout:** the Chatwoot double delays one message-create request beyond the gateway timeout without stopping container health;
-- **duplicate/reuse:** exact replay and same-ID/different-payload cases are tested independently;
+- **duplicate/reuse:** exact replay and same-ID/different-payload cases are tested independently; same-ID/different-payload is terminal because retrying cannot make an already persisted identity match a different canonical payload;
 - **control-plane restart:** the application container restarts while the persistent SQLite volume and external doubles remain intact.
 
 Phase 3 remains the source of resolver-down/unauthorized/malformed-response and mautrix reconnect-specific fault proofs. Phase 4/5 remain the source of their direction-specific attachment and ambiguous-side-effect proofs. Phase 6 composes these guarantees under concurrent tenant state.
