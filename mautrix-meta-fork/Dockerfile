@@ -14,11 +14,13 @@ COPY mautrix-meta-fork/apply_phase3_fixups.py /patch/apply_phase3_fixups.py
 COPY mautrix-meta-fork/apply_phase3_transport_tests.py /patch/apply_phase3_transport_tests.py
 COPY mautrix-meta-fork/apply_phase3_resolver_hardening.py /patch/apply_phase3_resolver_hardening.py
 COPY mautrix-meta-fork/apply_provisioning_bootstrap.py /patch/apply_provisioning_bootstrap.py
+COPY mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /patch/apply_provisioning_bootstrap_fixups.py
 RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_fixups.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_transport_tests.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_resolver_hardening.py /src/mautrix-meta \
     && python3 /patch/apply_provisioning_bootstrap.py /src/mautrix-meta \
+    && python3 /patch/apply_provisioning_bootstrap_fixups.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
     && gofmt -w \
         pkg/connector/client.go \
