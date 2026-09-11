@@ -62,9 +62,6 @@ def main() -> None:
         1,
     )
 
-    # Make media fail closed by construction. With dynamic proxy_media enabled,
-    # every media download must carry an account-scoped proxy in context. Missing
-    # instrumentation therefore becomes an explicit error rather than host egress.
     download = root / "pkg/msgconv/mediadl/download.go"
     replace_exact(
         download,
@@ -180,7 +177,56 @@ func TestClientForContextFailsClosedWithoutProxyWhenRequired(t *testing.T) {
         t.Fatal("expected missing media proxy context to fail closed")
     }
 }
+
+func TestDownloadMediaUsesScopedProxyAndNeverHitsDirectSentinel(t *testing.T) {
+    oldClient := mediaHTTPClient
+    oldRequired := RequireProxyContext
+    mediaHTTPClient = &http.Client{Transport: &http.Transport{}}
+    RequireProxyContext = true
+    t.Cleanup(func() {
+        mediaHTTPClient = oldClient
+        RequireProxyContext = oldRequired
+    })
+
+    var directHits atomic.Int32
+    direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        directHits.Add(1)
+        _, _ = io.WriteString(w, "direct")
+    }))
+    defer direct.Close()
+
+    var proxyHits atomic.Int32
+    proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        proxyHits.Add(1)
+        if r.URL.String() != direct.URL {
+            t.Errorf("proxy received unexpected target %q", r.URL.String())
+        }
+        _, _ = io.WriteString(w, "proxied")
+    }))
+    defer proxy.Close()
+
+    ctx := WithProxy(context.Background(), proxy.URL)
+    _, body, err := DownloadMedia(ctx, "image/jpeg", direct.URL, 1024)
+    if err != nil { t.Fatal(err) }
+    data, err := io.ReadAll(body)
+    _ = body.Close()
+    if err != nil { t.Fatal(err) }
+    if string(data) != "proxied" { t.Fatalf("unexpected response body %q", data) }
+    if proxyHits.Load() != 1 { t.Fatalf("expected one proxy hit, got %d", proxyHits.Load()) }
+    if directHits.Load() != 0 { t.Fatalf("direct sentinel was reached %d times", directHits.Load()) }
+
+    if _, _, err = DownloadMedia(context.Background(), "image/jpeg", direct.URL, 1024); err == nil {
+        t.Fatal("expected unscoped media request to fail closed")
+    }
+    if directHits.Load() != 0 { t.Fatalf("unscoped request reached direct sentinel %d times", directHits.Load()) }
+}
 ''',
+    )
+    replace_exact(
+        media_test,
+        '"context"\n    "net/http"\n    "testing"',
+        '"context"\n    "io"\n    "net/http"\n    "net/http/httptest"\n    "sync/atomic"\n    "testing"',
+        1,
     )
 
     print(f"Applied Phase 3 hardening fixes to {root}")
