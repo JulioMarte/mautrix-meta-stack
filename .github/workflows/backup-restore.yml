@@ -1,0 +1,60 @@
+name: Control-plane backup restore
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+      - 'feature/**'
+      - 'fix/**'
+
+concurrency:
+  group: backup-restore-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backup-restore:
+    runs-on: ubuntu-latest
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: integration-password
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      TZ: America/Santo_Domingo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create ephemeral recovery credentials
+        shell: bash
+        run: |
+          set -eu
+          maskenv() {
+            local name="$1" value="$2"
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          }
+          maskenv CONTROL_PLANE_ADMIN_TOKEN "admin-$(openssl rand -hex 24)"
+          maskenv CONTROL_PLANE_INTERNAL_TOKEN "internal-$(openssl rand -hex 24)"
+          maskenv CHATWOOT_CI_TOKEN "chatwoot-$(openssl rand -hex 24)"
+          maskenv MATRIX_CLIENT_CI_TOKEN "matrix-$(openssl rand -hex 24)"
+          maskenv EGRESS_PROXY_BACKUP_PASSWORD "proxy-$(openssl rand -hex 24)"
+      - name: Validate recovery topology and script
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.backup-restore.yaml config -q
+          bash -n scripts/backup-restore-integration.sh
+      - name: Prove cold backup and fresh-volume restore
+        run: bash scripts/backup-restore-integration.sh
+      - name: Dump recovery logs on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.backup-restore.yaml logs --no-color || true
+      - name: Cleanup
+        if: always()
+        run: |
+          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.backup-restore.yaml down -v --remove-orphans || true
+          rm -rf .ci-backup
