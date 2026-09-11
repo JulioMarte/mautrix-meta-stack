@@ -22,8 +22,14 @@ def main() -> None:
             changed += 1
     if changed != 3:
         raise SystemExit(f"{login}: expected to repair 3 cookie URL patterns, repaired {changed}")
-    login.write_text("".join(lines))
-    print(f"Applied provisioning bootstrap escape fixups to {root}")
+    text = "".join(lines)
+    old = "step, err = loginWithCookies(ctx, log, newClient, m.User, m.Main, newCookies)"
+    new = "step, err = loginWithCookies(ctx, log, newClient, m.User, m.Main, newCookies, \"\")"
+    if text.count(old) != 1:
+        raise SystemExit(f"{login}: expected exactly one Messenger Lite loginWithCookies caller")
+    text = text.replace(old, new, 1)
+    login.write_text(text)
+    print(f"Applied provisioning bootstrap fixups to {root}")
 
 
 if __name__ == "__main__":
