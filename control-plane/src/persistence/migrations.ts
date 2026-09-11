@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 
-export const LATEST_SCHEMA_VERSION = 3;
+export const LATEST_SCHEMA_VERSION = 4;
 
 const migration1 = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -127,6 +127,29 @@ CREATE INDEX IF NOT EXISTS idx_provisioning_claims_expiry
   ON provisioning_claims(expires_at) WHERE used_at IS NULL AND revoked_at IS NULL;
 `;
 
+const migration4 = `
+CREATE TABLE IF NOT EXISTS matrix_room_bindings (
+  matrix_room_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES tenants(id),
+  meta_connection_id TEXT NOT NULL REFERENCES meta_connections(id),
+  remote_thread_id TEXT NOT NULL,
+  mautrix_login_id TEXT NOT NULL,
+  bridge_state_key TEXT NOT NULL,
+  source_event_id TEXT,
+  verified_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(meta_connection_id, remote_thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_matrix_room_bindings_connection
+  ON matrix_room_bindings(meta_connection_id, matrix_room_id);
+CREATE TABLE IF NOT EXISTS matrix_sync_checkpoints (
+  consumer_id TEXT PRIMARY KEY,
+  next_batch TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 export function runMigrations(db: Database): void {
   db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
@@ -150,6 +173,13 @@ export function runMigrations(db: Database): void {
     const apply = db.transaction(() => {
       db.exec(migration3);
       db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(3, new Date().toISOString());
+    });
+    apply();
+  }
+  if (!versions.has(4)) {
+    const apply = db.transaction(() => {
+      db.exec(migration4);
+      db.query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(4, new Date().toISOString());
     });
     apply();
   }
