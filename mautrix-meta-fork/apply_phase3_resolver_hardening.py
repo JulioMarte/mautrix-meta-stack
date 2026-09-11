@@ -25,6 +25,7 @@ def main() -> None:
         raise SystemExit("usage: apply_phase3_resolver_hardening.py <patched-mautrix-meta-source-dir>")
     root = pathlib.Path(sys.argv[1]).resolve()
     client = root / "pkg/connector/client.go"
+    config = root / "pkg/connector/config.go"
     test_file = root / "pkg/connector/proxy_context_test.go"
 
     replace_once(
@@ -41,6 +42,17 @@ def main() -> None:
         client,
         '''\t\tvar respData respGetProxy\n\t\terr = json.NewDecoder(resp.Body).Decode(&respData)\n\t\tif err != nil {\n\t\t\treturn "", fmt.Errorf("failed to decode response: %w", err)\n\t\t}\n\t\tproxyURL, err := url.Parse(respData.ProxyURL)\n\t\tif err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {\n\t\t\treturn "", fmt.Errorf("proxy resolver returned invalid proxy URL")\n\t\t}\n\t\treturn respData.ProxyURL, nil\n''',
         '''\t\tconst maxResolverResponseBytes = 64 * 1024\n\t\tbody, err := io.ReadAll(io.LimitReader(resp.Body, maxResolverResponseBytes+1))\n\t\tif err != nil {\n\t\t\treturn "", fmt.Errorf("failed to read response: %w", err)\n\t\t} else if len(body) > maxResolverResponseBytes {\n\t\t\treturn "", fmt.Errorf("proxy resolver response exceeds size limit")\n\t\t}\n\t\tvar respData respGetProxy\n\t\tif err = json.Unmarshal(body, &respData); err != nil {\n\t\t\treturn "", fmt.Errorf("failed to decode response: %w", err)\n\t\t}\n\t\tproxyURL, err := url.Parse(respData.ProxyURL)\n\t\tif err != nil || proxyURL.Hostname() == "" || proxyURL.Port() == "" || proxyURL.Path != "" || proxyURL.RawQuery != "" || proxyURL.Fragment != "" {\n\t\t\treturn "", fmt.Errorf("proxy resolver returned invalid proxy URL")\n\t\t}\n\t\tswitch proxyURL.Scheme {\n\t\tcase "http", "https", "socks5":\n\t\tdefault:\n\t\t\treturn "", fmt.Errorf("proxy resolver returned unsupported proxy scheme")\n\t\t}\n\t\treturn respData.ProxyURL, nil\n''',
+    )
+
+    replace_once(
+        config,
+        '"fmt"\n\t"strings"',
+        '"fmt"\n\t"net/url"\n\t"strings"',
+    )
+    replace_once(
+        config,
+        '''\tif m.Config.GetProxyFrom != "" {\n\t\tif m.Config.Proxy != "" {\n''',
+        '''\tif m.Config.GetProxyFrom != "" {\n\t\tresolverURL, err := url.Parse(m.Config.GetProxyFrom)\n\t\tif err != nil || resolverURL.Host == "" || (resolverURL.Scheme != "http" && resolverURL.Scheme != "https") || resolverURL.User != nil || resolverURL.RawQuery != "" || resolverURL.Fragment != "" {\n\t\t\treturn fmt.Errorf("dynamic egress resolver URL must be an http(s) URL without userinfo, query or fragment")\n\t\t}\n\t\tif m.Config.Proxy != "" {\n''',
     )
 
     append_once(
@@ -109,6 +121,27 @@ func TestResolverRejectsMalformedOrUnsupportedProxyURLs(t *testing.T) {
                 t.Fatalf("expected resolver proxy URL %q to fail closed", returned)
             }
         })
+    }
+}
+
+func TestDynamicEgressConfigRejectsUnsafeResolverURLs(t *testing.T) {
+    for _, resolverURL := range []string{
+        "ftp://control-plane/internal/v1/egress/resolve",
+        "http://token@control-plane/internal/v1/egress/resolve",
+        "http://control-plane/internal/v1/egress/resolve?token=bad",
+        "http://control-plane/internal/v1/egress/resolve#fragment",
+        "control-plane/internal/v1/egress/resolve",
+    } {
+        conn := &MetaConnector{}
+        conn.Config.RawMode = "facebook"
+        conn.Config.Mode = types.Facebook
+        conn.Config.GetProxyFrom = resolverURL
+        conn.Config.ProxyOther = true
+        conn.Config.ProxyMedia = true
+        conn.Config.ProxyE2EE = true
+        if err := conn.ValidateConfig(); err == nil {
+            t.Fatalf("expected unsafe resolver URL %q to be rejected", resolverURL)
+        }
     }
 }
 ''',
