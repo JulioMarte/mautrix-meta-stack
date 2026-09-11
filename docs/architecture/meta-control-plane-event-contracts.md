@@ -9,6 +9,19 @@ Matrix and Chatwoot payloads MUST be normalized at adapter boundaries so provide
 ## Canonical message
 
 ```ts
+type MatrixEncryptedFile = {
+  v: "v2"
+  key: {
+    kty: "oct"
+    alg: "A256CTR"
+    k: string
+    keyOps: string[]
+    ext: true
+  }
+  iv: string
+  hashes: { sha256: string }
+}
+
 type Attachment = {
   id?: string
   kind: "image" | "video" | "audio" | "file" | "unknown"
@@ -16,6 +29,7 @@ type Attachment = {
   mimeType?: string
   fileName?: string
   sizeBytes?: number
+  encryption?: MatrixEncryptedFile
 }
 
 type NormalizedMessage = {
@@ -68,7 +82,24 @@ Global ordering is not required. Per-conversation processing SHOULD preserve pro
 
 ## Attachments
 
-Attachment support MUST be explicit by type. The first release may support a subset, but unsupported media MUST result in a visible/observable non-delivery state rather than silent data loss. Media downloads and uploads must respect tenant egress/security policy where applicable and must not expose private URLs in logs.
+Phase 4 Matrix -> Chatwoot supports binary image, video, audio/voice-note and generic file attachments, including PDFs, through Chatwoot's message attachment surface.
+
+The adapter MUST NOT forward an `mxc://` URI as though it were a public Chatwoot attachment. It must retrieve the bytes from the configured Matrix homeserver using the authenticated Matrix client-media download endpoint, then submit the files to Chatwoot as `multipart/form-data` fields named `attachments[]` on the same conversation-message endpoint used for text.
+
+Media retrieval MUST:
+
+- accept only Matrix Content URIs (`mxc://`) from the normalized event; arbitrary event-provided `http://` or `https://` download URLs are forbidden;
+- authenticate to the configured homeserver using a header-carried access token, never a query-string token;
+- use a bounded timeout and configurable maximum media size;
+- handle redirects explicitly and MUST NOT forward the Matrix bearer token to a different origin;
+- preserve a safe filename and MIME type when known;
+- fail visibly rather than silently dropping an attachment.
+
+For Matrix encrypted attachments (`EncryptedFile` v2), the normalized adapter MUST preserve the `file` encryption metadata. Before uploading to Chatwoot the control plane MUST verify the SHA-256 hash of the ciphertext and decrypt it using the specified AES-256-CTR key/IV. Hash mismatch, malformed encryption metadata or decryption failure is a non-delivery state. Ciphertext MUST NOT be uploaded to Chatwoot as if it were the original media.
+
+The current Chatwoot model permits at most 15 attachments on one message. The adapter therefore fails before the Chatwoot POST when more than 15 attachments are supplied, rather than relying on a provider-side partial failure.
+
+Media bytes, Matrix access tokens, Chatwoot API tokens and private media URLs MUST NOT be logged.
 
 ## Conversation identity
 
@@ -97,7 +128,11 @@ Matrix unavailable -> retain retryable state.
 Binding missing/ambiguous -> terminal or operator-action-required state, never guess.
 Tenant/connection disabled -> do not deliver.
 Duplicate event -> no new downstream side effect.
+Matrix media unavailable -> retryable unless the event/media metadata is structurally invalid.
+Matrix encrypted-media hash mismatch -> terminal/operator-visible failure; never upload unverified bytes.
 
 ## Required CI proofs
 
-CI MUST prove inbound and outbound normalization, two-tenant routing separation, duplicate webhook/event suppression, restart recovery, missing-binding failure, echo-loop prevention, retry behavior and at least text plus one representative attachment path before claiming bidirectional messaging complete.
+CI MUST prove inbound and outbound normalization, two-tenant routing separation, duplicate webhook/event suppression, restart recovery, missing-binding failure, echo-loop prevention, retry behavior and at least text plus representative image, audio/voice-note and file/PDF attachment paths before claiming bidirectional messaging complete.
+
+For Matrix -> Chatwoot attachment support specifically, CI MUST observe a real multipart HTTP request at a Chatwoot-compatible boundary, authenticated Matrix media retrieval, exact tenant/inbox routing, duplicate suppression, retry reconciliation after an ambiguous Chatwoot response, restart persistence and encrypted-media hash/decryption behavior.
