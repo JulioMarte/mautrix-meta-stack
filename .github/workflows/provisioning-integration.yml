@@ -33,7 +33,7 @@ jobs:
       - name: Typecheck provisioning surface
         run: bun run typecheck
       - name: Prove provisioning claim invariants
-        run: bun test test/provisioning.test.ts
+        run: bun test test/provisioning.test.ts test/provisioning-policy.test.ts
 
   mautrix-provisioning-login:
     runs-on: ubuntu-latest
