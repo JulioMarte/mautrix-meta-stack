@@ -58,7 +58,7 @@ def main() -> None:
     replace_exact(
         config,
         '''func (m *MetaConnector) ValidateConfig() error {\n\tif m.Config.Mode == types.Unset && m.Config.RawMode != "" {\n\t\treturn fmt.Errorf("invalid mode %q", m.Config.RawMode)\n\t}\n\treturn nil\n}\n''',
-        '''func (m *MetaConnector) ValidateConfig() error {\n\tif m.Config.Mode == types.Unset && m.Config.RawMode != "" {\n\t\treturn fmt.Errorf("invalid mode %q", m.Config.RawMode)\n\t}\n\tif m.Config.GetProxyFrom != "" {\n\t\tif m.Config.Proxy != "" {\n\t\t\treturn fmt.Errorf("dynamic egress cannot be combined with a static proxy fallback")\n\t\t}\n\t\tif !m.Config.ProxyOther || !m.Config.ProxyMedia || !m.Config.ProxyE2EE {\n\t\t\treturn fmt.Errorf("dynamic egress requires proxy_other, proxy_media and proxy_e2ee")\n\t\t}\n\t\tif m.Config.ProxyMessengerLite {\n\t\t\treturn fmt.Errorf("dynamic egress does not support proxy_messenger_lite before stable login identity exists")\n\t\t}\n\t\tif len(m.Config.AllowedModes) == 0 && m.Config.Mode == types.Unset {\n\t\t\treturn fmt.Errorf("dynamic egress requires an explicit mode or allowed_modes that excludes messenger-lite")\n\t\t}\n\t\tif m.Config.Mode == types.MessengerLite {\n\t\t\treturn fmt.Errorf("dynamic egress does not support messenger-lite login")\n\t\t}\n\t\tfor _, mode := range m.Config.AllowedModes {\n\t\t\tif mode == types.MessengerLite {\n\t\t\t\treturn fmt.Errorf("dynamic egress allowed_modes cannot include messenger-lite")\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}\n''',
+        '''func (m *MetaConnector) ValidateConfig() error {\n\tif m.Config.Mode == types.Unset && m.Config.RawMode != "" {\n\t\treturn fmt.Errorf("invalid mode %q", m.Config.RawMode)\n\t}\n\tif m.Config.GetProxyFrom != "" {\n\t\tif m.Config.Proxy != "" {\n\t\t\treturn fmt.Errorf("dynamic egress cannot be combined with a static proxy fallback")\n\t\t}\n\t\tif !m.Config.ProxyOther || !m.Config.ProxyMedia || !m.Config.ProxyE2EE {\n\t\t\treturn fmt.Errorf("dynamic egress requires proxy_other, proxy_media and proxy_e2ee")\n\t\t}\n\t\tif m.Config.ProxyMessengerLite {\n\t\t\treturn fmt.Errorf("dynamic egress does not support proxy_messenger_lite before stable login identity exists")\n\t\t}\n\t\tif len(m.Config.AllowedModes) == 0 {\n\t\t\tif m.Config.Mode != types.Facebook && m.Config.Mode != types.Messenger {\n\t\t\t\treturn fmt.Errorf("dynamic egress currently supports only facebook and messenger modes")\n\t\t\t}\n\t\t} else {\n\t\t\tfor _, mode := range m.Config.AllowedModes {\n\t\t\t\tif mode != types.Facebook && mode != types.Messenger {\n\t\t\t\t\treturn fmt.Errorf("dynamic egress allowed_modes currently supports only facebook and messenger")\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\treturn nil\n}\n''',
         1,
     )
 
@@ -145,15 +145,17 @@ func TestDynamicEgressConfigRejectsStaticFallback(t *testing.T) {
     if err := conn.ValidateConfig(); err == nil { t.Fatal("expected static fallback with dynamic egress to be rejected") }
 }
 
-func TestDynamicEgressConfigRejectsMessengerLite(t *testing.T) {
-    conn := &MetaConnector{}
-    conn.Config.RawMode = "messenger-lite"
-    conn.Config.Mode = types.MessengerLite
-    conn.Config.GetProxyFrom = "http://control-plane/internal/v1/egress/resolve"
-    conn.Config.ProxyOther = true
-    conn.Config.ProxyMedia = true
-    conn.Config.ProxyE2EE = true
-    if err := conn.ValidateConfig(); err == nil { t.Fatal("expected messenger-lite with dynamic egress to be rejected") }
+func TestDynamicEgressConfigRejectsUnsupportedIdentityModes(t *testing.T) {
+    for _, mode := range []types.Platform{types.Instagram, types.MessengerLite, types.FacebookTor} {
+        conn := &MetaConnector{}
+        conn.Config.RawMode = mode.String()
+        conn.Config.Mode = mode
+        conn.Config.GetProxyFrom = "http://control-plane/internal/v1/egress/resolve"
+        conn.Config.ProxyOther = true
+        conn.Config.ProxyMedia = true
+        conn.Config.ProxyE2EE = true
+        if err := conn.ValidateConfig(); err == nil { t.Fatalf("expected dynamic egress mode %s to be rejected", mode) }
+    }
 }
 ''',
     )
