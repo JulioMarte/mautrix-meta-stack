@@ -1,8 +1,10 @@
 import type { ChatwootBinding, SecretProvider } from "../domain/models";
 import type { ChatwootConversationRef, ChatwootGateway, ChatwootIncomingMessageResult } from "./chatwoot-gateway";
+import type { MatrixMediaDownloader } from "./matrix-media-downloader";
 
 const THREAD_ATTRIBUTE = "mautrix_meta_remote_thread_id";
 const EVENT_ATTRIBUTE = "mautrix_meta_source_event_id";
+const MAX_ATTACHMENTS_PER_MESSAGE = 15;
 
 type FetchLike = typeof fetch;
 
@@ -48,7 +50,8 @@ export class HttpChatwootGateway implements ChatwootGateway {
   constructor(
     private readonly secrets: SecretProvider,
     private readonly fetchImpl: FetchLike = fetch,
-    private readonly timeoutMs = 8_000
+    private readonly timeoutMs = 8_000,
+    private readonly mediaDownloader?: MatrixMediaDownloader
   ) {}
 
   private async request(binding: ChatwootBinding, path: string, init: RequestInit = {}): Promise<Response> {
@@ -62,7 +65,7 @@ export class HttpChatwootGateway implements ChatwootGateway {
     try {
       const headers = new Headers(init.headers);
       headers.set("api_access_token", token);
-      if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+      if (init.body && !(init.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
       return await this.fetchImpl(url, { ...init, headers, signal: controller.signal, redirect: "error" });
     } catch (error) {
       if (controller.signal.aborted) throw new Error("CHATWOOT_TIMEOUT");
@@ -193,28 +196,41 @@ export class HttpChatwootGateway implements ChatwootGateway {
     return matches[0] ?? null;
   }
 
-  async createIncomingMessage(input: {
-    binding: ChatwootBinding;
-    conversation: ChatwootConversationRef;
-    sourceEventId: string;
-    text?: string;
-    attachments: Array<{ kind: string; url?: string }>;
-  }): Promise<ChatwootIncomingMessageResult> {
-    if (input.attachments.length > 0) throw new Error("CHATWOOT_ATTACHMENT_UPLOAD_NOT_IMPLEMENTED");
+  private async multipartMessage(input: Parameters<ChatwootGateway["createIncomingMessage"]>[0]): Promise<FormData> {
+    if (!this.mediaDownloader) throw new Error("MATRIX_MEDIA_DOWNLOADER_NOT_CONFIGURED");
+    if (input.attachments.length > MAX_ATTACHMENTS_PER_MESSAGE) throw new Error("CHATWOOT_ATTACHMENT_LIMIT_EXCEEDED");
+    const form = new FormData();
+    form.set("content", input.text ?? "");
+    form.set("message_type", "incoming");
+    form.set("private", "false");
+    form.set("content_type", "text");
+    form.set(`content_attributes[${EVENT_ATTRIBUTE}]`, input.sourceEventId);
+    for (const attachment of input.attachments) {
+      const downloaded = await this.mediaDownloader.download(attachment);
+      form.append("attachments[]", downloaded.blob, downloaded.fileName);
+    }
+    return form;
+  }
+
+  async createIncomingMessage(input: Parameters<ChatwootGateway["createIncomingMessage"]>[0]): Promise<ChatwootIncomingMessageResult> {
     const existing = await this.findMessage(input.binding, input.conversation.conversationId, input.sourceEventId);
     if (existing) return { messageId: String(existing.id) };
     const { accountId } = this.accountAndInbox(input.binding);
+    const path = `/api/v1/accounts/${accountId}/conversations/${encodeURIComponent(input.conversation.conversationId)}/messages`;
     try {
-      const body = asObject(await this.json(input.binding, `/api/v1/accounts/${accountId}/conversations/${encodeURIComponent(input.conversation.conversationId)}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          content: input.text ?? "",
-          message_type: "incoming",
-          private: false,
-          content_type: "text",
-          content_attributes: { [EVENT_ATTRIBUTE]: input.sourceEventId }
-        })
-      }));
+      const init: RequestInit = input.attachments.length > 0
+        ? { method: "POST", body: await this.multipartMessage(input) }
+        : {
+            method: "POST",
+            body: JSON.stringify({
+              content: input.text ?? "",
+              message_type: "incoming",
+              private: false,
+              content_type: "text",
+              content_attributes: { [EVENT_ATTRIBUTE]: input.sourceEventId }
+            })
+          };
+      const body = asObject(await this.json(input.binding, path, init));
       if (body.id == null) throw new Error("CHATWOOT_MESSAGE_RESPONSE_INVALID");
       return { messageId: String(body.id) };
     } catch (error) {
