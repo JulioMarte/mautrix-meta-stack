@@ -19,7 +19,8 @@ import { MatrixRoomAttributionService } from "./services/matrix-room-attribution
 import { HttpMatrixMediaDownloader } from "./services/matrix-media-downloader";
 import { HttpMatrixSyncClient } from "./services/matrix-sync-client";
 import { MatrixSyncIngestor } from "./services/matrix-sync-ingestor";
-import { MatrixSyncRunner } from "./services/matrix-sync-runner";
+import { matrixSyncReadinessGuard } from "./services/matrix-sync-readiness";
+import { MatrixSyncReadiness, MatrixSyncRunner } from "./services/matrix-sync-runner";
 import { MatrixToChatwootService } from "./services/matrix-to-chatwoot";
 
 const databasePath = process.env.CONTROL_PLANE_DB_PATH ?? "/data/control-plane.db";
@@ -34,6 +35,7 @@ if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: t
 const syncEnabledRaw = process.env.MATRIX_SYNC_ENABLED ?? "false";
 if (syncEnabledRaw !== "true" && syncEnabledRaw !== "false") throw new Error("MATRIX_SYNC_ENABLED must be true or false");
 const syncEnabled = syncEnabledRaw === "true";
+const matrixSyncReadiness = syncEnabled ? new MatrixSyncReadiness() : null;
 
 const db = openDatabase(databasePath);
 const chatwootGateway = new HttpChatwootGateway(
@@ -43,13 +45,14 @@ const chatwootGateway = new HttpChatwootGateway(
   new HttpMatrixMediaDownloader(process.env)
 );
 const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway })
+  .onRequest(({ request, set }) => matrixSyncReadiness ? matrixSyncReadinessGuard(matrixSyncReadiness, request, set) : undefined)
   .use(createPhase5App(db, adminToken, process.env))
   .use(createProvisioningApp(db, adminToken, internalToken, process.env))
   .listen({ hostname: "0.0.0.0", port });
 
 const shutdownController = new AbortController();
 let matrixSyncTask: Promise<void> | null = null;
-if (syncEnabled) {
+if (syncEnabled && matrixSyncReadiness) {
   const tenants = new SQLiteTenantRepository(db);
   const connections = new SQLiteMetaConnectionRepository(db);
   const chatwootBindings = new SQLiteChatwootBindingRepository(db);
@@ -76,9 +79,10 @@ if (syncEnabled) {
     matrixToChatwoot,
     process.env
   );
-  const runner = new MatrixSyncRunner(ingestor, process.env);
+  const runner = new MatrixSyncRunner(ingestor, matrixSyncReadiness, process.env);
   matrixSyncTask = runner.run(shutdownController.signal).catch((error) => {
     const code = error instanceof Error ? error.message : "MATRIX_SYNC_RUNNER_FAILED";
+    matrixSyncReadiness.markFailure(code);
     console.error(JSON.stringify({ operation: "matrix_sync_runner", result: "fatal", code }));
   });
 }
