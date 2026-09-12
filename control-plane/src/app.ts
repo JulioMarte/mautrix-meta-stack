@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { Elysia } from "elysia";
+import { createAdminSurface } from "./admin-surface";
 import type { Attachment, ChatwootBindingStatus, EgressStatus, MatrixEncryptedFile, TrafficClass } from "./domain/models";
 import { LATEST_SCHEMA_VERSION, schemaVersion } from "./persistence/migrations";
 import {
@@ -139,10 +140,12 @@ export function createApp(
         return { status: "ready", schemaVersion: version };
       } catch { return safeError(set, 503, "PERSISTENCE_UNAVAILABLE", "Local persistence is unavailable"); }
     })
-    .get("/admin", ({ request, set }) => {
-      if (!adminAuthorized(request)) return unauthorized(set);
-      set.headers["content-type"] = "text/html; charset=utf-8";
-      return "<!doctype html><html><body><h1>Meta Control Plane</h1><p>Administrative surface.</p></body></html>";
+    .use(createAdminSurface(db, adminToken))
+    .get("/admin", ({ set }) => {
+      set.status = 303;
+      set.headers.location = "/admin/login";
+      set.headers["cache-control"] = "no-store";
+      return "";
     })
     .get("/api/v1/tenants", ({ request, set }) => adminAuthorized(request) ? { data: tenants.list() } : unauthorized(set))
     .post("/api/v1/tenants", ({ request, body, set }) => {
