@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { createAdminSurface } from "./admin-surface";
 import { createApp } from "./app";
 import { createPhase5App } from "./phase5-app";
 import { createProvisioningApp } from "./provisioning-app";
@@ -46,6 +47,7 @@ const chatwootGateway = new HttpChatwootGateway(
 );
 const app = createApp(db, adminToken, internalToken, process.env, { chatwootGateway })
   .onRequest(({ request, set }) => matrixSyncReadiness ? matrixSyncReadinessGuard(matrixSyncReadiness, request, set) : undefined)
+  .use(createAdminSurface(db, adminToken))
   .use(createPhase5App(db, adminToken, process.env))
   .use(createProvisioningApp(db, adminToken, internalToken, process.env))
   .listen({ hostname: "0.0.0.0", port });
