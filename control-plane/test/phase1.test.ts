@@ -43,9 +43,12 @@ describe("Phase 1 HTTP surface", () => {
     expect(await ready.json()).toMatchObject({ status: "ready", schemaVersion: LATEST_SCHEMA_VERSION });
   });
 
-  test("admin and management API reject unauthorized access", async () => {
+  test("canonical admin entry redirects to login while dashboard and management API remain protected", async () => {
     const app = createApp(freshDb(), "test-admin-token-123456");
-    expect((await app.handle(new Request("http://localhost/admin"))).status).toBe(401);
+    const admin = await app.handle(new Request("http://localhost/admin"));
+    expect(admin.status).toBe(303);
+    expect(admin.headers.get("location")).toBe("/admin/login");
+    expect((await app.handle(new Request("http://localhost/admin/dashboard"))).status).toBe(401);
     expect((await app.handle(new Request("http://localhost/api/v1/tenants"))).status).toBe(401);
   });
 
