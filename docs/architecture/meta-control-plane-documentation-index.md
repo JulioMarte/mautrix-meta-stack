@@ -9,6 +9,7 @@ The branch is not ready for implementation unless these documents are coherent w
 - `meta-control-plane-branch-plan.md` — branch purpose, product hypothesis, architecture, phases, non-goals, Definition of Done and stop conditions.
 - `meta-control-plane-ci-acceptance.md` — what must be proven automatically before any capability can be called complete.
 - `production-readiness-ledger.md` — current authoritative ledger of proven behavior, release-blocking technical gaps, staging-only evidence and the mandatory human promotion gate.
+- `staging-acceptance-runbook.md` — exact-SHA human staging procedure for real Meta accounts, real egress, Coolify exposure, multi-tenant round trips, failure injection and real backup/restore operations that CI cannot prove.
 - `development-branch-workflow.md` — normative branch roles, exact-SHA integration discipline and the prohibition on automated/unapproved changes to `main`.
 - `mautrix-meta-fork-delta.md` — exact scope and maintainability contract for the account-aware egress patch.
 - `meta-control-plane-data-model.md` — entities, identity boundaries, persistence, migrations, referential invariants and portability expectations.
@@ -44,6 +45,7 @@ The branch is not ready for implementation unless these documents are coherent w
 17. Chatwoot webhook signing secrets are distinct from Chatwoot API credentials and use a dedicated secret-reference namespace.
 18. A multi-tenant acceptance claim requires observable A/B side effects at the egress and routing boundaries; resolver/database state alone is insufficient evidence.
 19. Green repository CI is necessary but not sufficient for production readiness when a normative contract still requires real-provider or deployed-environment evidence.
+20. Human staging evidence is valid only for the exact candidate SHA under test; evidence collected from different SHAs must not be combined into one acceptance result.
 
 ## Phase 0 exit review
 
@@ -88,6 +90,8 @@ The following do not block Phase 1 but MUST be specified before their correspond
 
 The Chatwoot webhook authentication mechanism is no longer deferred: Phase 5 fixes the supported contract to Chatwoot's timestamped HMAC-SHA256 signature over the raw request body, with a binding-specific secret configured under `env:CHATWOOT_WEBHOOK_*`.
 
-The provisioning-claim bootstrap contract is implemented and integrated in `dev`. The concrete Matrix ingestion transport and room-attribution contracts are no longer deferred; they are specified in `meta-control-plane-matrix-adapter.md` and implemented on PR #17, whose integration status is tracked in `production-readiness-ledger.md`.
+The provisioning-claim bootstrap contract, concrete Matrix ingestion/room-attribution contract, Chatwoot tenancy/migration behavior and exclusive live egress reservation semantics are implemented and integrated in `dev`; their current evidence status is tracked in `production-readiness-ledger.md`.
+
+Real-provider/Coolify and real backup-operation assertions remain human/staging evidence, not CI substitutions. Their normative execution procedure is `staging-acceptance-runbook.md`.
 
 Deferral means these are explicitly not assumed. Any implementation depending on one of them must first turn the deferred item into a concrete reviewed contract.
