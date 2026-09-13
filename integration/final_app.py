@@ -1,6 +1,7 @@
 """Final production entrypoint: applies deployment-only guards before Matrix sync starts."""
 import hmac
 import os
+import re
 import threading
 import time
 
@@ -16,6 +17,11 @@ import prod_app as prod  # noqa: E402
 legacy = prod.legacy
 application = prod.application
 application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+if not re.fullmatch(r"[A-Za-z0-9._~-]{16,}", prod.PROXY_RESOLVER_SECRET):
+    raise RuntimeError(
+        "META_PROXY_RESOLVER_SECRET must be at least 16 URL-safe characters; use a long hex token"
+    )
 
 
 def internal_proxy_resolver():
