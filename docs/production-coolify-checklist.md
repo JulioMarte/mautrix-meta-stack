@@ -11,7 +11,7 @@ Expose only these services through Coolify/Traefik:
 
 Do not expose `mautrix-meta:29319` publicly.
 
-The integration domain serves both `/admin` and the Chatwoot webhook. `/internal/proxy` is intentionally disabled; mautrix-meta uses the secret-bearing internal resolver path over the private Compose network.
+The integration domain serves `/admin` and the Chatwoot webhook. The Meta proxy resolver remains on the same HTTP service but requires internal HTTP Basic authentication; unauthenticated requests return 404. mautrix-meta reaches it through the private Compose network.
 
 ## Required Coolify secrets
 
@@ -23,7 +23,7 @@ Set strong, unrelated values for:
 - `CHATWOOT_WEBHOOK_SECRET`
 - `META_PROXY_RESOLVER_SECRET`
 
-Keep `INTEGRATION_COOKIE_SECURE=true` and `ALLOW_INSECURE_CHATWOOT=false` in production.
+Use a URL-safe value for `META_PROXY_RESOLVER_SECRET`, preferably a long hexadecimal token such as the output of `openssl rand -hex 32`. Keep `INTEGRATION_COOKIE_SECURE=true` and `ALLOW_INSECURE_CHATWOOT=false` in production.
 
 ## Residential proxy
 
@@ -36,9 +36,15 @@ META_PROXY_URL=http://proxy-user:proxy-password@proxy-host:8888
 
 Store `META_PROXY_URL` as a secret in Coolify. Do not commit the real value and do not define global `HTTP_PROXY`/`HTTPS_PROXY` for the stack.
 
-For the current residential provider, the HTTP endpoint is preferred because it has already been verified from the Contabo VPS. Docker bridge egress is NATed through the VPS, so a provider that restricts access to that VPS source address should see the expected source host.
+For the current residential provider, the HTTP endpoint is preferred because it has already been verified from the Contabo VPS. Docker bridge egress is normally NATed through the VPS, so a provider restricted to that VPS source should see the expected source host.
 
 After deployment, use **Test proxy egress** in `/admin`. The observed IP must be a residential/provider exit IP and must not be the Contabo/VPS public IP.
+
+## Internal resolver
+
+mautrix-meta is configured with `network.get_proxy_from` pointing to `/internal/proxy` on the integration container. The URL carries HTTP Basic credentials internally: username `mautrix`, password `META_PROXY_RESOLVER_SECRET`.
+
+The resolver secret is not the residential proxy password and must not be reused for any other purpose. The transitional secret-in-path resolver is disabled. Gunicorn access logs are disabled so the Chatwoot webhook path secret is not written to normal application access logs.
 
 ## Chatwoot setup
 
@@ -70,7 +76,7 @@ Meta's own Messenger E2EE is separate and remains supported by mautrix-meta; its
 
 ## Mandatory live acceptance before production traffic
 
-The repository CI cannot substitute for these tests because the residential proxy only accepts the real VPS and CI does not have your real Meta or Chatwoot accounts.
+Repository CI cannot substitute for these tests because the residential proxy only accepts the real VPS and CI does not have your real Meta or Chatwoot accounts.
 
 Require all of the following on the exact deployed revision:
 
@@ -96,7 +102,7 @@ The named volumes contain credentials and state and must be backed up before rea
 - `mautrix-meta-data-v2`
 - `integration-data-v1`
 
-Backups must be stored off the VPS, access-controlled and restorable. A backup is not considered valid until a restore into clean volumes has been tested.
+Backups must be stored off the VPS, access-controlled and restorable. A backup is not valid until a restore into clean volumes has been tested.
 
 ## Upgrade policy
 
