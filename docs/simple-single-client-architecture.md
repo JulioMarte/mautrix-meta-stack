@@ -14,58 +14,43 @@ The preserved multi-tenant work remains available on `archive/multi-tenant-contr
 - mautrix-meta: upstream v26.07 Facebook/Messenger bridge.
 - integration: small sidecar owned by this repository.
 
-The integration sidecar has two responsibilities only:
-
-1. Matrix <-> Chatwoot message transport.
-2. A visual admin for Chatwoot and optional Meta proxy configuration.
-
-The integration HTTP service runs under Gunicorn with one worker and multiple threads. One worker is intentional because the process owns exactly one Matrix `/sync` loop for this single-client deployment.
+The integration sidecar has two responsibilities only: Matrix <-> Chatwoot message transport and a visual admin for Chatwoot plus optional Meta proxy configuration. The HTTP service runs under Gunicorn with one worker and multiple threads. One worker is intentional because the process owns exactly one Matrix `/sync` loop for this single-client deployment.
 
 ## Admin
 
-The admin is exposed by the `integration` service at `/admin` and uses the deployment-level `INTEGRATION_ADMIN_PASSWORD`. The browser session is signed, HttpOnly, SameSite=Strict and Secure by default. State-changing forms require a session CSRF token and the login form is CSRF-protected as well.
+The admin is exposed by the `integration` service at `/admin` and uses the deployment-level `INTEGRATION_ADMIN_PASSWORD`. The browser session is signed, HttpOnly, SameSite=Strict and Secure by default. Login and all state-changing forms are CSRF-protected.
 
-The admin configures:
+The admin configures the Chatwoot base URL, account ID, inbox ID and API token. It can also configure a per-instance Meta proxy when the proxy is not managed by Coolify. The Chatwoot API token is persisted in the private `integration-data-v1` volume and is never rendered back. If `META_PROXY_URL` is defined in Coolify, the proxy becomes deployment-managed: the admin shows a redacted status and cannot replace the secret value.
 
-- Chatwoot base URL
-- Chatwoot account ID
-- Chatwoot inbox ID
-- Chatwoot API token
-- optional per-instance Meta proxy when the proxy is not managed by Coolify
-
-The Chatwoot API token is persisted in the private `integration-data-v1` Docker volume and is never rendered back into the admin page. If `META_PROXY_URL` is defined in Coolify, the proxy becomes deployment-managed: the admin only shows a redacted status and cannot replace the secret value. If no deployment proxy is defined, the admin may persist a proxy in the private integration volume.
-
-The panel also provides explicit connectivity tests for the configured Chatwoot inbox and the active proxy egress.
+The panel provides connectivity tests for the configured Chatwoot inbox and active proxy egress.
 
 ## Matrix -> Chatwoot
 
-The integration service logs into Synapse as the provisioned Matrix admin account and consumes `/sync`. It only forwards rooms that contain Matrix bridge state (`m.bridge` or `uk.half-shot.bridge`), so ordinary Matrix rooms and management rooms are not treated as Chatwoot conversations.
+The integration service logs into Synapse as the provisioned Matrix admin account and consumes `/sync`. It only forwards rooms containing Matrix bridge state (`m.bridge` or `uk.half-shot.bridge`), so ordinary Matrix rooms and management rooms are not treated as Chatwoot conversations.
 
-When Chatwoot is first configured, the sidecar stores a persistent activation timestamp. Events whose Matrix `origin_server_ts` predates that boundary are not imported into Chatwoot. This prevents initial bridge history from becoming a burst of old customer messages. mautrix-meta thread backfill is also disabled for this single-client Chatwoot deployment.
+When Chatwoot is first configured, the sidecar stores a persistent activation timestamp. Matrix events older than that boundary are not imported into Chatwoot, and mautrix-meta thread backfill is disabled. This prevents historical conversations becoming a burst of old customer messages.
 
-For eligible live text events, the sidecar creates one Chatwoot contact/conversation per Matrix room and stores the mapping locally. It uses the `source_id` returned by Chatwoot for the configured contact inbox. If Chatwoot did not create the contact-inbox association, the sidecar creates one and uses the confirmed `source_id` from that association.
+For eligible live text events, the sidecar creates one Chatwoot contact/conversation per Matrix room and stores the mapping locally. It uses the `source_id` returned by Chatwoot for the configured contact inbox. If Chatwoot did not create the association, the sidecar creates one and uses the confirmed `source_id` from that association.
 
 Current scope is text messages. Attachments, reactions and edits are intentionally deferred.
 
 ## Matrix encryption
 
-Matrix-side end-to-bridge encryption is explicitly disabled (`encryption.allow/default/require=false`). The integration sidecar does not implement Matrix crypto and therefore must never depend on encrypted Matrix portal events.
+Matrix-side end-to-bridge encryption is explicitly disabled (`encryption.allow/default/require=false`). The integration sidecar does not implement Matrix crypto and therefore must not depend on encrypted Matrix portal events.
 
-This is separate from Meta's own Messenger E2EE transport. mautrix-meta may still handle Meta E2EE, and the configured Meta proxy hook is enabled for its E2EE network traffic.
+This is separate from Meta's own Messenger E2EE transport. mautrix-meta may still handle Meta E2EE, and its network traffic uses the same Meta proxy hook.
 
 ## Chatwoot -> Matrix
 
 Chatwoot posts `message_created` webhooks to `/webhooks/chatwoot/<secret>`. Outgoing non-private agent messages are routed to the Matrix room mapped to that Chatwoot conversation. mautrix-meta then delivers the Matrix message to Meta.
 
-The webhook path secret comes from `CHATWOOT_WEBHOOK_SECRET`. Message IDs are persisted for duplicate suppression. An event is marked processed only after downstream Matrix delivery succeeds.
+The webhook secret comes from `CHATWOOT_WEBHOOK_SECRET`. Message IDs are persisted for duplicate suppression. An event is marked processed only after downstream Matrix delivery succeeds. Gunicorn access logs are disabled so secret-bearing webhook paths are not written to normal Coolify application logs.
 
 ## Proxy
 
-mautrix-meta v26.07 supports `network.get_proxy_from`. The bridge is configured to call a protected integration endpoint:
+mautrix-meta v26.07 supports `network.get_proxy_from`. The bridge calls `http://integration:8080/internal/proxy` over the private Compose network using HTTP Basic authentication. The fixed username is `mautrix`; the password is `META_PROXY_RESOLVER_SECRET`.
 
-`/internal/proxy/<META_PROXY_RESOLVER_SECRET>`
-
-The legacy unauthenticated `/internal/proxy` endpoint is forced to return 404. `META_PROXY_RESOLVER_SECRET` is a separate Coolify secret and must not be reused as the proxy password or webhook secret.
+Unauthenticated or incorrectly authenticated resolver requests return 404. The previous secret-in-path resolver is disabled, so the internal resolver password does not appear in request URLs. `META_PROXY_RESOLVER_SECRET` must be a separate URL-safe Coolify secret and must not be reused as the residential proxy password or webhook secret. A long hexadecimal token is recommended.
 
 For production, prefer deployment-managed proxy configuration:
 
@@ -74,14 +59,14 @@ For production, prefer deployment-managed proxy configuration:
 
 Do not set global `HTTP_PROXY` or `HTTPS_PROXY` variables for this purpose. The residential proxy is intended only for Meta traffic, not Matrix or Chatwoot API calls.
 
-When proxying is disabled, the resolver returns an empty proxy URL and mautrix-meta uses direct connectivity. When enabled, the configured HTTP/HTTPS/SOCKS proxy is returned. Media, Meta E2EE, Messenger Lite and other supported Meta traffic classes use the same proxy hook.
+When proxying is disabled, the authenticated resolver returns an empty proxy URL and mautrix-meta uses direct connectivity. When enabled, it returns the configured HTTP/HTTPS/SOCKS proxy. Media, Meta E2EE, Messenger Lite and other supported Meta traffic classes use the same hook.
 
 ## Container hardening
 
-The integration container runs with a read-only root filesystem, `no-new-privileges`, all Linux capabilities dropped and a writable private `/data` volume. A tmpfs is mounted at `/tmp` for runtime temporary files.
+The integration container runs with a read-only root filesystem, `no-new-privileges`, all Linux capabilities dropped and a writable private `/data` volume. A tmpfs is mounted at `/tmp` for temporary files.
 
 ## Deliberate limitations
 
 This branch is not the multi-tenant platform. It does not provide tenant isolation, shared-instance account routing, dynamic per-account proxy pools, operator RBAC, PostgreSQL, distributed queues or cross-customer orchestration.
 
-For the current product hypothesis those features are considered premature. The operational unit is the whole stack: one client, one Matrix account, one Chatwoot configuration and at most one Meta proxy configuration.
+For the current product hypothesis those features are premature. The operational unit is the whole stack: one client, one Matrix account, one Chatwoot configuration and at most one Meta proxy configuration.
