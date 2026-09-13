@@ -57,6 +57,7 @@ services:
     environment:
       MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
       MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
+      META_PROXY_RESOLVER_SECRET: ${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}
     volumes:
       - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
@@ -65,6 +66,7 @@ services:
         set -eu
         : "$${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
         : "$${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
+        : "$${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}"
         case "$$MATRIX_ADMIN_MXID" in
           @*:* ) ;;
           * ) echo "MATRIX_ADMIN_MXID must look like @user:server.name" >&2; exit 64 ;;
@@ -74,7 +76,7 @@ services:
           .network.mode = "facebook" |
           .network.marketplace_space = true |
           .network.proxy = "" |
-          .network.get_proxy_from = "http://integration:8080/internal/proxy" |
+          .network.get_proxy_from = ("http://integration:8080/internal/proxy/" + strenv(META_PROXY_RESOLVER_SECRET)) |
           .network.proxy_media = true |
           .network.proxy_e2ee = true |
           .network.proxy_messenger_lite = true |
@@ -217,6 +219,13 @@ services:
     build:
       context: ./integration
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     depends_on:
       synapse:
         condition: service_healthy
@@ -231,7 +240,12 @@ services:
       INTEGRATION_ADMIN_PASSWORD: ${INTEGRATION_ADMIN_PASSWORD}
       INTEGRATION_SESSION_SECRET: ${INTEGRATION_SESSION_SECRET}
       CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET}
+      META_PROXY_RESOLVER_SECRET: ${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}
+      META_PROXY_ENABLED: ${META_PROXY_ENABLED:-false}
+      META_PROXY_URL: ${META_PROXY_URL:-}
       INTEGRATION_COOKIE_SECURE: ${INTEGRATION_COOKIE_SECURE:-true}
+      ALLOW_INSECURE_CHATWOOT: ${ALLOW_INSECURE_CHATWOOT:-false}
+      START_MATRIX_SYNC: "true"
       MAUTRIX_REGISTRATION_PATH: /mautrix/registration.yaml
     volumes:
       - integration-data-v1:/data
