@@ -81,9 +81,14 @@ services:
           .network.proxy_e2ee = true |
           .network.proxy_messenger_lite = true |
           .network.proxy_other = true |
+          .network.thread_backfill.batch_count = 0 |
           .bridge.permissions = {} |
           .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
           .bridge.permissions[strenv(MATRIX_ADMIN_MXID)] = "admin" |
+          .encryption.allow = false |
+          .encryption.default = false |
+          .encryption.require = false |
+          .encryption.appservice = false |
           .database.type = "sqlite3-fk-wal" |
           .database.uri = "file:/data/mautrix-meta.db?_txlock=immediate" |
           .homeserver.address = "http://synapse:8008" |
