@@ -73,6 +73,12 @@ services:
         yq -i '
           .network.mode = "facebook" |
           .network.marketplace_space = true |
+          .network.proxy = "" |
+          .network.get_proxy_from = "http://integration:8080/internal/proxy" |
+          .network.proxy_media = true |
+          .network.proxy_e2ee = true |
+          .network.proxy_messenger_lite = true |
+          .network.proxy_other = true |
           .bridge.permissions = {} |
           .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
           .bridge.permissions[strenv(MATRIX_ADMIN_MXID)] = "admin" |
@@ -207,6 +213,39 @@ services:
           -a \
           --exists-ok
 
+  integration:
+    build:
+      context: ./integration
+    restart: unless-stopped
+    depends_on:
+      synapse:
+        condition: service_healthy
+      synapse-admin-init:
+        condition: service_completed_successfully
+      mautrix-registration-init:
+        condition: service_completed_successfully
+    environment:
+      MATRIX_HOMESERVER: http://synapse:8008
+      MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
+      MATRIX_ADMIN_PASSWORD: ${MATRIX_ADMIN_PASSWORD}
+      INTEGRATION_ADMIN_PASSWORD: ${INTEGRATION_ADMIN_PASSWORD}
+      INTEGRATION_SESSION_SECRET: ${INTEGRATION_SESSION_SECRET}
+      CHATWOOT_WEBHOOK_SECRET: ${CHATWOOT_WEBHOOK_SECRET}
+      INTEGRATION_COOKIE_SECURE: ${INTEGRATION_COOKIE_SECURE:-true}
+      MAUTRIX_REGISTRATION_PATH: /mautrix/registration.yaml
+    volumes:
+      - integration-data-v1:/data
+      - mautrix-meta-data-v2:/mautrix:ro
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    stop_grace_period: 15s
+
   mautrix-meta:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
     restart: unless-stopped
@@ -217,6 +256,8 @@ services:
         condition: service_completed_successfully
       mautrix-registration-init:
         condition: service_completed_successfully
+      integration:
+        condition: service_healthy
     volumes:
       - mautrix-meta-data-v2:/data
     expose:
@@ -232,3 +273,4 @@ services:
 volumes:
   synapse-data-v2:
   mautrix-meta-data-v2:
+  integration-data-v1:
