@@ -124,6 +124,22 @@ jobs:
           docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True"
           docker compose -f compose.yaml exec -T integration python /app/smoke_admin.py
 
+      - name: Verify integration persistence across restart
+        run: |
+          set -eu
+          docker compose -f compose.yaml restart integration
+          cid="$(docker compose -f compose.yaml ps -q integration)"
+          end=$((SECONDS + 60))
+          while [ "$SECONDS" -lt "$end" ]; do
+            status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+            echo "integration after restart: $status"
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && exit 1
+            sleep 2
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ]
+          docker compose -f compose.yaml exec -T integration python /app/smoke_persistence.py
+
       - name: Verify mautrix policy and protected proxy resolver
         run: |
           docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c 'test -n "$META_PROXY_RESOLVER_SECRET"'
