@@ -140,15 +140,12 @@ jobs:
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ]
           docker compose -f compose.yaml exec -T integration python /app/smoke_persistence.py
 
-      - name: Verify mautrix policy and protected proxy resolver
+      - name: Verify mautrix policy and authenticated proxy resolver
         run: |
-          docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c 'test -n "$META_PROXY_RESOLVER_SECRET"'
-          docker compose -f compose.yaml exec -T mautrix-meta sh -c "grep -F 'get_proxy_from: http://integration:8080/internal/proxy/' /data/config.yaml"
-          if docker compose -f compose.yaml exec -T mautrix-meta sh -c "grep -F 'get_proxy_from: http://integration:8080/internal/proxy$' /data/config.yaml"; then
-            echo 'Unprotected proxy resolver configured' >&2
-            exit 1
-          fi
           docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c '
+            expected="http://mautrix:$META_PROXY_RESOLVER_SECRET@integration:8080/internal/proxy"
+            actual="$(yq ".network.get_proxy_from" /data/config.yaml)"
+            test "$actual" = "$expected"
             test "$(yq ".encryption.allow" /data/config.yaml)" = "false"
             test "$(yq ".encryption.default" /data/config.yaml)" = "false"
             test "$(yq ".encryption.require" /data/config.yaml)" = "false"
