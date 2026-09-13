@@ -146,6 +146,35 @@ class FinalRuntimeTests(unittest.TestCase):
         lookup.assert_not_called()
         send.assert_not_called()
 
+    def test_matrix_message_for_existing_link_in_configured_inbox_is_forwarded(self):
+        room_id = self.configure_chatwoot_link(inbox_id="2", conversation_id=88)
+        event = {"type": "m.room.message", "origin_server_ts": int(time.time() * 1000), "event_id": "$same"}
+        with patch.object(final.prod, "cw_get", return_value={"id": 88, "inbox_id": 2}) as lookup, \
+             patch.object(final, "base_matrix_event_to_chatwoot") as base:
+            final.guarded_matrix_event_to_chatwoot(room_id, event)
+        lookup.assert_called_once_with("/api/v1/accounts/1/conversations/88")
+        base.assert_called_once_with(room_id, event)
+
+    def test_matrix_message_for_conversation_moved_to_other_inbox_is_blocked(self):
+        room_id = self.configure_chatwoot_link(inbox_id="2", conversation_id=88)
+        event = {"type": "m.room.message", "origin_server_ts": int(time.time() * 1000), "event_id": "$moved"}
+        with patch.object(final.prod, "cw_get", return_value={"id": 88, "inbox_id": 9}), \
+             patch.object(final, "base_matrix_event_to_chatwoot") as base:
+            final.guarded_matrix_event_to_chatwoot(room_id, event)
+        base.assert_not_called()
+
+    def test_new_unlinked_matrix_room_can_create_conversation_in_configured_inbox(self):
+        legacy.set_setting("chatwoot_base_url", "http://chatwoot.example.com")
+        legacy.set_setting("chatwoot_account_id", "1")
+        legacy.set_setting("chatwoot_inbox_id", "2")
+        legacy.set_setting("chatwoot_api_token", "token")
+        event = {"type": "m.room.message", "origin_server_ts": int(time.time() * 1000), "event_id": "$new"}
+        with patch.object(final.prod, "cw_get") as lookup, \
+             patch.object(final, "base_matrix_event_to_chatwoot") as base:
+            final.guarded_matrix_event_to_chatwoot("!new:matrix.example.com", event)
+        lookup.assert_not_called()
+        base.assert_called_once_with("!new:matrix.example.com", event)
+
 
 if __name__ == "__main__":
     unittest.main()
