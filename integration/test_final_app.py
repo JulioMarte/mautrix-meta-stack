@@ -1,3 +1,4 @@
+import base64
 import importlib
 import os
 import tempfile
@@ -23,6 +24,7 @@ class FinalRuntimeTests(unittest.TestCase):
         global final, legacy
         final = importlib.import_module("final_app")
         legacy = final.legacy
+        cls.client = final.application.test_client()
 
     @classmethod
     def tearDownClass(cls):
@@ -33,6 +35,23 @@ class FinalRuntimeTests(unittest.TestCase):
             conn.execute("DELETE FROM settings")
             conn.execute("DELETE FROM room_links")
             conn.execute("DELETE FROM processed_events")
+
+    def basic_header(self, password):
+        encoded = base64.b64encode(("mautrix:" + password).encode()).decode()
+        return {"Authorization": "Basic " + encoded}
+
+    def test_proxy_resolver_requires_internal_basic_auth(self):
+        unauth = self.client.get("/internal/proxy")
+        self.assertEqual(unauth.status_code, 404)
+        wrong = self.client.get("/internal/proxy", headers=self.basic_header("wrong-secret-long-value"))
+        self.assertEqual(wrong.status_code, 404)
+        good = self.client.get("/internal/proxy", headers=self.basic_header("resolver-secret-long-value"))
+        self.assertEqual(good.status_code, 200)
+        self.assertEqual(good.json, {"proxy_url": ""})
+
+    def test_transitional_secret_path_is_disabled(self):
+        response = self.client.get("/internal/proxy/resolver-secret-long-value")
+        self.assertEqual(response.status_code, 404)
 
     def test_historical_event_before_activation_is_dropped(self):
         cutoff = int(time.time() * 1000)
