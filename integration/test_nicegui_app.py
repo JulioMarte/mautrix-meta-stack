@@ -1,0 +1,168 @@
+import base64
+import importlib
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+class NiceGUIAdminTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        os.environ["DATA_DIR"] = cls.tmp.name
+        os.environ["MATRIX_ADMIN_MXID"] = "@admin:matrix.example.com"
+        os.environ["MATRIX_ADMIN_PASSWORD"] = "matrix-password-long-value"
+        os.environ["INTEGRATION_ADMIN_PASSWORD"] = "admin-password-long-value"
+        os.environ["CHATWOOT_WEBHOOK_SECRET"] = "webhook-secret-long-value"
+        os.environ["INTEGRATION_SESSION_SECRET"] = "session-secret-long-enough-for-nicegui-tests"
+        os.environ["META_PROXY_RESOLVER_SECRET"] = "resolver-secret-long-value"
+        os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
+        os.environ["START_MATRIX_SYNC"] = "false"
+        os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
+        os.environ.pop("META_PROXY_URL", None)
+        os.environ["META_PROXY_ENABLED"] = "false"
+        global module, legacy
+        module = importlib.import_module("nicegui_app")
+        legacy = module.legacy
+        legacy.init_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        with legacy.db() as conn:
+            conn.execute("DELETE FROM settings")
+            conn.execute("DELETE FROM room_links")
+            conn.execute("DELETE FROM processed_events")
+
+    def save_minimal(self, token="chatwoot-secret-token"):
+        module.save_configuration(
+            "http://chatwoot.example.com",
+            "1",
+            "2",
+            token,
+            False,
+            "",
+        )
+
+    def test_save_configuration_persists_chatwoot_and_activation_boundary(self):
+        self.save_minimal()
+        self.assertEqual(legacy.get_setting("chatwoot_base_url"), "http://chatwoot.example.com")
+        self.assertEqual(legacy.get_setting("chatwoot_account_id"), "1")
+        self.assertEqual(legacy.get_setting("chatwoot_inbox_id"), "2")
+        self.assertEqual(legacy.get_setting("chatwoot_api_token"), "chatwoot-secret-token")
+        self.assertTrue(legacy.get_setting("chatwoot_enabled_at_ms").isdigit())
+
+    def test_first_save_requires_api_token(self):
+        with self.assertRaisesRegex(ValueError, "API token is required"):
+            module.save_configuration("http://chatwoot.example.com", "1", "2", "", False, "")
+        self.assertEqual(legacy.get_setting("chatwoot_base_url"), "")
+
+    def test_blank_token_preserves_existing_secret(self):
+        self.save_minimal("original-secret")
+        module.save_configuration("http://chatwoot.example.com", "1", "2", "", False, "")
+        self.assertEqual(legacy.get_setting("chatwoot_api_token"), "original-secret")
+
+    def test_bad_chatwoot_url_is_rejected_without_partial_write(self):
+        with self.assertRaises(ValueError):
+            module.save_configuration("https://user:pass@chatwoot.example.com", "1", "2", "token", False, "")
+        self.assertEqual(legacy.get_setting("chatwoot_base_url"), "")
+
+    def test_chatwoot_url_query_and_fragment_are_rejected(self):
+        for value in (
+            "https://chatwoot.example.com/?token=secret",
+            "https://chatwoot.example.com/#fragment",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                module.save_configuration(value, "1", "2", "token", False, "")
+
+    def test_account_and_inbox_must_be_numeric(self):
+        with self.assertRaisesRegex(ValueError, "must be numeric"):
+            module.save_configuration("http://chatwoot.example.com", "account", "2", "token", False, "")
+        with self.assertRaisesRegex(ValueError, "must be numeric"):
+            module.save_configuration("http://chatwoot.example.com", "1", "inbox", "token", False, "")
+
+    def test_enabling_proxy_requires_url_on_first_save(self):
+        with self.assertRaisesRegex(ValueError, "no proxy URL"):
+            module.save_configuration("http://chatwoot.example.com", "1", "2", "token", True, "")
+        self.assertEqual(legacy.get_setting("chatwoot_base_url"), "")
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "")
+
+    def test_invalid_proxy_is_rejected_before_any_configuration_is_written(self):
+        with self.assertRaises(ValueError):
+            module.save_configuration(
+                "http://chatwoot.example.com", "1", "2", "token", True, "ftp://proxy.example.com:21"
+            )
+        self.assertEqual(legacy.get_setting("chatwoot_api_token"), "")
+        self.assertEqual(legacy.get_setting("proxy_url"), "")
+
+    def test_existing_proxy_secret_can_be_kept_when_toggle_remains_enabled(self):
+        legacy.set_setting("proxy_url", "http://proxy-user:proxy-pass@proxy.example.com:8888")
+        legacy.set_setting("proxy_enabled", "1")
+        self.save_minimal()
+        module.save_configuration("http://chatwoot.example.com", "1", "2", "", True, "")
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "1")
+        self.assertIn("proxy-pass", legacy.get_setting("proxy_url"))
+
+    def test_setup_state_never_returns_chatwoot_token(self):
+        self.save_minimal("super-secret-token")
+        state = module.setup_state()
+        self.assertTrue(state["chatwoot_ready"])
+        self.assertTrue(state["token_saved"])
+        self.assertNotIn("chatwoot_api_token", state)
+        self.assertNotIn("super-secret-token", repr(state))
+
+    def test_setup_state_counts_linked_conversations(self):
+        self.save_minimal()
+        with legacy.db() as conn:
+            conn.execute(
+                "INSERT INTO room_links(room_id, contact_id, source_id, conversation_id, created_at) VALUES(?, ?, ?, ?, ?)",
+                ("!room:example.com", 1, "source-1", 77, 1),
+            )
+        self.assertEqual(module.setup_state()["link_count"], 1)
+
+    def test_verify_chatwoot_requires_config(self):
+        with self.assertRaisesRegex(RuntimeError, "not configured"):
+            module.verify_chatwoot()
+
+    def test_verify_chatwoot_requires_selected_inbox_to_exist(self):
+        self.save_minimal()
+        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 99}] }):
+            with self.assertRaisesRegex(RuntimeError, "inbox was not found"):
+                module.verify_chatwoot()
+
+    def test_verify_chatwoot_accepts_selected_inbox(self):
+        self.save_minimal()
+        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 2}] }):
+            self.assertEqual(module.verify_chatwoot(), "Chatwoot connection verified")
+
+    def test_verify_proxy_rejects_disabled_proxy(self):
+        with self.assertRaisesRegex(RuntimeError, "not configured"):
+            module.verify_proxy()
+
+    def test_verify_proxy_returns_observed_exit_ip(self):
+        legacy.set_setting("proxy_enabled", "1")
+        legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
+        response = unittest.mock.Mock()
+        response.json.return_value = {"ip": "203.0.113.10"}
+        response.raise_for_status.return_value = None
+        with patch.object(module.requests, "get", return_value=response) as get:
+            result = module.verify_proxy()
+        self.assertEqual(result, "Proxy egress verified: 203.0.113.10")
+        get.assert_called_once()
+        self.assertIn("proxy.example.com", get.call_args.kwargs["proxies"]["https"])
+
+    def test_internal_proxy_basic_auth_parser_contract(self):
+        header = "Basic " + base64.b64encode(b"mautrix:resolver-secret-long-value").decode()
+        decoded = base64.b64decode(header.split(" ", 1)[1], validate=True).decode("utf-8")
+        self.assertEqual(decoded, "mautrix:resolver-secret-long-value")
+
+    def test_nicegui_runtime_is_selected(self):
+        self.assertTrue(callable(module.run))
+        self.assertEqual(module.legacy.SESSION_SECRET, "session-secret-long-enough-for-nicegui-tests")
+
+
+if __name__ == "__main__":
+    unittest.main()
