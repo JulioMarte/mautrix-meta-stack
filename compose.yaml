@@ -76,7 +76,7 @@ services:
           .network.mode = "facebook" |
           .network.marketplace_space = true |
           .network.proxy = "" |
-          .network.get_proxy_from = ("http://integration:8080/internal/proxy/" + strenv(META_PROXY_RESOLVER_SECRET)) |
+          .network.get_proxy_from = ("http://mautrix:" + strenv(META_PROXY_RESOLVER_SECRET) + "@integration:8080/internal/proxy") |
           .network.proxy_media = true |
           .network.proxy_e2ee = true |
           .network.proxy_messenger_lite = true |
