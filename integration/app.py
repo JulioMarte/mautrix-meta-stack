@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import json
 import os
 import sqlite3
 import threading
@@ -238,25 +237,26 @@ def ensure_room_link(room_id, sender):
         return conn.execute("SELECT * FROM room_links WHERE room_id = ?", (room_id,)).fetchone()
 
 
-def seen_event(event_id, direction):
+def event_seen(event_id):
     if not event_id:
         return False
     with db() as conn:
-        exists = conn.execute("SELECT 1 FROM processed_events WHERE event_id = ?", (event_id,)).fetchone()
-        if exists:
-            return True
+        return conn.execute("SELECT 1 FROM processed_events WHERE event_id = ?", (event_id,)).fetchone() is not None
+
+
+def mark_event(event_id, direction):
+    if not event_id:
+        return
+    with db() as conn:
         conn.execute(
-            "INSERT INTO processed_events(event_id, direction, created_at) VALUES(?, ?, ?)",
+            "INSERT OR IGNORE INTO processed_events(event_id, direction, created_at) VALUES(?, ?, ?)",
             (event_id, direction, int(time.time())),
         )
         conn.execute("DELETE FROM processed_events WHERE created_at < ?", (int(time.time()) - 30 * 86400,))
-    return False
 
 
 def matrix_event_to_chatwoot(room_id, event):
-    if not configured():
-        return
-    if event.get("type") != "m.room.message":
+    if not configured() or event.get("type") != "m.room.message":
         return
     sender = event.get("sender", "")
     if sender == MATRIX_ADMIN_MXID or sender == bridge_bot_mxid():
@@ -268,7 +268,7 @@ def matrix_event_to_chatwoot(room_id, event):
     if not body:
         return
     event_id = event.get("event_id", "")
-    if seen_event(event_id, "matrix_to_chatwoot"):
+    if event_seen(event_id):
         return
 
     link = ensure_room_link(room_id, sender)
@@ -277,6 +277,7 @@ def matrix_event_to_chatwoot(room_id, event):
         f"/api/v1/accounts/{account_id}/conversations/{link['conversation_id']}/messages",
         {"content": body, "message_type": "incoming", "private": False, "content_type": "text"},
     )
+    mark_event(event_id, "matrix_to_chatwoot")
 
 
 def sync_once():
@@ -487,13 +488,16 @@ def chatwoot_webhook(secret):
     message_id = str(payload.get("id") or "")
     if not conversation_id or not content:
         return {"ok": True, "ignored": True}
-    if seen_event("chatwoot:" + message_id, "chatwoot_to_matrix"):
+    event_key = "chatwoot:" + message_id if message_id else ""
+    if event_key and event_seen(event_key):
         return {"ok": True, "duplicate": True}
     with db() as conn:
         link = conn.execute("SELECT * FROM room_links WHERE conversation_id = ?", (int(conversation_id),)).fetchone()
     if not link:
         return {"ok": True, "ignored": True, "reason": "unmapped conversation"}
     send_matrix_message(link["room_id"], content, "cw-" + (message_id or uuid.uuid4().hex))
+    if event_key:
+        mark_event(event_key, "chatwoot_to_matrix")
     return {"ok": True}
 
 
