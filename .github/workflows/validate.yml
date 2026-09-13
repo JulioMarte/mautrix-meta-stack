@@ -81,6 +81,21 @@ jobs:
             -e ALLOW_INSECURE_CHATWOOT=true \
             meta-chatwoot-integration python -m unittest test_final_app.py
 
+      - name: Run NiceGUI admin tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-nicegui-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-nicegui-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_nicegui_app.py
+
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
 
@@ -117,12 +132,16 @@ jobs:
           wait_healthy integration 120
           wait_healthy mautrix-meta 120
 
-      - name: Verify runtime endpoints and admin navigation
+      - name: Verify runtime endpoints and NiceGUI admin
         run: |
           docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
           docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
-          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True"
+          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True and d['admin_ui'] == 'nicegui'"
           docker compose -f compose.yaml exec -T integration python /app/smoke_admin.py
+
+      - name: Seed persisted admin configuration
+        run: |
+          docker compose -f compose.yaml exec -T integration python -c "import app; app.init_db(); app.set_setting('chatwoot_base_url','https://chatwoot.example.com'); app.set_setting('chatwoot_account_id','1'); app.set_setting('chatwoot_inbox_id','2'); app.set_setting('chatwoot_api_token','smoke-chatwoot-token-must-not-render'); app.set_setting('chatwoot_enabled_at_ms','1700000000000')"
 
       - name: Verify integration persistence across restart
         run: |
