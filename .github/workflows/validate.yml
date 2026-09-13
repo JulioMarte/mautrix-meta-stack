@@ -13,6 +13,14 @@ jobs:
       MATRIX_SERVER_NAME: matrix.example.com
       MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
       MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
+      INTEGRATION_ADMIN_PASSWORD: ci-integration-admin-long-value
+      INTEGRATION_SESSION_SECRET: ci-session-secret-012345678901234567890123456789
+      CHATWOOT_WEBHOOK_SECRET: ci-webhook-secret-long-value
+      META_PROXY_RESOLVER_SECRET: ci-resolver-secret-long-value
+      META_PROXY_ENABLED: 'false'
+      META_PROXY_URL: ''
+      INTEGRATION_COOKIE_SECURE: 'false'
+      ALLOW_INSECURE_CHATWOOT: 'false'
       SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
       MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
       YQ_IMAGE: mikefarah/yq:4.47.2
@@ -28,13 +36,73 @@ jobs:
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
 
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+
+      - name: Run legacy admin tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-tests \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            meta-chatwoot-integration python -m unittest test_app.py
+
+      - name: Run production hardening tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-prod-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-production-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_prod_app.py
+
+      - name: Run final runtime guard tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-final-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-final-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_final_app.py
+
+      - name: Run NiceGUI admin tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-nicegui-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-nicegui-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_nicegui_app.py
+
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
 
       - name: Start runtime services
-        run: docker compose -f compose.yaml up -d synapse mautrix-meta
+        run: docker compose -f compose.yaml up -d synapse integration mautrix-meta
 
-      - name: Wait for Synapse and mautrix health
+      - name: Wait for runtime health
         run: |
           set -eu
           wait_healthy() {
@@ -61,18 +129,53 @@ jobs:
             return 1
           }
           wait_healthy synapse 120
+          wait_healthy integration 120
           wait_healthy mautrix-meta 120
 
-      - name: Verify service endpoints
+      - name: Verify runtime endpoints and NiceGUI admin
         run: |
           docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
           docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
+          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True and d['admin_ui'] == 'nicegui'"
+          docker compose -f compose.yaml exec -T integration python /app/smoke_admin.py
+
+      - name: Seed persisted admin configuration
+        run: |
+          docker compose -f compose.yaml exec -T integration python -c "import app; app.init_db(); app.set_setting('chatwoot_base_url','https://chatwoot.example.com'); app.set_setting('chatwoot_account_id','1'); app.set_setting('chatwoot_inbox_id','2'); app.set_setting('chatwoot_api_token','smoke-chatwoot-token-must-not-render'); app.set_setting('chatwoot_enabled_at_ms','1700000000000')"
+
+      - name: Verify integration persistence across restart
+        run: |
+          set -eu
+          docker compose -f compose.yaml restart integration
+          cid="$(docker compose -f compose.yaml ps -q integration)"
+          end=$((SECONDS + 60))
+          while [ "$SECONDS" -lt "$end" ]; do
+            status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+            echo "integration after restart: $status"
+            [ "$status" = "healthy" ] && break
+            [ "$status" = "unhealthy" ] && exit 1
+            sleep 2
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ]
+          docker compose -f compose.yaml exec -T integration python /app/smoke_persistence.py
+
+      - name: Verify mautrix policy and authenticated proxy resolver
+        run: |
+          docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c '
+            expected="http://mautrix:$META_PROXY_RESOLVER_SECRET@integration:8080/internal/proxy"
+            actual="$(yq ".network.get_proxy_from" /data/config.yaml)"
+            test "$actual" = "$expected"
+            test "$(yq ".encryption.allow" /data/config.yaml)" = "false"
+            test "$(yq ".encryption.default" /data/config.yaml)" = "false"
+            test "$(yq ".encryption.require" /data/config.yaml)" = "false"
+            test "$(yq ".network.thread_backfill.batch_count" /data/config.yaml)" = "0"
+          '
 
       - name: Dump stack logs on failure
         if: failure()
         run: |
           docker compose -f compose.yaml ps -a || true
-          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse synapse-admin-init mautrix-meta || true
+          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse synapse-admin-init integration mautrix-meta || true
 
       - name: Cleanup
         if: always()
