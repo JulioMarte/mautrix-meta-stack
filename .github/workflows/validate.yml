@@ -1,106 +1,26 @@
 name: Validate stack
 
 on:
-  workflow_dispatch:
   pull_request:
-    branches:
-      - dev
-      - main
   push:
     branches:
-      - dev
       - main
-      - 'feature/**'
-      - 'fix/**'
-
-concurrency:
-  group: validate-stack-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  phase1-control-plane:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: control-plane
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
-      - name: Install dependencies from lockfile
-        run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bun run typecheck
-      - name: Unit and contract tests
-        run: bun test
-      - name: Build control-plane image
-        run: docker build -t meta-control-plane:ci .
-
-  phase3-mautrix-fork:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.5'
-          cache: false
-      - name: Install upstream native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libolm-dev
-      - name: Clone pinned mautrix-meta upstream
-        run: |
-          set -eu
-          git clone --filter=blob:none https://github.com/mautrix/meta.git /tmp/mautrix-meta
-          git -C /tmp/mautrix-meta checkout --detach ed37c9e6ce47e83dc75b9abea7b636302715b9bc
-          test "$(git -C /tmp/mautrix-meta rev-parse HEAD)" = "ed37c9e6ce47e83dc75b9abea7b636302715b9bc"
-      - name: Apply deterministic account-aware egress, provisioning and Matrix ingestion delta
-        run: |
-          python3 mautrix-meta-fork/apply_patch.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_phase3_fixups.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_phase3_transport_tests.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_phase3_resolver_hardening.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_provisioning_bootstrap.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_matrix_ingestion_metadata.py /tmp/mautrix-meta
-          python3 mautrix-meta-fork/apply_matrix_ingestor_membership.py /tmp/mautrix-meta
-          cd /tmp/mautrix-meta
-          gofmt -w \
-            pkg/connector/client.go \
-            pkg/connector/config.go \
-            pkg/connector/connector.go \
-            pkg/connector/login.go \
-            pkg/connector/provisioning.go \
-            pkg/connector/provisioning_test.go \
-            pkg/connector/directmedia.go \
-            pkg/connector/events.go \
-            pkg/connector/userinfo.go \
-            pkg/connector/chatinfo.go \
-            pkg/connector/handlemeta.go \
-            pkg/connector/matrix_ingestion_metadata_test.go \
-            pkg/connector/matrix_ingestor_membership_test.go \
-            pkg/connector/proxy_context_test.go \
-            pkg/msgconv/mediadl/contextkey.go \
-            pkg/msgconv/mediadl/download.go \
-            pkg/msgconv/mediadl/proxy_context_test.go
-          git diff --check
-      - name: Run upstream and fork tests
-        working-directory: /tmp/mautrix-meta
-        run: go test ./...
-      - name: Build patched mautrix-meta image
-        working-directory: /tmp/mautrix-meta
-        run: docker build -t mautrix-meta:phase3-ci .
-
   compose:
     runs-on: ubuntu-latest
     env:
       MATRIX_SERVER_NAME: matrix.example.com
       MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
       MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
-      CONTROL_PLANE_ADMIN_TOKEN: ci-control-plane-admin-token-123456
-      CONTROL_PLANE_INTERNAL_TOKEN: ci-control-plane-internal-token-123456789
-      EGRESS_PROXY_CI_PASSWORD: ci-proxy-canary-secret
+      INTEGRATION_ADMIN_PASSWORD: ci-integration-admin-long-value
+      INTEGRATION_SESSION_SECRET: ci-session-secret-012345678901234567890123456789
+      CHATWOOT_WEBHOOK_SECRET: ci-webhook-secret-long-value
+      META_PROXY_RESOLVER_SECRET: ci-resolver-secret-long-value
+      META_PROXY_ENABLED: 'false'
+      META_PROXY_URL: ''
+      INTEGRATION_COOKIE_SECURE: 'false'
+      ALLOW_INSECURE_CHATWOOT: 'false'
       SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
       MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
       YQ_IMAGE: mikefarah/yq:4.47.2
@@ -109,100 +29,154 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate Docker Compose
-        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml config -q
+        run: docker compose -f compose.yaml config -q
 
       - name: Check helper shell syntax
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
 
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+
+      - name: Run legacy admin tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-tests \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            meta-chatwoot-integration python -m unittest test_app.py
+
+      - name: Run production hardening tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-prod-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-production-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_prod_app.py
+
+      - name: Run final runtime guard tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-final-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-final-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_final_app.py
+
+      - name: Run NiceGUI admin tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-nicegui-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-nicegui-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_nicegui_app.py
+
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
 
       - name: Start runtime services
-        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml up -d synapse mautrix-meta control-plane
+        run: docker compose -f compose.yaml up -d synapse integration mautrix-meta
 
       - name: Wait for runtime health
         run: |
           set -eu
-          dc='docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml'
           wait_healthy() {
             service="$1"
             timeout="$2"
-            cid="$($dc ps -q "$service")"
-            if [ -z "$cid" ]; then echo "No container found for $service" >&2; return 1; fi
+            cid="$(docker compose -f compose.yaml ps -q "$service")"
+            if [ -z "$cid" ]; then
+              echo "No container found for $service" >&2
+              return 1
+            fi
             end=$((SECONDS + timeout))
             while [ "$SECONDS" -lt "$end" ]; do
               status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
               echo "$service: $status"
-              if [ "$status" = "healthy" ]; then return 0; fi
-              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then return 1; fi
+              if [ "$status" = "healthy" ]; then
+                return 0
+              fi
+              if [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+                return 1
+              fi
               sleep 3
             done
             echo "Timed out waiting for $service to become healthy" >&2
             return 1
           }
           wait_healthy synapse 120
+          wait_healthy integration 120
           wait_healthy mautrix-meta 120
-          wait_healthy control-plane 90
 
-      - name: Verify service endpoints and auth boundary
+      - name: Verify runtime endpoints and NiceGUI admin
         run: |
-          dc='docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml'
-          $dc exec -T synapse curl -fSs http://localhost:8008/health
-          $dc exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
-          $dc exec -T control-plane bun -e "const live=await fetch('http://127.0.0.1:3000/health/live');if(!live.ok)process.exit(1);const ready=await fetch('http://127.0.0.1:3000/health/ready');if(!ready.ok)process.exit(1);const denied=await fetch('http://127.0.0.1:3000/api/v1/tenants');if(denied.status!==401)process.exit(1);const internalDenied=await fetch('http://127.0.0.1:3000/internal/v1/egress/resolve?meta_account_id=x&reason=connect&traffic_class=messaging');if(internalDenied.status!==401)process.exit(1)"
+          docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
+          docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
+          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True and d['admin_ui'] == 'nicegui'"
+          docker compose -f compose.yaml exec -T integration python /app/smoke_admin.py
 
-      - name: Verify Phase 2 resolver integration
+      - name: Seed persisted admin configuration
         run: |
-          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml exec -T control-plane bun -e '
-            const base="http://127.0.0.1:3000";
-            const admin={authorization:"Bearer "+process.env.CONTROL_PLANE_ADMIN_TOKEN,"content-type":"application/json"};
-            const post=async(path,body)=>{const r=await fetch(base+path,{method:"POST",headers:admin,body:JSON.stringify(body)});if(!r.ok){console.error(path,r.status,await r.text());process.exit(1)}return (await r.json()).data};
-            const t=await post("/api/v1/tenants",{slug:"resolver-ci",name:"Resolver CI"});
-            const p=await post("/api/v1/egress-profiles",{provider:"fixture",scheme:"socks5",host:"proxy-ci.test",port:1080,username:"ci",secretRef:"env:EGRESS_PROXY_CI_PASSWORD",status:"healthy"});
-            const c=await post("/api/v1/meta-connections",{tenantId:t.id,matrixOwnerMxid:"@resolver:matrix.example.com",metaAccountId:"meta-ci"});
-            await post(`/api/v1/meta-connections/${c.id}/egress`,{egressProfileId:p.id});
-            await post(`/api/v1/meta-connections/${c.id}/activate`,{});
-            const h={authorization:"Bearer "+process.env.CONTROL_PLANE_INTERNAL_TOKEN};
-            const u=base+"/internal/v1/egress/resolve?meta_account_id=meta-ci&reason=connect&traffic_class=messaging";
-            const r1=await fetch(u,{headers:h}); const r2=await fetch(u.replace("connect","reconnect"),{headers:h});
-            if(!r1.ok||!r2.ok){console.error(r1.status,await r1.text(),r2.status,await r2.text());process.exit(1)}
-            const a=await r1.json(); const b=await r2.json();
-            if(a.assignment_id!==b.assignment_id||!a.proxy_url.includes("ci-proxy-canary-secret")) process.exit(1);
-          '
+          docker compose -f compose.yaml exec -T integration python -c "import app; app.init_db(); app.set_setting('chatwoot_base_url','https://chatwoot.example.com'); app.set_setting('chatwoot_account_id','1'); app.set_setting('chatwoot_inbox_id','2'); app.set_setting('chatwoot_api_token','smoke-chatwoot-token-must-not-render'); app.set_setting('chatwoot_enabled_at_ms','1700000000000')"
 
-      - name: Create durable tenant before restart
+      - name: Verify integration persistence across restart
         run: |
-          docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN;const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({slug:'restart-proof',name:'Restart Proof'})});if(r.status!==201){console.error(await r.text());process.exit(1)}"
-
-      - name: Restart control plane and verify persistence/readiness
-        run: |
-          dc='docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml'
-          $dc restart control-plane
-          cid="$($dc ps -q control-plane)"
-          end=$((SECONDS + 90))
+          set -eu
+          docker compose -f compose.yaml restart integration
+          cid="$(docker compose -f compose.yaml ps -q integration)"
+          end=$((SECONDS + 60))
           while [ "$SECONDS" -lt "$end" ]; do
             status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+            echo "integration after restart: $status"
             [ "$status" = "healthy" ] && break
             [ "$status" = "unhealthy" ] && exit 1
             sleep 2
           done
-          $dc exec -T control-plane bun -e "const token=process.env.CONTROL_PLANE_ADMIN_TOKEN;const ready=await fetch('http://127.0.0.1:3000/health/ready');if(!ready.ok)process.exit(1);const r=await fetch('http://127.0.0.1:3000/api/v1/tenants',{headers:{authorization:'Bearer '+token}});if(!r.ok)process.exit(1);const body=await r.json();if(!body.data.some((t)=>t.slug==='restart-proof'))process.exit(1)"
+          [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ]
+          docker compose -f compose.yaml exec -T integration python /app/smoke_persistence.py
+
+      - name: Verify mautrix policy and authenticated proxy resolver
+        run: |
+          docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c '
+            expected="http://mautrix:$META_PROXY_RESOLVER_SECRET@integration:8080/internal/proxy"
+            actual="$(yq ".network.get_proxy_from" /data/config.yaml)"
+            test "$actual" = "$expected"
+            test "$(yq ".encryption.allow" /data/config.yaml)" = "false"
+            test "$(yq ".encryption.default" /data/config.yaml)" = "false"
+            test "$(yq ".encryption.require" /data/config.yaml)" = "false"
+            test "$(yq ".network.thread_backfill.batch_count" /data/config.yaml)" = "0"
+          '
 
       - name: Dump stack logs on failure
         if: failure()
-        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml logs --no-color || true
-
-      - name: Reject canary secret leakage in logs
-        if: always()
         run: |
-          logs="$(docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml logs --no-color control-plane 2>&1 || true)"
-          if printf '%s' "$logs" | grep -Fq 'ci-proxy-canary-secret'; then
-            echo 'Raw proxy canary secret leaked into control-plane logs' >&2
-            exit 1
-          fi
+          docker compose -f compose.yaml ps -a || true
+          docker compose -f compose.yaml logs --no-color synapse-init mautrix-config-init mautrix-configure mautrix-registration-init synapse-configure synapse-check-config synapse synapse-admin-init integration mautrix-meta || true
 
       - name: Cleanup
         if: always()
-        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml down -v --remove-orphans || true
+        run: docker compose -f compose.yaml down -v --remove-orphans || true

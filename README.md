@@ -1,8 +1,12 @@
 # mautrix-meta stack for Coolify
 
-Minimal deployment of **Synapse + mautrix-meta** for testing Facebook Messenger / Marketplace bridging on Coolify.
+Minimal single-client deployment of **Synapse + mautrix-meta + a NiceGUI Chatwoot integration/admin sidecar** for Facebook Messenger / Marketplace bridging on Coolify.
 
-This repository consumes the official prebuilt images and is designed so that a normal Coolify deployment bootstraps the required Synapse and mautrix files automatically. No SSH bootstrap is required for a fresh installation.
+The stack consumes official prebuilt Synapse and mautrix-meta images and bootstraps their required files automatically. The repository-owned `integration` container provides Matrix <-> Chatwoot text transport, the visual NiceGUI admin, and the authenticated Meta proxy resolver.
+
+## Simplified product model
+
+One deployed stack serves one customer. If another customer needs the service, deploy another stack. The preserved multi-tenant/control-plane work remains on `archive/multi-tenant-control-plane-2026-09-12` and is intentionally not part of this deployment line.
 
 ## Architecture
 
@@ -13,175 +17,89 @@ Internet
 Coolify / Traefik
    |
    +--> Synapse :8008
-            |
-            | private Compose network
-            v
-       mautrix-meta :29319
-            |
-            v
-        Meta / Facebook
+   |
+   +--> integration :8080
+           |   NiceGUI /admin
+           |   Chatwoot webhook
+           |   authenticated proxy resolver
+           |
+           +--> Chatwoot API
+           +--> Synapse client API
+
+private Compose network
+   |
+   +--> mautrix-meta :29319
+           |
+           +--> Meta / Facebook through optional residential proxy
 ```
 
-Only Synapse should receive a public domain. The mautrix-meta appservice remains private.
+Only Synapse and the `integration` service need public domains. `mautrix-meta` remains private.
 
-## Pinned images
+## Coolify
 
-- Synapse: `matrixdotorg/synapse:v1.160.0`
-- mautrix-meta: `dock.mau.dev/mautrix/meta:v26.07`
-- yq bootstrap helper: `mikefarah/yq:4.47.2`
+Create a Git-based Docker Compose application using `/compose.yaml`. Production configuration and acceptance steps are documented in `docs/production-coolify-checklist.md`.
 
-Do not casually switch mautrix-meta to `latest`: upstream documents that `latest` follows the latest commit, not necessarily the latest stable release.
-
-## Coolify setup
-
-Create a Git-based application using the **Docker Compose** build pack.
-
-- Branch: `main`
-- Base directory: `/`
-- Docker Compose location: `/compose.yaml`
-
-Set these variables in Coolify:
+Important runtime variables include:
 
 ```env
 MATRIX_SERVER_NAME=matrix.example.com
 MATRIX_ADMIN_MXID=@admin:matrix.example.com
-TZ=America/Santo_Domingo
-SYNAPSE_IMAGE=matrixdotorg/synapse:v1.160.0
-MAUTRIX_META_IMAGE=dock.mau.dev/mautrix/meta:v26.07
-YQ_IMAGE=mikefarah/yq:4.47.2
+MATRIX_ADMIN_PASSWORD=<secret>
+INTEGRATION_ADMIN_PASSWORD=<secret>
+INTEGRATION_SESSION_SECRET=<secret>
+CHATWOOT_WEBHOOK_SECRET=<secret>
+META_PROXY_RESOLVER_SECRET=<url-safe-secret>
+INTEGRATION_COOKIE_SECURE=true
+ALLOW_INSECURE_CHATWOOT=false
+NICEGUI_STORAGE_PATH=/data/nicegui
 ```
 
-The stack uses Docker named volumes rather than host bind paths:
+For a residential Meta proxy, use dedicated variables rather than process-wide `HTTP_PROXY`/`HTTPS_PROXY`:
+
+```env
+META_PROXY_ENABLED=true
+META_PROXY_URL=http://proxy-user:proxy-password@proxy-host:8888
+```
+
+The actual Chatwoot base URL, account ID, inbox ID and API token are configured visually at `/admin`. When `META_PROXY_URL` is supplied by Coolify, the admin shows it only in redacted/read-only form.
+
+## Admin
+
+The operator UI is implemented with **NiceGUI 3.16.0** and runs on the integration service at `/admin`. It provides:
+
+- authenticated login;
+- Chatwoot configuration;
+- proxy status/configuration when not managed by Coolify;
+- Chatwoot connectivity testing;
+- residential proxy egress testing;
+- secret redaction;
+- persisted state through the `integration-data-v1` volume.
+
+NiceGUI uses a WebSocket after the initial page load, so the integration domain must allow WebSocket upgrades through Coolify/Traefik.
+
+## Persistence
+
+Docker named volumes are used deliberately:
 
 ```text
-synapse-data
-mautrix-meta-data
+synapse-data-v2
+mautrix-meta-data-v2
+integration-data-v1
 ```
 
-This is deliberate for Coolify. It avoids host-path interpolation restrictions and avoids first-deploy ownership problems caused by root-owned bind-mount directories. The same named volumes are reused by the init jobs and the long-running services, so generated identity, databases and authentication state survive normal redeployments.
+The integration volume contains its SQLite database and NiceGUI server-side user storage. Do not delete these volumes during a normal redeploy.
 
-## Automatic bootstrap
+## Security boundaries
 
-A fresh `docker compose up` executes an idempotent init chain before the long-running services start:
+- The integration container has a read-only root filesystem, `no-new-privileges`, and all Linux capabilities dropped.
+- NiceGUI storage is explicitly written to `/data/nicegui` because `/app` is read-only.
+- The Meta proxy resolver requires internal HTTP Basic authentication and returns 404 when unauthenticated.
+- Residential proxy credentials belong in `META_PROXY_URL` in Coolify, not in Git.
+- Matrix-side portal encryption is disabled because the Chatwoot sidecar does not implement Matrix crypto. This does not disable Meta/Messenger E2EE handled by mautrix-meta.
+- Initial mautrix thread backfill is disabled and a Chatwoot activation boundary prevents old Matrix events from flooding Chatwoot.
 
-```text
-synapse-init
-      |
-      +-------------------+
-      |                   |
-      v                   v
-mautrix-config-init   Synapse config generated
-      |
-      v
-mautrix-configure
-      |
-      v
-mautrix-registration-init
-      |
-      v
-synapse-configure
-      |
-      v
-Synapse
-      |
-      | healthy
-      v
-mautrix-meta
-```
+## Acceptance boundary
 
-The init services do the following:
+Repository CI validates build, Compose bootstrap, NiceGUI startup, health endpoints, configuration persistence across restart, proxy-resolver authentication and the mautrix policy. It cannot prove the VPS-restricted residential proxy, real Meta authentication, or a real Meta <-> Matrix <-> Chatwoot round trip.
 
-1. Generate `homeserver.yaml` and Synapse signing identity on first deployment.
-2. Generate mautrix-meta `config.yaml` if it does not already exist.
-3. Configure `network.mode=facebook` and `network.marketplace_space=true`.
-4. Configure mautrix-meta SQLite for the PoC.
-5. Configure internal addresses `http://synapse:8008` and `http://mautrix-meta:29319`.
-6. Restrict bridge login permission to the configured Matrix domain and grant the configured MXID bridge-admin permission.
-7. Generate `registration.yaml` if it does not already exist.
-8. Mount that registration into Synapse and configure `app_service_config_files` automatically.
-9. Start Synapse only after all init jobs succeed.
-10. Start mautrix-meta only after Synapse is healthy.
-
-Existing generated config, signing identity, SQLite state and appservice tokens are preserved across normal redeployments. Init jobs are expected to exit with code 0 after completing their work; they are not long-running services.
-
-## Domain
-
-Assign a domain only to the `synapse` service and route it to internal port `8008`, for example:
-
-```text
-https://matrix.example.com:8008
-```
-
-Do not assign a domain to `mautrix-meta` and do not publish `29319` directly.
-
-Synapse readiness can be verified publicly at:
-
-```text
-https://matrix.example.com/_matrix/client/versions
-```
-
-The bridge readiness endpoint is intentionally internal:
-
-```text
-http://mautrix-meta:29319/_matrix/mau/ready
-```
-
-## Create the first Matrix user
-
-User credentials are deliberately **not** stored in Git or generated automatically. Once Synapse is healthy, open the Synapse container terminal in Coolify and run:
-
-```bash
-register_new_matrix_user -c /data/homeserver.yaml http://localhost:8008
-```
-
-Create the localpart matching the MXID configured by `MATRIX_ADMIN_MXID`. For the PoC, keep public registration disabled.
-
-## Facebook authentication
-
-After logging into the homeserver from a Matrix client, start a management room with the Meta bridge bot and use the current mautrix-meta login flow. The initial validation target is:
-
-```text
-Facebook login
-    -> existing Messenger / Marketplace chats sync
-    -> new inbound message reaches Matrix
-    -> Matrix reply reaches Facebook
-    -> redeploy/restart
-    -> bridge reconnects using persisted state
-    -> missed Marketplace messages backfill
-```
-
-Do not add Chatwoot until this transport loop is reliable.
-
-## Persistence and security
-
-Runtime state is persisted in the two Docker named volumes. Conceptually they contain:
-
-```text
-synapse-data
-├── homeserver.yaml
-├── *.signing.key
-├── homeserver.db
-└── media_store/
-
-mautrix-meta-data
-├── config.yaml
-├── registration.yaml
-└── mautrix-meta.db
-```
-
-Treat both volumes as sensitive. In particular, `registration.yaml`, signing keys, SQLite databases, bridge credentials and Matrix access tokens must never be committed.
-
-Do not delete or recreate the named volumes during a normal redeploy. Removing them intentionally resets the corresponding service identity and data.
-
-## Operational constraints
-
-- Run exactly one long-running mautrix-meta instance against a given data volume.
-- Keep Synapse and mautrix-meta in the same Compose application so they can use service-name DNS.
-- Keep the appservice port private.
-- SQLite is intentional for this one-account PoC, not for the eventual multi-tenant product.
-- Before production/multi-tenant use, migrate Synapse and mautrix-meta to separate PostgreSQL databases and establish backups.
-- Meta bridging is unofficial and upstream protocol changes can temporarily break connectivity; this PoC must prove reliability before product assumptions are made.
-
-## Git/Coolify deployment policy
-
-`main` is the Coolify deployment branch. Changes should be prepared and validated on a non-deployment branch, then merged once. This avoids triggering a series of partial deployments while infrastructure changes are still being assembled.
+Do not treat a green repository build as production acceptance. Run `docs/production-coolify-checklist.md` on the exact deployed revision before sending real customer traffic.
