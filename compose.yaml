@@ -252,6 +252,7 @@ services:
       ALLOW_INSECURE_CHATWOOT: ${ALLOW_INSECURE_CHATWOOT:-false}
       START_MATRIX_SYNC: "true"
       MAUTRIX_REGISTRATION_PATH: /mautrix/registration.yaml
+      NICEGUI_STORAGE_PATH: /data/nicegui
     volumes:
       - integration-data-v1:/data
       - mautrix-meta-data-v2:/mautrix:ro
