@@ -7,4 +7,5 @@ COPY . /app
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "70", "--access-logfile", "-", "--error-logfile", "-", "final_app:application"]
+# Access logs are intentionally disabled because webhook/proxy resolver routes contain deployment secrets.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "70", "--error-logfile", "-", "final_app:application"]
