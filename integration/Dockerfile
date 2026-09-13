@@ -7,5 +7,6 @@ COPY . /app
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
-# Access logs are intentionally disabled because webhook/proxy resolver routes contain deployment secrets.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "70", "--error-logfile", "-", "final_app:application"]
+# NiceGUI runs on its bundled Uvicorn server with one process; access logs are disabled
+# because the Chatwoot webhook path contains a deployment secret.
+CMD ["python", "/app/nicegui_app.py"]
