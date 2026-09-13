@@ -11,7 +11,7 @@ Expose only these services through Coolify/Traefik:
 
 Do not expose `mautrix-meta:29319` publicly.
 
-The integration domain serves `/admin` and the Chatwoot webhook. The Meta proxy resolver remains on the same HTTP service but requires internal HTTP Basic authentication; unauthenticated requests return 404. mautrix-meta reaches it through the private Compose network.
+The integration domain serves `/admin` and the Chatwoot webhook. The admin is a NiceGUI application and requires normal WebSocket upgrade support through Traefik; Coolify/Traefik normally handles this automatically, but it must be verified after deployment. The Meta proxy resolver remains on the same HTTP service but requires internal HTTP Basic authentication; unauthenticated requests return 404. mautrix-meta reaches it through the private Compose network.
 
 ## Required Coolify secrets
 
@@ -24,6 +24,8 @@ Set strong, unrelated values for:
 - `META_PROXY_RESOLVER_SECRET`
 
 Use a URL-safe value for `META_PROXY_RESOLVER_SECRET`, preferably a long hexadecimal token such as the output of `openssl rand -hex 32`. Keep `INTEGRATION_COOKIE_SECURE=true` and `ALLOW_INSECURE_CHATWOOT=false` in production.
+
+NiceGUI server-side user storage is explicitly placed at `/data/nicegui`, inside `integration-data-v1`. Do not move it back to the read-only container filesystem.
 
 ## Residential proxy
 
@@ -44,7 +46,7 @@ After deployment, use **Test proxy egress** in `/admin`. The observed IP must be
 
 mautrix-meta is configured with `network.get_proxy_from` pointing to `/internal/proxy` on the integration container. The URL carries HTTP Basic credentials internally: username `mautrix`, password `META_PROXY_RESOLVER_SECRET`.
 
-The resolver secret is not the residential proxy password and must not be reused for any other purpose. The transitional secret-in-path resolver is disabled. Gunicorn access logs are disabled so the Chatwoot webhook path secret is not written to normal application access logs.
+The resolver secret is not the residential proxy password and must not be reused for any other purpose. The transitional secret-in-path resolver is disabled. NiceGUI/Uvicorn access logging is disabled so the Chatwoot webhook path secret is not written to normal application access logs.
 
 ## Chatwoot setup
 
@@ -80,15 +82,15 @@ Repository CI cannot substitute for these tests because the residential proxy on
 
 Require all of the following on the exact deployed revision:
 
-- `/admin` loads through HTTPS and login succeeds.
+- `/admin` loads through HTTPS, the NiceGUI WebSocket remains connected and login succeeds.
+- Saving Chatwoot configuration from the NiceGUI panel survives an `integration` restart.
 - Chatwoot connection test succeeds for the configured inbox.
 - Proxy egress test succeeds and the observed IP is not the VPS IP.
 - Facebook/Messenger login succeeds while the proxy is enabled.
 - A new inbound Meta text message reaches the correct Chatwoot conversation once.
 - An agent reply in Chatwoot reaches the correct Meta conversation once.
 - An ordinary non-bridge Matrix room is not forwarded to Chatwoot.
-- Restart `integration`; admin configuration remains present.
-- Restart/redeploy the stack without deleting volumes; Meta login state, Matrix state and Chatwoot room mappings remain present.
+- Restart/redeploy the stack without deleting volumes; Meta login state, Matrix state, NiceGUI user storage and Chatwoot room mappings remain present.
 - Temporarily make the residential proxy unreachable; Meta traffic must fail rather than silently succeed through the VPS public IP.
 - Restore the proxy and confirm reconnect/message flow recovers.
 
@@ -106,4 +108,4 @@ Backups must be stored off the VPS, access-controlled and restorable. A backup i
 
 ## Upgrade policy
 
-Keep image versions pinned. Test mautrix-meta/Synapse upgrades on a disposable copy or separate deployment first. Never replace the production image with `latest` as an upgrade strategy.
+Keep image versions pinned. NiceGUI is pinned to `3.16.0` in the integration image. Test NiceGUI, mautrix-meta and Synapse upgrades on a disposable copy or separate deployment first. Never replace production dependencies with unpinned `latest` versions as an upgrade strategy.
