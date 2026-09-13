@@ -7,4 +7,4 @@ COPY . /app
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "70", "--access-logfile", "-", "--error-logfile", "-", "prod_app:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "4", "--timeout", "70", "--access-logfile", "-", "--error-logfile", "-", "final_app:application"]
