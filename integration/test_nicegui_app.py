@@ -1,7 +1,10 @@
 import base64
+import hashlib
+import hmac
 import importlib
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -68,8 +71,10 @@ class NiceGUIAdminTests(unittest.TestCase):
     def test_saved_secrets_can_be_loaded_explicitly_by_admin_ui(self):
         self.save_minimal("original-secret")
         legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
+        legacy.set_setting("chatwoot_webhook_signing_secret", "chatwoot-signing-secret")
         self.assertEqual(module.get_saved_secret("chatwoot_api_token"), "original-secret")
         self.assertIn("user:pass", module.get_saved_secret("proxy_url"))
+        self.assertEqual(module.get_saved_secret("chatwoot_webhook_signing_secret"), "chatwoot-signing-secret")
         with self.assertRaises(ValueError):
             module.get_saved_secret("unknown")
 
@@ -181,13 +186,18 @@ class NiceGUIAdminTests(unittest.TestCase):
         self.assertEqual(legacy.get_setting("proxy_enabled"), "0")
         self.assertIn("env-pass", legacy.get_setting("proxy_url"))
 
-    def test_setup_state_never_returns_chatwoot_token(self):
-        self.save_minimal("super-secret-token")
+    def test_setup_state_never_returns_connection_secrets(self):
+        module.save_configuration(
+            "http://chatwoot.example.com", "1", "2", "super-secret-token", False, "", "signing-secret-value"
+        )
         state = module.setup_state()
         self.assertTrue(state["chatwoot_ready"])
         self.assertTrue(state["token_saved"])
+        self.assertTrue(state["webhook_secret_saved"])
         self.assertNotIn("chatwoot_api_token", state)
+        self.assertNotIn("chatwoot_webhook_signing_secret", state)
         self.assertNotIn("super-secret-token", repr(state))
+        self.assertNotIn("signing-secret-value", repr(state))
 
     def test_setup_state_counts_linked_conversations(self):
         self.save_minimal()
@@ -208,10 +218,39 @@ class NiceGUIAdminTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Inbox Identifier token"):
                 module.verify_chatwoot()
 
-    def test_verify_chatwoot_accepts_selected_inbox(self):
+    def test_verify_chatwoot_accepts_selected_inbox_and_records_visible_status(self):
         self.save_minimal()
         with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 2}] }):
-            self.assertEqual(module.verify_chatwoot(), "Chatwoot connection verified")
+            result = module.verify_chatwoot()
+        self.assertIn("PASS", result)
+        self.assertIn("account 1", result)
+        self.assertIn("inbox 2", result)
+        self.assertIn("UTC", legacy.get_setting("chatwoot_verified_at"))
+
+    def test_webhook_registration_verification_checks_url_and_subscription(self):
+        self.save_minimal()
+        data = [{"id": 9, "url": "https://bridge.example.com/webhooks/chatwoot", "subscriptions": ["message_created"]}]
+        with patch.object(module.prod, "cw_get", return_value=data):
+            result = module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
+        self.assertIn("PASS", result)
+        self.assertIn("UTC", legacy.get_setting("webhook_registration_verified_at"))
+
+    def test_webhook_signature_accepts_chatwoot_hmac_and_rejects_bad_signature(self):
+        secret = "chatwoot-generated-signing-secret"
+        legacy.set_setting("chatwoot_webhook_signing_secret", secret)
+        raw = b'{"event":"message_created"}'
+        timestamp = str(int(time.time()))
+        digest = hmac.new(secret.encode(), timestamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
+        signature = "sha256=" + digest
+        self.assertTrue(module.verify_chatwoot_signature(raw, signature, timestamp, now=int(timestamp)))
+        with self.assertRaisesRegex(RuntimeError, "Invalid Chatwoot webhook signature"):
+            module.verify_chatwoot_signature(raw, "sha256=bad", timestamp, now=int(timestamp))
+
+    def test_webhook_signature_rejects_stale_delivery(self):
+        legacy.set_setting("chatwoot_webhook_signing_secret", "chatwoot-generated-signing-secret")
+        now = int(time.time())
+        with self.assertRaisesRegex(RuntimeError, "too old"):
+            module.verify_chatwoot_signature(b"{}", "sha256=irrelevant", str(now - 1000), now=now)
 
     def test_verify_proxy_rejects_disabled_proxy(self):
         with self.assertRaisesRegex(RuntimeError, "not configured"):
@@ -246,6 +285,7 @@ class NiceGUIAdminTests(unittest.TestCase):
         self.assertEqual(result["proxy_ip"], "203.0.113.10")
         self.assertTrue(result["different"])
         self.assertIn("UTC", result["checked_at"])
+        self.assertEqual(legacy.get_setting("proxy_verified_ip"), "203.0.113.10")
         self.assertFalse(direct_session.trust_env)
         self.assertFalse(proxy_session.trust_env)
         direct_session.get.assert_called_once_with(module.IP_CHECK_URL, proxies=None, timeout=20)

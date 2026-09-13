@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import ipaddress
+import json
 import os
+import secrets
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -13,6 +17,16 @@ import requests
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from nicegui import app, ui
+
+# CHATWOOT_WEBHOOK_SECRET used to protect a secret-in-path webhook URL. Keep an
+# existing value only for migration compatibility. New installs use Chatwoot's
+# webhook signing secret, stored in the admin database, and the canonical
+# /webhooks/chatwoot endpoint.
+LEGACY_WEBHOOK_PATH_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET", "").strip()
+if not LEGACY_WEBHOOK_PATH_SECRET:
+    # Legacy modules still validate this variable at import time even though the
+    # NiceGUI runtime no longer uses it for the canonical webhook endpoint.
+    os.environ["CHATWOOT_WEBHOOK_SECRET"] = secrets.token_urlsafe(32)
 
 import final_app as runtime
 
@@ -22,6 +36,7 @@ prod = runtime.prod
 COOKIE_SECURE = os.getenv("INTEGRATION_COOKIE_SECURE", "true").lower() == "true"
 ALLOW_INSECURE_CHATWOOT = os.getenv("ALLOW_INSECURE_CHATWOOT", "false").lower() == "true"
 IP_CHECK_URL = "https://api.ipify.org?format=json"
+WEBHOOK_MAX_AGE_SECONDS = 300
 
 
 async def _security_headers(request: Request, call_next):
@@ -45,6 +60,7 @@ def authenticated() -> bool:
 
 
 def migrate_proxy_env_once() -> None:
+    """Import an old Coolify-managed proxy once, then make the admin authoritative."""
     if legacy.get_setting("proxy_ui_initialized") == "1":
         return
     env_proxy = (getattr(prod, "ENV_PROXY_URL", "") or "").strip()
@@ -59,12 +75,17 @@ def effective_proxy():
     return False, legacy.get_setting("proxy_enabled") == "1", legacy.get_setting("proxy_url")
 
 
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 def setup_state() -> dict:
     _, proxy_enabled, proxy_value = effective_proxy()
     base = legacy.get_setting("chatwoot_base_url")
     account = legacy.get_setting("chatwoot_account_id")
     inbox = legacy.get_setting("chatwoot_inbox_id")
     token_saved = bool(legacy.get_setting("chatwoot_api_token"))
+    webhook_secret_saved = bool(legacy.get_setting("chatwoot_webhook_signing_secret"))
     chatwoot_ready = bool(base and account and inbox and token_saved)
     proxy_ready = (not proxy_enabled) or bool(proxy_value)
     with legacy.db() as conn:
@@ -75,20 +96,24 @@ def setup_state() -> dict:
         "inbox": inbox,
         "token_saved": token_saved,
         "chatwoot_ready": chatwoot_ready,
+        "chatwoot_verified_at": legacy.get_setting("chatwoot_verified_at"),
         "managed_proxy": False,
         "proxy_enabled": proxy_enabled,
         "proxy_value": proxy_value,
         "proxy_ready": proxy_ready,
+        "proxy_verified_at": legacy.get_setting("proxy_verified_at"),
+        "proxy_verified_ip": legacy.get_setting("proxy_verified_ip"),
+        "webhook_secret_saved": webhook_secret_saved,
+        "webhook_registration_verified_at": legacy.get_setting("webhook_registration_verified_at"),
+        "webhook_delivery_verified_at": legacy.get_setting("webhook_delivery_verified_at"),
         "link_count": int(link_count),
     }
 
 
 def get_saved_secret(name: str) -> str:
-    """Return a saved secret only to the already-authenticated admin UI callback."""
-    if name == "chatwoot_api_token":
-        return legacy.get_setting("chatwoot_api_token")
-    if name == "proxy_url":
-        return legacy.get_setting("proxy_url")
+    """Return a saved secret only to an already-authenticated admin callback/page."""
+    if name in {"chatwoot_api_token", "proxy_url", "chatwoot_webhook_signing_secret"}:
+        return legacy.get_setting(name)
     raise ValueError("Unknown saved secret")
 
 
@@ -102,7 +127,8 @@ def _clean_chatwoot_base(base: str) -> str:
 
 
 def save_configuration(base: str, account: str, inbox: str, token: str,
-                       proxy_enabled: bool, proxy_url: str) -> None:
+                       proxy_enabled: bool, proxy_url: str,
+                       webhook_signing_secret: str = "") -> None:
     base = _clean_chatwoot_base(base)
     if not str(account).isdigit() or not str(inbox).isdigit():
         raise ValueError("Account ID and Inbox ID must be numeric")
@@ -117,6 +143,17 @@ def save_configuration(base: str, account: str, inbox: str, token: str,
             raise ValueError("Proxy is enabled but no proxy URL is configured")
         prod.validate_proxy_url(candidate_proxy)
 
+    old_chatwoot = (
+        legacy.get_setting("chatwoot_base_url"),
+        legacy.get_setting("chatwoot_account_id"),
+        legacy.get_setting("chatwoot_inbox_id"),
+        legacy.get_setting("chatwoot_api_token"),
+    )
+    new_token = token.strip() or old_chatwoot[3]
+    new_chatwoot = (base, str(account), str(inbox), new_token)
+    old_proxy = (legacy.get_setting("proxy_enabled") == "1", existing_proxy)
+    new_proxy = (bool(proxy_enabled), requested_proxy or existing_proxy)
+
     legacy.set_setting("chatwoot_base_url", base)
     legacy.set_setting("chatwoot_account_id", str(account))
     legacy.set_setting("chatwoot_inbox_id", str(inbox))
@@ -126,6 +163,19 @@ def save_configuration(base: str, account: str, inbox: str, token: str,
     if requested_proxy:
         prod.validate_proxy_url(requested_proxy)
         legacy.set_setting("proxy_url", requested_proxy)
+    if webhook_signing_secret and webhook_signing_secret.strip():
+        old_webhook_secret = legacy.get_setting("chatwoot_webhook_signing_secret")
+        new_webhook_secret = webhook_signing_secret.strip()
+        legacy.set_setting("chatwoot_webhook_signing_secret", new_webhook_secret)
+        if new_webhook_secret != old_webhook_secret:
+            legacy.set_setting("webhook_delivery_verified_at", "")
+
+    if new_chatwoot != old_chatwoot:
+        legacy.set_setting("chatwoot_verified_at", "")
+        legacy.set_setting("webhook_registration_verified_at", "")
+    if new_proxy != old_proxy:
+        legacy.set_setting("proxy_verified_at", "")
+        legacy.set_setting("proxy_verified_ip", "")
     runtime.ensure_activation_boundary()
 
 
@@ -176,7 +226,53 @@ def verify_chatwoot() -> str:
             "Configured Chatwoot inbox was not found. Use the numeric Inbox ID returned by Chatwoot, "
             "not the Inbox Identifier token shown in the inbox Configuration tab."
         )
-    return "Chatwoot connection verified"
+    checked_at = _now_utc()
+    legacy.set_setting("chatwoot_verified_at", checked_at)
+    return f"PASS — authenticated to Chatwoot; account {account_id}; inbox {inbox_id}; {checked_at}"
+
+
+def verify_webhook_registration(expected_url: str) -> str:
+    if not legacy.configured():
+        raise RuntimeError("Save and test Chatwoot first")
+    account_id = int(legacy.get_setting("chatwoot_account_id"))
+    data = prod.cw_get(f"/api/v1/accounts/{account_id}/webhooks")
+    if isinstance(data, list):
+        hooks = data
+    elif isinstance(data, dict):
+        hooks = data.get("payload") or data.get("webhooks") or []
+    else:
+        hooks = []
+    expected = expected_url.rstrip("/")
+    for hook in hooks:
+        if str(hook.get("url") or "").rstrip("/") != expected:
+            continue
+        subscriptions = hook.get("subscriptions") or []
+        if "message_created" not in subscriptions:
+            raise RuntimeError("Webhook URL exists in Chatwoot but message_created is not selected")
+        checked_at = _now_utc()
+        legacy.set_setting("webhook_registration_verified_at", checked_at)
+        return f"PASS — Chatwoot has this webhook URL with message_created enabled; {checked_at}"
+    raise RuntimeError("Webhook URL was not found in Chatwoot. Add the exact URL shown below, then retry")
+
+
+def verify_chatwoot_signature(raw_body: bytes, signature: str, timestamp: str,
+                              now: int | None = None) -> bool:
+    secret = legacy.get_setting("chatwoot_webhook_signing_secret")
+    if not secret:
+        raise RuntimeError("Chatwoot webhook signing secret is not configured")
+    try:
+        timestamp_int = int(timestamp)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid Chatwoot webhook timestamp") from exc
+    current = int(time.time()) if now is None else int(now)
+    if abs(current - timestamp_int) > WEBHOOK_MAX_AGE_SECONDS:
+        raise RuntimeError("Chatwoot webhook timestamp is too old or too far in the future")
+    signed = str(timestamp).encode("utf-8") + b"." + raw_body
+    digest = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    expected = "sha256=" + digest
+    if not signature or not hmac.compare_digest(signature, expected):
+        raise RuntimeError("Invalid Chatwoot webhook signature")
+    return True
 
 
 def _public_ip(session: requests.Session, proxies=None) -> str:
@@ -204,7 +300,7 @@ def test_proxy_url(proxy: str) -> dict:
         "direct_ip": direct_ip,
         "proxy_ip": proxy_ip,
         "different": direct_ip != proxy_ip,
-        "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "checked_at": _now_utc(),
     }
 
 
@@ -212,7 +308,58 @@ def verify_proxy() -> dict:
     _, enabled, proxy = effective_proxy()
     if not enabled or not proxy:
         raise RuntimeError("Proxy is not configured")
-    return test_proxy_url(proxy)
+    result = test_proxy_url(proxy)
+    if result["different"]:
+        legacy.set_setting("proxy_verified_at", result["checked_at"])
+        legacy.set_setting("proxy_verified_ip", result["proxy_ip"])
+    return result
+
+
+def _webhook_origin(request: Request) -> str:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",", 1)[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc).split(",", 1)[0].strip()
+    return f"{proto}://{host}".rstrip("/")
+
+
+def _decode_webhook_payload(raw_body: bytes):
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("invalid json") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("invalid payload")
+    return payload
+
+
+async def _handle_chatwoot_payload(payload: dict):
+    if payload.get("event") != "message_created":
+        return {"ok": True, "ignored": True}
+    if payload.get("message_type") not in ("outgoing", 1) or payload.get("private") is True:
+        return {"ok": True, "ignored": True}
+    conversation = payload.get("conversation") or {}
+    conversation_id = conversation.get("id") or payload.get("conversation_id")
+    content = str(payload.get("content") or "").strip()
+    message_id = str(payload.get("id") or "")
+    if not conversation_id or not content:
+        return {"ok": True, "ignored": True}
+    try:
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
+    event_key = "chatwoot:" + message_id if message_id else ""
+    if event_key and legacy.event_seen(event_key):
+        return {"ok": True, "duplicate": True}
+    with legacy.db() as conn:
+        link = conn.execute("SELECT * FROM room_links WHERE conversation_id = ?", (conversation_id,)).fetchone()
+    if not link:
+        return {"ok": True, "ignored": True, "reason": "unmapped conversation"}
+    await asyncio.to_thread(
+        legacy.send_matrix_message, link["room_id"], content,
+        "cw-" + (message_id or legacy.uuid.uuid4().hex),
+    )
+    if event_key:
+        legacy.mark_event(event_key, "chatwoot_to_matrix")
+    return {"ok": True}
 
 
 @app.get("/")
@@ -252,44 +399,38 @@ async def internal_proxy(request: Request):
     return {"proxy_url": proxy}
 
 
+@app.post("/webhooks/chatwoot")
+async def chatwoot_webhook(request: Request):
+    raw_body = await request.body()
+    try:
+        verify_chatwoot_signature(
+            raw_body,
+            request.headers.get("x-chatwoot-signature", ""),
+            request.headers.get("x-chatwoot-timestamp", ""),
+        )
+        payload = _decode_webhook_payload(raw_body)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=401)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    legacy.set_setting("webhook_delivery_verified_at", _now_utc())
+    delivery = request.headers.get("x-chatwoot-delivery", "").strip()
+    if delivery:
+        legacy.set_setting("webhook_last_delivery_id", delivery[:200])
+    return await _handle_chatwoot_payload(payload)
+
+
 @app.post("/webhooks/chatwoot/{secret}")
-async def chatwoot_webhook(secret: str, request: Request):
-    if not hmac.compare_digest(secret, legacy.WEBHOOK_SECRET):
+async def legacy_chatwoot_webhook(secret: str, request: Request):
+    """Temporary backward-compatible path while an existing Chatwoot webhook is migrated."""
+    if not LEGACY_WEBHOOK_PATH_SECRET or not hmac.compare_digest(secret, LEGACY_WEBHOOK_PATH_SECRET):
         return JSONResponse({"detail": "not found"}, status_code=404)
+    raw_body = await request.body()
     try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"error": "invalid json"}, status_code=400)
-    if not isinstance(payload, dict):
-        return JSONResponse({"error": "invalid payload"}, status_code=400)
-    if payload.get("event") != "message_created":
-        return {"ok": True, "ignored": True}
-    if payload.get("message_type") not in ("outgoing", 1) or payload.get("private") is True:
-        return {"ok": True, "ignored": True}
-    conversation = payload.get("conversation") or {}
-    conversation_id = conversation.get("id") or payload.get("conversation_id")
-    content = str(payload.get("content") or "").strip()
-    message_id = str(payload.get("id") or "")
-    if not conversation_id or not content:
-        return {"ok": True, "ignored": True}
-    try:
-        conversation_id = int(conversation_id)
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "invalid conversation id"}, status_code=400)
-    event_key = "chatwoot:" + message_id if message_id else ""
-    if event_key and legacy.event_seen(event_key):
-        return {"ok": True, "duplicate": True}
-    with legacy.db() as conn:
-        link = conn.execute("SELECT * FROM room_links WHERE conversation_id = ?", (conversation_id,)).fetchone()
-    if not link:
-        return {"ok": True, "ignored": True, "reason": "unmapped conversation"}
-    await asyncio.to_thread(
-        legacy.send_matrix_message, link["room_id"], content,
-        "cw-" + (message_id or legacy.uuid.uuid4().hex),
-    )
-    if event_key:
-        legacy.mark_event(event_key, "chatwoot_to_matrix")
-    return {"ok": True}
+        payload = _decode_webhook_payload(raw_body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return await _handle_chatwoot_payload(payload)
 
 
 def page_shell(title: str):
@@ -300,6 +441,14 @@ def page_shell(title: str):
 
 def status_badge(label: str, ok: bool):
     ui.badge(label, color="positive" if ok else "warning").props("outline" if not ok else "")
+
+
+def _check_row(label: str, ok: bool, detail: str):
+    with ui.row().classes("items-start gap-3"):
+        ui.icon("check_circle" if ok else "radio_button_unchecked").classes("text-green-700" if ok else "text-slate-400")
+        with ui.column().classes("gap-0"):
+            ui.label(label).classes("font-medium")
+            ui.label(detail).classes("text-xs text-slate-500")
 
 
 @ui.page("/admin/login")
@@ -313,7 +462,7 @@ def login_page():
             with ui.row().classes("items-center gap-3 mb-1"):
                 ui.icon("hub", size="lg").classes("text-blue-600")
                 ui.label("Integration Admin").classes("text-2xl font-semibold")
-            ui.label("Configure Chatwoot and Meta connectivity for this client instance.").classes("text-slate-500 mb-5")
+            ui.label("Configure and test the complete Chatwoot ↔ Matrix ↔ Meta connection here.").classes("text-slate-500 mb-5")
             password = ui.input("Admin password", password=True, password_toggle_button=True).props("outlined autocomplete=current-password").classes("w-full")
             status = ui.label("").classes("text-red-700 min-h-6")
 
@@ -330,13 +479,15 @@ def login_page():
 
 
 @ui.page("/admin")
-def admin_page():
+def admin_page(request: Request):
     page_shell("Integration Admin")
     if not authenticated():
         ui.navigate.to("/admin/login")
         return
 
     state = setup_state()
+    webhook_url = _webhook_origin(request) + "/webhooks/chatwoot"
+
     with ui.header().classes("items-center justify-between bg-white text-slate-900 border-b border-slate-200"):
         with ui.row().classes("items-center gap-3"):
             ui.icon("hub", size="md").classes("text-blue-600")
@@ -349,14 +500,30 @@ def admin_page():
         ui.button("Logout", on_click=logout, icon="logout").props("flat")
 
     with ui.column().classes("w-full max-w-6xl mx-auto p-4 md:p-6 gap-5"):
-        completed = sum([state["chatwoot_ready"], state["proxy_ready"], state["link_count"] > 0])
         with ui.card().classes("w-full p-5 bg-blue-50 border border-blue-100"):
-            with ui.row().classes("w-full items-center justify-between gap-3 flex-wrap"):
-                with ui.column().classes("gap-1"):
-                    ui.label("Setup overview").classes("text-lg font-semibold")
-                    ui.label("Configure Chatwoot and the optional Meta proxy here; Coolify only keeps infrastructure secrets.").classes("text-slate-600")
-                ui.badge(f"{completed}/3 runtime checks ready", color="primary")
-            ui.linear_progress(value=completed / 3, show_value=False).classes("mt-2")
+            ui.label("Setup guide").classes("text-lg font-semibold")
+            ui.label("Connection credentials, webhook signing secret, proxy settings and tests live in this panel. Coolify is only for infrastructure/bootstrap secrets.").classes("text-slate-600")
+            if not state["chatwoot_ready"]:
+                next_action = "Next: enter Chatwoot URL + Personal API token, detect the account/inbox, then Save."
+            elif not state["chatwoot_verified_at"]:
+                next_action = "Next: run Test Chatwoot below."
+            elif state["proxy_enabled"] and not state["proxy_verified_at"]:
+                next_action = "Next: run the proxy test and confirm the proxy IP is different from the VPS IP."
+            elif not state["webhook_secret_saved"]:
+                next_action = "Next: create the webhook in Chatwoot, paste the signing secret it gives you, then Save."
+            elif not state["webhook_registration_verified_at"]:
+                next_action = "Next: run Check webhook registration below."
+            elif not state["webhook_delivery_verified_at"]:
+                next_action = "Next: send a real message/reply so Chatwoot delivers one signed webhook."
+            else:
+                next_action = "Configuration checks are complete. Run the live Meta ↔ Chatwoot end-to-end test."
+            ui.label(next_action).classes("mt-2 font-semibold text-blue-900")
+            with ui.column().classes("gap-2 mt-3"):
+                _check_row("Chatwoot saved", state["chatwoot_ready"], "URL, token, account and inbox are stored in the private integration volume.")
+                _check_row("Chatwoot API tested", bool(state["chatwoot_verified_at"]), state["chatwoot_verified_at"] or "Not tested yet")
+                _check_row("Meta proxy", (not state["proxy_enabled"]) or bool(state["proxy_verified_at"]), "Not required (disabled)" if not state["proxy_enabled"] else (state["proxy_verified_at"] or "Enabled but not tested yet"))
+                _check_row("Webhook configured", bool(state["webhook_secret_saved"] and state["webhook_registration_verified_at"]), state["webhook_registration_verified_at"] or "Signing secret and registration still need verification")
+                _check_row("Signed webhook received", bool(state["webhook_delivery_verified_at"]), state["webhook_delivery_verified_at"] or "No verified Chatwoot delivery yet")
 
         with ui.row().classes("w-full gap-4 flex-wrap"):
             with ui.card().classes("p-5 grow min-w-64"):
@@ -364,7 +531,7 @@ def admin_page():
                 ui.label("Ready" if state["chatwoot_ready"] else "Needs configuration").classes(
                     "text-xl font-semibold " + ("text-green-700" if state["chatwoot_ready"] else "text-amber-700")
                 )
-                status_badge("Personal API token stored", state["token_saved"])
+                status_badge("API token stored", state["token_saved"])
             with ui.card().classes("p-5 grow min-w-64"):
                 ui.label("Meta proxy · optional").classes("text-sm text-slate-500")
                 if state["proxy_enabled"]:
@@ -372,7 +539,6 @@ def admin_page():
                     status_badge("Proxy configured", state["proxy_ready"])
                 else:
                     ui.label("Disabled · direct connection").classes("text-base font-medium")
-                    ui.label("You can still test a proxy below without enabling or saving it.").classes("text-xs text-slate-500")
             with ui.card().classes("p-5 grow min-w-64"):
                 ui.label("Linked conversations").classes("text-sm text-slate-500")
                 ui.label(str(state["link_count"])).classes("text-2xl font-semibold")
@@ -381,31 +547,25 @@ def admin_page():
             with ui.row().classes("items-center gap-3 mb-3"):
                 ui.avatar("1", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Chatwoot settings").classes("text-xl font-semibold")
-                    ui.label("Use your Chatwoot Personal Access Token. The numeric Account ID and Inbox ID can be detected automatically.").classes("text-slate-500")
+                    ui.label("Connect Chatwoot").classes("text-xl font-semibold")
+                    ui.label("Everything for the Chatwoot API connection is entered and stored here.").classes("text-slate-500")
 
             base = ui.input("Chatwoot URL", value=state["base"], placeholder="https://chatwoot.example.com").props("outlined").classes("w-full")
-            ui.label("Example: https://chatwoot.yourdomain.com — no /app path and no trailing account/inbox URL.").classes("text-xs text-slate-500 -mt-2")
+            ui.label("Use only the base URL, for example https://chatwoot.example.com — no /app path.").classes("text-xs text-slate-500 -mt-2")
 
-            token_placeholder = "Stored — click Load saved token to inspect it" if state["token_saved"] else "Paste Personal Access Token"
-            token = ui.input("Personal API token", password=True, password_toggle_button=True, placeholder=token_placeholder).props("outlined autocomplete=off").classes("w-full")
-            ui.label("Find it in Chatwoot: avatar (bottom-left) → Profile Settings → Personal Access Token. Treat it like a password.").classes("text-xs text-slate-500 -mt-2")
-
-            with ui.row().classes("gap-3 flex-wrap"):
-                async def load_saved_token():
-                    saved = get_saved_secret("chatwoot_api_token")
-                    if not saved:
-                        ui.notify("No Chatwoot token is saved yet", type="warning")
-                        return
-                    token.value = saved
-                    ui.notify("Saved token loaded into the field. Use the eye icon to reveal it.", type="warning")
-
-                ui.button("Load saved token", on_click=load_saved_token, icon="visibility").props("outline")
+            token = ui.input(
+                "Personal API token",
+                value=get_saved_secret("chatwoot_api_token"),
+                password=True,
+                password_toggle_button=True,
+                placeholder="Paste Personal Access Token",
+            ).props("outlined autocomplete=off").classes("w-full")
+            ui.label("Chatwoot: avatar → Profile Settings → Personal Access Token. The eye icon reveals the value already stored in this panel.").classes("text-xs text-slate-500 -mt-2")
 
             with ui.row().classes("w-full gap-4 flex-wrap"):
                 account = ui.input("Account ID (numeric)", value=state["account"], placeholder="1").props("outlined").classes("grow min-w-48")
                 inbox = ui.input("Inbox ID (numeric)", value=state["inbox"], placeholder="2").props("outlined").classes("grow min-w-48")
-            ui.label("Important: the Inbox Identifier token shown in Chatwoot's inbox Configuration tab is NOT the Inbox ID. Inbox ID is a number.").classes("text-sm text-amber-700")
+            ui.label("The Inbox Identifier token in Chatwoot is NOT the Inbox ID. The Inbox ID is a number.").classes("text-sm text-amber-700")
             detected_inboxes = ui.select(options={}, label="Detected inboxes", with_input=True).props("outlined clearable").classes("w-full")
 
             def choose_inbox(event):
@@ -424,37 +584,30 @@ def admin_page():
                         only_id = next(iter(options))
                         detected_inboxes.value = only_id
                         inbox.value = str(only_id)
-                        ui.notify("Account and the only inbox were detected automatically", type="positive")
+                        ui.notify("Account and inbox detected", type="positive")
                     else:
-                        ui.notify(f"Account detected. Choose one of {len(options)} inboxes below.", type="positive")
+                        ui.notify(f"Account detected. Choose one of {len(options)} inboxes.", type="positive")
                 except Exception as exc:
                     ui.notify(f"Could not detect Chatwoot IDs: {exc}", type="negative", close_button=True)
 
-            ui.button("Detect Account ID and inboxes", on_click=detect_ids, icon="travel_explore").classes("mt-2")
+            ui.button("Detect account and inboxes", on_click=detect_ids, icon="travel_explore").classes("mt-2")
 
             ui.separator().classes("my-5")
             with ui.row().classes("items-center gap-3 mb-2"):
                 ui.avatar("2", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
                     ui.label("Meta proxy · optional").classes("text-xl font-semibold")
-                    ui.label("Test a proxy first. Enable it for Meta only after you are satisfied with the result.").classes("text-slate-500")
+                    ui.label("Only Meta traffic uses this proxy. Matrix and Chatwoot stay direct.").classes("text-slate-500")
 
             proxy_switch = ui.switch("Use this proxy for Meta", value=state["proxy_enabled"])
-            existing_proxy = bool(state["proxy_value"])
-            proxy_placeholder = "Stored — click Load saved proxy to inspect it" if existing_proxy else "http://user:password@host:8888"
-            proxy_input = ui.input("Proxy URL", password=True, password_toggle_button=True, placeholder=proxy_placeholder).props("outlined autocomplete=off").classes("w-full")
-            ui.label("Supported: http, https, socks5, socks5h. The test below works before saving and while the Meta proxy toggle is OFF.").classes("text-xs text-slate-500")
-
-            with ui.row().classes("gap-3 flex-wrap"):
-                async def load_saved_proxy():
-                    saved = get_saved_secret("proxy_url")
-                    if not saved:
-                        ui.notify("No proxy URL is saved yet", type="warning")
-                        return
-                    proxy_input.value = saved
-                    ui.notify("Saved proxy loaded into the field. Use the eye icon to reveal it.", type="warning")
-
-                ui.button("Load saved proxy", on_click=load_saved_proxy, icon="visibility").props("outline")
+            proxy_input = ui.input(
+                "Proxy URL",
+                value=get_saved_secret("proxy_url"),
+                password=True,
+                password_toggle_button=True,
+                placeholder="http://user:password@host:8888",
+            ).props("outlined autocomplete=off").classes("w-full")
+            ui.label("Supported: http, https, socks5, socks5h. The eye icon reveals the stored proxy credentials.").classes("text-xs text-slate-500")
 
             with ui.card().classes("w-full p-4 mt-3 bg-slate-50 border border-slate-200"):
                 with ui.row().classes("w-full gap-4 flex-wrap"):
@@ -463,79 +616,131 @@ def admin_page():
                         direct_ip_label = ui.label("Not tested yet").classes("text-lg font-mono font-semibold")
                     with ui.column().classes("grow min-w-56 gap-1"):
                         ui.label("Proxy public IP").classes("text-xs uppercase tracking-wide text-slate-500")
-                        proxy_ip_label = ui.label("Not tested yet").classes("text-lg font-mono font-semibold")
-                proxy_status = ui.label("Enter a proxy URL and test it before saving.").classes("text-sm text-slate-600 mt-2")
+                        proxy_ip_label = ui.label(state["proxy_verified_ip"] or "Not tested yet").classes("text-lg font-mono font-semibold")
+                proxy_status = ui.label(
+                    f"Last saved-proxy check: {state['proxy_verified_at']}" if state["proxy_verified_at"] else "Test the proxy before relying on it for Meta."
+                ).classes("text-sm text-slate-600 mt-2")
                 checked_at_label = ui.label("").classes("text-xs text-slate-400")
 
             async def test_proxy_now():
                 try:
-                    candidate = (proxy_input.value or "").strip() or get_saved_secret("proxy_url")
+                    candidate = (proxy_input.value or "").strip()
                     result = await asyncio.to_thread(test_proxy_url, candidate)
                     direct_ip_label.text = result["direct_ip"]
                     proxy_ip_label.text = result["proxy_ip"]
-                    checked_at_label.text = f"Last checked: {result['checked_at']}"
+                    checked_at_label.text = f"Checked: {result['checked_at']}"
                     if result["different"]:
-                        proxy_status.text = "Proxy is changing the public egress IP."
+                        proxy_status.text = "PASS — proxy changed the public egress IP. Confirm this IP belongs to your residential/provider network and is NOT the VPS IP."
                         proxy_status.classes(replace="text-sm text-green-700 mt-2 font-medium")
-                        ui.notify(f"Proxy works for this HTTP test: {result['proxy_ip']}", type="positive")
+                        if bool(proxy_switch.value) and candidate == legacy.get_setting("proxy_url"):
+                            legacy.set_setting("proxy_verified_at", result["checked_at"])
+                            legacy.set_setting("proxy_verified_ip", result["proxy_ip"])
+                        ui.notify(f"Proxy HTTP egress works: {result['proxy_ip']}", type="positive")
                     else:
-                        proxy_status.text = "Direct and proxy IP are identical. Do not use this proxy for Meta until explained."
+                        proxy_status.text = "FAIL — direct and proxy IP are identical. Do not use this proxy for Meta."
                         proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
                         ui.notify("Proxy IP matches the VPS IP", type="warning", close_button=True)
                 except Exception as exc:
-                    proxy_status.text = f"Proxy test failed: {exc}"
+                    proxy_status.text = f"FAIL — {exc}"
                     proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
                     ui.notify(f"Proxy test failed: {exc}", type="negative", close_button=True)
 
-            ui.button("Test proxy now — no save required", on_click=test_proxy_now, icon="public").props("outline").classes("mt-2")
-            ui.label("A different IP proves the HTTP request used different egress. It does not prove residential classification or Meta acceptance.").classes("text-xs text-amber-700")
+            ui.button("Test proxy now", on_click=test_proxy_now, icon="public").props("outline").classes("mt-2")
+
+            ui.separator().classes("my-5")
+            with ui.row().classes("items-center gap-3 mb-2"):
+                ui.avatar("3", color="primary", text_color="white")
+                with ui.column().classes("gap-0"):
+                    ui.label("Chatwoot webhook signing secret").classes("text-xl font-semibold")
+                    ui.label("This is the secret Chatwoot gives you for webhook signature verification. It belongs here, not in Coolify.").classes("text-slate-500")
+            webhook_secret_input = ui.input(
+                "Webhook signing secret",
+                value=get_saved_secret("chatwoot_webhook_signing_secret"),
+                password=True,
+                password_toggle_button=True,
+                placeholder="Paste the secret shown by Chatwoot after creating the webhook",
+            ).props("outlined autocomplete=off").classes("w-full")
 
             async def save():
                 try:
                     await asyncio.to_thread(
                         save_configuration,
                         base.value or "", account.value or "", inbox.value or "", token.value or "",
-                        bool(proxy_switch.value), proxy_input.value or "",
+                        bool(proxy_switch.value), proxy_input.value or "", webhook_secret_input.value or "",
                     )
-                    token.value = ""
-                    proxy_input.value = ""
-                    ui.notify("Configuration saved. Run the Chatwoot connection test next.", type="positive")
+                    ui.notify("Saved. Connection secrets are now stored in this admin's private volume.", type="positive")
                 except Exception as exc:
                     ui.notify(str(exc), type="negative", close_button=True)
 
-            ui.button("Save all settings", on_click=save, icon="save").classes("mt-5")
-
-        with ui.card().classes("w-full p-6"):
-            with ui.row().classes("items-center gap-3 mb-3"):
-                ui.avatar("3", color="primary", text_color="white")
-                with ui.column().classes("gap-0"):
-                    ui.label("Validate Chatwoot").classes("text-xl font-semibold")
-                    ui.label("This checks the saved token, numeric Account ID and numeric Inbox ID against Chatwoot.").classes("text-slate-500")
-
-            async def test_chatwoot():
-                try:
-                    message = await asyncio.to_thread(verify_chatwoot)
-                    ui.notify(message, type="positive")
-                except Exception as exc:
-                    ui.notify(f"Chatwoot test failed: {exc}", type="negative", close_button=True)
-
-            ui.button("Test Chatwoot", on_click=test_chatwoot, icon="dns")
+            ui.button("Save all connection settings", on_click=save, icon="save").classes("mt-5")
 
         with ui.card().classes("w-full p-6"):
             with ui.row().classes("items-center gap-3 mb-3"):
                 ui.avatar("4", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Configure Chatwoot webhook").classes("text-xl font-semibold")
-                    ui.label("Create a message_created webhook in Chatwoot pointing to this integration domain.").classes("text-slate-500")
-            ui.code("https://<integration-domain>/webhooks/chatwoot/<CHATWOOT_WEBHOOK_SECRET>").classes("w-full")
-            ui.label("CHATWOOT_WEBHOOK_SECRET remains a deployment secret and is intentionally not shown here.").classes("text-sm text-slate-500")
+                    ui.label("Test Chatwoot API").classes("text-xl font-semibold")
+                    ui.label("This proves the saved token can access the configured account and inbox.").classes("text-slate-500")
+            chatwoot_status = ui.label(
+                f"PASS — last verified {state['chatwoot_verified_at']}" if state["chatwoot_verified_at"] else "Not tested yet."
+            ).classes("text-sm text-slate-600")
+
+            async def test_chatwoot():
+                try:
+                    message = await asyncio.to_thread(verify_chatwoot)
+                    chatwoot_status.text = message
+                    chatwoot_status.classes(replace="text-sm text-green-700 font-medium")
+                    ui.notify("Chatwoot connection verified", type="positive")
+                except Exception as exc:
+                    chatwoot_status.text = f"FAIL — {exc}"
+                    chatwoot_status.classes(replace="text-sm text-red-700 font-medium")
+                    ui.notify(f"Chatwoot test failed: {exc}", type="negative", close_button=True)
+
+            ui.button("Test Chatwoot", on_click=test_chatwoot, icon="dns").classes("mt-2")
+
+        with ui.card().classes("w-full p-6"):
+            with ui.row().classes("items-center gap-3 mb-3"):
+                ui.avatar("5", color="primary", text_color="white")
+                with ui.column().classes("gap-0"):
+                    ui.label("Configure and verify the Chatwoot webhook").classes("text-xl font-semibold")
+                    ui.label("No URL secret is required. Chatwoot signs each delivery with the signing secret you saved above.").classes("text-slate-500")
+
+            ui.label("In Chatwoot: Settings → Integrations → Webhooks → Add new webhook. Paste this exact URL and select only message_created.").classes("text-slate-700")
+            with ui.row().classes("w-full items-center gap-2"):
+                webhook_url_input = ui.input("Webhook URL", value=webhook_url).props("outlined readonly").classes("grow")
+                async def copy_webhook_url():
+                    await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(webhook_url)})")
+                    ui.notify("Webhook URL copied", type="positive")
+                ui.button(icon="content_copy", on_click=copy_webhook_url).props("flat round")
+            ui.label("After Chatwoot creates the webhook, copy the webhook signing secret it shows you, paste it into Step 3 above, and Save.").classes("text-sm text-slate-600")
+
+            registration_status = ui.label(
+                f"PASS — registration verified {state['webhook_registration_verified_at']}" if state["webhook_registration_verified_at"] else "Registration has not been verified yet."
+            ).classes("text-sm text-slate-600 mt-3")
+            delivery_status = ui.label(
+                f"PASS — signed delivery received {state['webhook_delivery_verified_at']}" if state["webhook_delivery_verified_at"] else "No signed Chatwoot delivery has been received yet."
+            ).classes("text-sm text-slate-600")
+
+            async def check_webhook_registration():
+                try:
+                    message = await asyncio.to_thread(verify_webhook_registration, webhook_url)
+                    registration_status.text = message
+                    registration_status.classes(replace="text-sm text-green-700 font-medium mt-3")
+                    ui.notify("Webhook registration verified in Chatwoot", type="positive")
+                except Exception as exc:
+                    registration_status.text = f"FAIL — {exc}"
+                    registration_status.classes(replace="text-sm text-red-700 font-medium mt-3")
+                    ui.notify(f"Webhook check failed: {exc}", type="negative", close_button=True)
+
+            ui.button("Check webhook registration", on_click=check_webhook_registration, icon="verified").classes("mt-3")
+            ui.label("The final signed-delivery check turns green automatically after Chatwoot sends a real signed webhook to this server. Refresh this page after the first reply/message event.").classes("text-xs text-slate-500 mt-2")
 
         with ui.card().classes("w-full p-6 border border-emerald-100"):
             with ui.row().classes("items-center gap-3 mb-2"):
-                ui.avatar("5", color="positive", text_color="white")
+                ui.avatar("6", color="positive", text_color="white")
                 ui.label("Run the live end-to-end check").classes("text-xl font-semibold")
-            ui.label("After the first Meta login, send one fresh customer message and confirm it appears once in Chatwoot. Reply from Chatwoot and confirm it arrives once in Meta.").classes("text-slate-600")
-            ui.label("CI cannot prove this step without your VPS, Meta account and Chatwoot instance.").classes("text-sm text-amber-700 mt-2")
+            ui.label("1. Log into Meta through mautrix-meta. 2. Send one fresh customer message from Messenger. 3. Confirm it appears once in Chatwoot. 4. Reply once from Chatwoot and confirm it arrives once in Meta.").classes("text-slate-600")
+            ui.label("Linked conversations should move above 0 after the first real bridged conversation. CI cannot prove the Meta login or real provider path for you.").classes("text-sm text-amber-700 mt-2")
+            ui.button("Refresh setup status", on_click=lambda: ui.navigate.to("/admin"), icon="refresh").props("outline").classes("mt-3")
 
 
 def run() -> None:
