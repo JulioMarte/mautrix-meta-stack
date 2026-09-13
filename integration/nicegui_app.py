@@ -44,12 +44,25 @@ def authenticated() -> bool:
     return bool(app.storage.user.get("authenticated", False))
 
 
+def migrate_proxy_env_once() -> None:
+    """Import an older Coolify proxy configuration once, then make the UI authoritative."""
+    if legacy.get_setting("proxy_ui_initialized") == "1":
+        return
+    env_proxy = (getattr(prod, "ENV_PROXY_URL", "") or "").strip()
+    if env_proxy:
+        prod.validate_proxy_url(env_proxy)
+        legacy.set_setting("proxy_url", env_proxy)
+        legacy.set_setting("proxy_enabled", "1" if getattr(prod, "ENV_PROXY_ENABLED", False) else "0")
+    legacy.set_setting("proxy_ui_initialized", "1")
+
+
 def effective_proxy():
-    return prod.effective_proxy()
+    """The admin database is authoritative; Meta proxy is optional and controlled visually."""
+    return False, legacy.get_setting("proxy_enabled") == "1", legacy.get_setting("proxy_url")
 
 
 def setup_state() -> dict:
-    managed, proxy_enabled, proxy_value = effective_proxy()
+    _, proxy_enabled, proxy_value = effective_proxy()
     base = legacy.get_setting("chatwoot_base_url")
     account = legacy.get_setting("chatwoot_account_id")
     inbox = legacy.get_setting("chatwoot_inbox_id")
@@ -64,7 +77,7 @@ def setup_state() -> dict:
         "inbox": inbox,
         "token_saved": token_saved,
         "chatwoot_ready": chatwoot_ready,
-        "managed_proxy": managed,
+        "managed_proxy": False,
         "proxy_enabled": proxy_enabled,
         "proxy_value": proxy_value,
         "proxy_ready": proxy_ready,
@@ -84,10 +97,9 @@ def save_configuration(base: str, account: str, inbox: str, token: str,
     if not token.strip() and not legacy.get_setting("chatwoot_api_token"):
         raise ValueError("Chatwoot API token is required the first time you configure the integration")
 
-    managed, _, _ = effective_proxy()
     existing_proxy = legacy.get_setting("proxy_url")
     requested_proxy = (proxy_url or "").strip()
-    if not managed and proxy_enabled:
+    if proxy_enabled:
         candidate_proxy = requested_proxy or existing_proxy
         if not candidate_proxy:
             raise ValueError("Proxy is enabled but no proxy URL is configured")
@@ -99,11 +111,10 @@ def save_configuration(base: str, account: str, inbox: str, token: str,
     if token and token.strip():
         legacy.set_setting("chatwoot_api_token", token.strip())
 
-    if not managed:
-        legacy.set_setting("proxy_enabled", "1" if proxy_enabled else "0")
-        if requested_proxy:
-            prod.validate_proxy_url(requested_proxy)
-            legacy.set_setting("proxy_url", requested_proxy)
+    legacy.set_setting("proxy_enabled", "1" if proxy_enabled else "0")
+    if requested_proxy:
+        prod.validate_proxy_url(requested_proxy)
+        legacy.set_setting("proxy_url", requested_proxy)
 
     runtime.ensure_activation_boundary()
 
@@ -292,16 +303,12 @@ def admin_page():
         ui.button("Logout", on_click=logout, icon="logout").props("flat")
 
     with ui.column().classes("w-full max-w-6xl mx-auto p-4 md:p-6 gap-5"):
-        completed = sum([
-            state["chatwoot_ready"],
-            state["proxy_ready"],
-            state["link_count"] > 0,
-        ])
+        completed = sum([state["chatwoot_ready"], state["proxy_ready"], state["link_count"] > 0])
         with ui.card().classes("w-full p-5 bg-blue-50 border border-blue-100"):
             with ui.row().classes("w-full items-center justify-between gap-3 flex-wrap"):
                 with ui.column().classes("gap-1"):
                     ui.label("Setup overview").classes("text-lg font-semibold")
-                    ui.label("Complete the steps below from top to bottom. Nothing sensitive is displayed back in clear text.").classes("text-slate-600")
+                    ui.label("Application settings are configured here. Coolify only needs infrastructure secrets and Matrix settings.").classes("text-slate-600")
                 ui.badge(f"{completed}/3 runtime checks ready", color="primary")
             ui.linear_progress(value=completed / 3, show_value=False).classes("mt-2")
 
@@ -313,15 +320,13 @@ def admin_page():
                 )
                 status_badge("API token stored", state["token_saved"])
             with ui.card().classes("p-5 grow min-w-64"):
-                ui.label("Meta proxy").classes("text-sm text-slate-500")
+                ui.label("Meta proxy · optional").classes("text-sm text-slate-500")
                 if state["proxy_enabled"]:
                     ui.label(legacy.redact_proxy(state["proxy_value"])).classes("text-base font-medium")
                     status_badge("Proxy configured", state["proxy_ready"])
-                    if state["managed_proxy"]:
-                        ui.badge("Managed by Coolify", color="primary").classes("mt-1")
                 else:
-                    ui.label("Direct connection").classes("text-base font-medium")
-                    ui.label("Enable a residential proxy before Meta login if required for this client.").classes("text-xs text-slate-500")
+                    ui.label("Disabled · direct connection").classes("text-base font-medium")
+                    ui.label("This is a valid configuration. Enable a proxy only when you actually need one.").classes("text-xs text-slate-500")
             with ui.card().classes("p-5 grow min-w-64"):
                 ui.label("Linked conversations").classes("text-sm text-slate-500")
                 ui.label(str(state["link_count"])).classes("text-2xl font-semibold")
@@ -331,10 +336,10 @@ def admin_page():
             with ui.row().classes("items-center gap-3 mb-3"):
                 ui.avatar("1", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Connect Chatwoot").classes("text-xl font-semibold")
-                    ui.label("Use an API token that can access the selected account and inbox.").classes("text-slate-500")
+                    ui.label("Chatwoot settings").classes("text-xl font-semibold")
+                    ui.label("Everything needed to connect this stack to Chatwoot is configured visually here.").classes("text-slate-500")
             with ui.row().classes("w-full gap-4 flex-wrap"):
-                base = ui.input("Chatwoot base URL", value=state["base"], placeholder="https://chatwoot.example.com").props("outlined").classes("grow min-w-72")
+                base = ui.input("Chatwoot URL", value=state["base"], placeholder="https://chatwoot.example.com").props("outlined").classes("grow min-w-72")
                 account = ui.input("Account ID", value=state["account"], placeholder="1").props("outlined").classes("grow min-w-48")
                 inbox = ui.input("Inbox ID", value=state["inbox"], placeholder="2").props("outlined").classes("grow min-w-48")
             token_placeholder = "Stored securely — leave blank to keep it" if state["token_saved"] else "Paste Chatwoot API token"
@@ -344,21 +349,14 @@ def admin_page():
             with ui.row().classes("items-center gap-3 mb-2"):
                 ui.avatar("2", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Configure Meta proxy").classes("text-xl font-semibold")
-                    ui.label("Only Meta traffic uses this proxy. Matrix and Chatwoot remain direct.").classes("text-slate-500")
+                    ui.label("Meta proxy · optional").classes("text-xl font-semibold")
+                    ui.label("Leave this disabled for a direct connection. If enabled, only Meta traffic uses the proxy.").classes("text-slate-500")
 
-            proxy_switch = None
-            proxy_input = None
-            if state["managed_proxy"]:
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("lock").classes("text-blue-600")
-                    ui.label("Managed by Coolify. Credentials are read-only here.").classes("text-slate-600")
-                ui.label("Change META_PROXY_ENABLED / META_PROXY_URL in Coolify, then redeploy and run the proxy test below.").classes("text-sm text-slate-500")
-            else:
-                proxy_switch = ui.switch("Use residential proxy", value=state["proxy_enabled"])
-                existing_proxy = bool(state["proxy_value"])
-                proxy_placeholder = "Stored securely — leave blank to keep it" if existing_proxy else "http://user:password@host:8888"
-                proxy_input = ui.input("Proxy URL", password=True, password_toggle_button=True, placeholder=proxy_placeholder).props("outlined autocomplete=off").classes("w-full")
+            proxy_switch = ui.switch("Use a proxy for Meta", value=state["proxy_enabled"])
+            existing_proxy = bool(state["proxy_value"])
+            proxy_placeholder = "Stored securely — leave blank to keep it" if existing_proxy else "http://user:password@host:8888"
+            proxy_input = ui.input("Proxy URL", password=True, password_toggle_button=True, placeholder=proxy_placeholder).props("outlined autocomplete=off").classes("w-full")
+            ui.label("Supported schemes: http, https, socks5 and socks5h. Credentials are never displayed back in clear text.").classes("text-xs text-slate-500")
 
             async def save():
                 try:
@@ -368,17 +366,16 @@ def admin_page():
                         account.value or "",
                         inbox.value or "",
                         token.value or "",
-                        bool(proxy_switch.value) if proxy_switch else state["proxy_enabled"],
-                        (proxy_input.value or "") if proxy_input else "",
+                        bool(proxy_switch.value),
+                        proxy_input.value or "",
                     )
                     token.value = ""
-                    if proxy_input:
-                        proxy_input.value = ""
+                    proxy_input.value = ""
                     ui.notify("Configuration saved. Run the connectivity tests next.", type="positive")
                 except Exception as exc:
                     ui.notify(str(exc), type="negative", close_button=True)
 
-            ui.button("Save configuration", on_click=save, icon="save").classes("mt-4")
+            ui.button("Save all settings", on_click=save, icon="save").classes("mt-4")
 
         with ui.card().classes("w-full p-6"):
             with ui.row().classes("items-center gap-3 mb-3"):
@@ -387,13 +384,12 @@ def admin_page():
                     ui.label("Validate connectivity").classes("text-xl font-semibold")
                     ui.label("Run these checks after every deployment or credential change.").classes("text-slate-500")
 
-            proxy_result = None
             direct_ip_label = None
             proxy_ip_label = None
             proxy_status = None
             checked_at_label = None
             if state["proxy_enabled"]:
-                with ui.card().classes("w-full p-4 mb-4 bg-slate-50 border border-slate-200") as proxy_result:
+                with ui.card().classes("w-full p-4 mb-4 bg-slate-50 border border-slate-200"):
                     with ui.row().classes("w-full gap-4 flex-wrap"):
                         with ui.column().classes("grow min-w-56 gap-1"):
                             ui.label("Direct VPS public IP").classes("text-xs uppercase tracking-wide text-slate-500")
@@ -419,11 +415,11 @@ def admin_page():
                         proxy_ip_label.text = result["proxy_ip"]
                         checked_at_label.text = f"Last checked: {result['checked_at']}"
                         if result["different"]:
-                            proxy_status.text = "Proxy is changing the public egress IP. This is the expected result for a residential proxy."
+                            proxy_status.text = "Proxy is changing the public egress IP. This is the expected result."
                             proxy_status.classes(replace="text-sm text-green-700 mt-2")
                             ui.notify(f"Proxy verified: {result['proxy_ip']}", type="positive", close_button=True)
                         else:
-                            proxy_status.text = "Warning: direct and proxy IP are identical. Do not assume the proxy is protecting Meta traffic until this is explained."
+                            proxy_status.text = "Warning: direct and proxy IP are identical. Do not assume Meta is protected by the proxy."
                             proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
                             ui.notify("Proxy test is suspicious: proxy IP matches the direct VPS IP", type="warning", close_button=True)
                     except Exception as exc:
@@ -435,8 +431,10 @@ def admin_page():
                 ui.button("Test Chatwoot", on_click=test_chatwoot, icon="dns")
                 if state["proxy_enabled"]:
                     ui.button("What's my IP through the proxy?", on_click=test_proxy, icon="public").props("outline")
-            if state["proxy_enabled"]:
-                ui.label("The proxy IP should normally differ from the direct Contabo/VPS IP. A different IP proves egress changed, but it does not by itself prove the exit is residential or that Meta accepts it.").classes("text-sm text-amber-700 mt-3")
+            if not state["proxy_enabled"]:
+                ui.label("Meta proxy is disabled, so there is no proxy test to run. Direct mode is intentional and supported.").classes("text-sm text-slate-500 mt-3")
+            else:
+                ui.label("The proxy IP should normally differ from the direct VPS IP. A different IP proves egress changed, not that the IP is residential or that Meta accepts it.").classes("text-sm text-amber-700 mt-3")
 
         with ui.card().classes("w-full p-6"):
             with ui.row().classes("items-center gap-3 mb-3"):
@@ -445,7 +443,7 @@ def admin_page():
                     ui.label("Configure Chatwoot webhook").classes("text-xl font-semibold")
                     ui.label("Create a message_created webhook in Chatwoot pointing to this integration domain.").classes("text-slate-500")
             ui.code("https://<integration-domain>/webhooks/chatwoot/<CHATWOOT_WEBHOOK_SECRET>").classes("w-full")
-            ui.label("The deployment secret is intentionally not displayed. Copy it from the Coolify secret when creating the webhook.").classes("text-sm text-slate-500")
+            ui.label("Only this security secret remains a deployment secret; application URLs and credentials are configured above in the UI.").classes("text-sm text-slate-500")
 
         with ui.card().classes("w-full p-6 border border-emerald-100"):
             with ui.row().classes("items-center gap-3 mb-2"):
@@ -457,6 +455,7 @@ def admin_page():
 
 def run() -> None:
     legacy.init_db()
+    migrate_proxy_env_once()
     ui.run(
         host="0.0.0.0",
         port=8080,

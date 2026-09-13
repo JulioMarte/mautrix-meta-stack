@@ -84,6 +84,14 @@ class NiceGUIAdminTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be numeric"):
             module.save_configuration("http://chatwoot.example.com", "1", "inbox", "token", False, "")
 
+    def test_proxy_is_optional_and_disabled_by_default(self):
+        self.save_minimal()
+        managed, enabled, proxy = module.effective_proxy()
+        self.assertFalse(managed)
+        self.assertFalse(enabled)
+        self.assertEqual(proxy, "")
+        self.assertTrue(module.setup_state()["proxy_ready"])
+
     def test_enabling_proxy_requires_url_on_first_save(self):
         with self.assertRaisesRegex(ValueError, "no proxy URL"):
             module.save_configuration("http://chatwoot.example.com", "1", "2", "token", True, "")
@@ -105,6 +113,30 @@ class NiceGUIAdminTests(unittest.TestCase):
         module.save_configuration("http://chatwoot.example.com", "1", "2", "", True, "")
         self.assertEqual(legacy.get_setting("proxy_enabled"), "1")
         self.assertIn("proxy-pass", legacy.get_setting("proxy_url"))
+
+    def test_proxy_can_be_disabled_visually_without_deleting_saved_url(self):
+        legacy.set_setting("proxy_url", "http://proxy-user:proxy-pass@proxy.example.com:8888")
+        legacy.set_setting("proxy_enabled", "1")
+        self.save_minimal()
+        module.save_configuration("http://chatwoot.example.com", "1", "2", "", False, "")
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "0")
+        self.assertIn("proxy-pass", legacy.get_setting("proxy_url"))
+        self.assertFalse(module.effective_proxy()[1])
+
+    def test_old_environment_proxy_is_imported_once_then_ui_is_authoritative(self):
+        with patch.object(module.prod, "ENV_PROXY_URL", "http://env-user:env-pass@proxy.example.com:8888"), \
+             patch.object(module.prod, "ENV_PROXY_ENABLED", True):
+            module.migrate_proxy_env_once()
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "1")
+        self.assertIn("env-pass", legacy.get_setting("proxy_url"))
+        self.assertEqual(legacy.get_setting("proxy_ui_initialized"), "1")
+
+        module.save_configuration("http://chatwoot.example.com", "1", "2", "token", False, "")
+        with patch.object(module.prod, "ENV_PROXY_URL", "http://changed:changed@other.example.com:8888"), \
+             patch.object(module.prod, "ENV_PROXY_ENABLED", True):
+            module.migrate_proxy_env_once()
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "0")
+        self.assertIn("env-pass", legacy.get_setting("proxy_url"))
 
     def test_setup_state_never_returns_chatwoot_token(self):
         self.save_minimal("super-secret-token")
