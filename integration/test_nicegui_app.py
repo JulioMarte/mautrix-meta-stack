@@ -3,7 +3,7 @@ import importlib
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class NiceGUIAdminTests(unittest.TestCase):
@@ -142,17 +142,48 @@ class NiceGUIAdminTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not configured"):
             module.verify_proxy()
 
-    def test_verify_proxy_returns_observed_exit_ip(self):
+    def _ip_session(self, ip):
+        response = Mock()
+        response.json.return_value = {"ip": ip}
+        response.raise_for_status.return_value = None
+        session = Mock()
+        session.trust_env = True
+        session.get.return_value = response
+        return session
+
+    def test_verify_proxy_compares_direct_and_proxy_public_ips(self):
         legacy.set_setting("proxy_enabled", "1")
         legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
-        response = unittest.mock.Mock()
-        response.json.return_value = {"ip": "203.0.113.10"}
-        response.raise_for_status.return_value = None
-        with patch.object(module.requests, "get", return_value=response) as get:
+        direct_session = self._ip_session("198.51.100.20")
+        proxy_session = self._ip_session("203.0.113.10")
+        with patch.object(module.requests, "Session", side_effect=[direct_session, proxy_session]):
             result = module.verify_proxy()
-        self.assertEqual(result, "Proxy egress verified: 203.0.113.10")
-        get.assert_called_once()
-        self.assertIn("proxy.example.com", get.call_args.kwargs["proxies"]["https"])
+        self.assertEqual(result["direct_ip"], "198.51.100.20")
+        self.assertEqual(result["proxy_ip"], "203.0.113.10")
+        self.assertTrue(result["different"])
+        self.assertIn("UTC", result["checked_at"])
+        self.assertFalse(direct_session.trust_env)
+        self.assertFalse(proxy_session.trust_env)
+        direct_session.get.assert_called_once_with(module.IP_CHECK_URL, proxies=None, timeout=20)
+        proxy_session.get.assert_called_once()
+        self.assertIn("proxy.example.com", proxy_session.get.call_args.kwargs["proxies"]["https"])
+
+    def test_verify_proxy_flags_identical_direct_and_proxy_ips(self):
+        legacy.set_setting("proxy_enabled", "1")
+        legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
+        direct_session = self._ip_session("198.51.100.20")
+        proxy_session = self._ip_session("198.51.100.20")
+        with patch.object(module.requests, "Session", side_effect=[direct_session, proxy_session]):
+            result = module.verify_proxy()
+        self.assertFalse(result["different"])
+
+    def test_verify_proxy_rejects_invalid_ip_check_response(self):
+        legacy.set_setting("proxy_enabled", "1")
+        legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
+        bad_session = self._ip_session("not-an-ip")
+        with patch.object(module.requests, "Session", return_value=bad_session):
+            with self.assertRaisesRegex(RuntimeError, "invalid public IP"):
+                module.verify_proxy()
 
     def test_internal_proxy_basic_auth_parser_contract(self):
         header = "Basic " + base64.b64encode(b"mautrix:resolver-secret-long-value").decode()
