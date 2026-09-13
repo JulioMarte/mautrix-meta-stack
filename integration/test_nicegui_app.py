@@ -214,26 +214,81 @@ class NiceGUIAdminTests(unittest.TestCase):
 
     def test_verify_chatwoot_requires_selected_inbox_to_exist(self):
         self.save_minimal()
-        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 99}] }):
+        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 99}]}):
             with self.assertRaisesRegex(RuntimeError, "Inbox Identifier token"):
                 module.verify_chatwoot()
 
     def test_verify_chatwoot_accepts_selected_inbox_and_records_visible_status(self):
         self.save_minimal()
-        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 2}] }):
+        with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 2}]}):
             result = module.verify_chatwoot()
         self.assertIn("PASS", result)
         self.assertIn("account 1", result)
         self.assertIn("inbox 2", result)
         self.assertIn("UTC", legacy.get_setting("chatwoot_verified_at"))
 
-    def test_webhook_registration_verification_checks_url_and_subscription(self):
+    def test_webhook_registration_verification_accepts_documented_top_level_list(self):
         self.save_minimal()
         data = [{"id": 9, "url": "https://bridge.example.com/webhooks/chatwoot", "subscriptions": ["message_created"]}]
         with patch.object(module.prod, "cw_get", return_value=data):
             result = module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
         self.assertIn("PASS", result)
         self.assertIn("UTC", legacy.get_setting("webhook_registration_verified_at"))
+
+    def test_webhook_registration_accepts_real_chatwoot_nested_shape_and_imports_secret(self):
+        self.save_minimal()
+        data = {
+            "payload": {
+                "webhooks": [
+                    {
+                        "id": 9,
+                        "url": "https://bridge.example.com/webhooks/chatwoot",
+                        "subscriptions": ["message_created"],
+                        "secret": "server-returned-signing-secret",
+                    }
+                ]
+            }
+        }
+        with patch.object(module.prod, "cw_get", return_value=data):
+            result = module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
+        self.assertIn("PASS", result)
+        self.assertIn("imported automatically", result)
+        self.assertEqual(legacy.get_setting("chatwoot_webhook_signing_secret"), "server-returned-signing-secret")
+        self.assertIn("UTC", legacy.get_setting("webhook_registration_verified_at"))
+
+    def test_webhook_registration_secret_rotation_invalidates_old_delivery_verification(self):
+        self.save_minimal()
+        legacy.set_setting("chatwoot_webhook_signing_secret", "old-secret")
+        legacy.set_setting("webhook_delivery_verified_at", "2026-09-13 12:00:00 UTC")
+        data = {
+            "payload": {
+                "webhooks": [
+                    {
+                        "url": "https://bridge.example.com/webhooks/chatwoot",
+                        "subscriptions": ["message_created"],
+                        "secret": "new-secret",
+                    }
+                ]
+            }
+        }
+        with patch.object(module.prod, "cw_get", return_value=data):
+            module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
+        self.assertEqual(legacy.get_setting("chatwoot_webhook_signing_secret"), "new-secret")
+        self.assertEqual(legacy.get_setting("webhook_delivery_verified_at"), "")
+
+    def test_webhook_registration_rejects_missing_message_created_cleanly(self):
+        self.save_minimal()
+        data = {"payload": {"webhooks": [{"url": "https://bridge.example.com/webhooks/chatwoot", "subscriptions": ["conversation_created"]}]}}
+        with patch.object(module.prod, "cw_get", return_value=data):
+            with self.assertRaisesRegex(RuntimeError, "message_created"):
+                module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
+
+    def test_webhook_registration_reports_unexpected_shape_without_python_attribute_error(self):
+        self.save_minimal()
+        with patch.object(module.prod, "cw_get", return_value={"payload": {"unexpected": "value"}}):
+            with self.assertRaisesRegex(RuntimeError, "unexpected format") as ctx:
+                module.verify_webhook_registration("https://bridge.example.com/webhooks/chatwoot")
+        self.assertNotIn("has no attribute", str(ctx.exception))
 
     def test_webhook_signature_accepts_chatwoot_hmac_and_rejects_bad_signature(self):
         secret = "chatwoot-generated-signing-secret"
