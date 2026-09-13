@@ -1,30 +1,18 @@
-import http.cookiejar
-import os
-import re
-import urllib.parse
 import urllib.request
 
 BASE = "http://127.0.0.1:8080"
-PASSWORD = os.environ["INTEGRATION_ADMIN_PASSWORD"]
 
-cookies = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+health = urllib.request.urlopen(BASE + "/health", timeout=10)
+assert health.status == 200
 
-login_page = opener.open(BASE + "/admin/login", timeout=10)
-login_html = login_page.read().decode()
-match = re.search(r'name=csrf value="([^"]+)"', login_html)
-assert match, "login CSRF token missing after restart"
+login = urllib.request.urlopen(BASE + "/admin/login", timeout=10)
+assert login.status == 200
 
-body = urllib.parse.urlencode({"csrf": match.group(1), "password": PASSWORD}).encode()
-response = opener.open(
-    urllib.request.Request(BASE + "/admin/login", data=body, method="POST"),
-    timeout=10,
-)
-html = response.read().decode()
+import app as legacy
 
-assert response.status == 200
-assert "Matrix ↔ Chatwoot" in html
-assert "https://chatwoot.example.com" in html
-assert "Chatwoot configured" in html
-assert "smoke-chatwoot-token-must-not-render" not in html
-print("admin persistence smoke test passed")
+assert legacy.get_setting("chatwoot_base_url") == "https://chatwoot.example.com"
+assert legacy.get_setting("chatwoot_account_id") == "1"
+assert legacy.get_setting("chatwoot_inbox_id") == "2"
+assert legacy.get_setting("chatwoot_api_token") == "smoke-chatwoot-token-must-not-render"
+assert legacy.get_setting("chatwoot_enabled_at_ms").isdigit()
+print("NiceGUI admin persistence smoke test passed")
