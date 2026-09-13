@@ -61,6 +61,22 @@ def guarded_matrix_event_to_chatwoot(room_id, event):
         event_ts = 0
     if cutoff and event_ts and event_ts < cutoff:
         return
+
+    # New Matrix rooms are allowed through: prod.ensure_room_link creates their
+    # Chatwoot conversation in the configured inbox. Existing links are rechecked
+    # on every message so moving a conversation to another inbox immediately
+    # stops Meta -> Chatwoot delivery as well as Chatwoot -> Meta replies.
+    if event.get("type") == "m.room.message" and _linked_conversation_id(room_id) is not None:
+        matches, conversation_id, actual_inbox_id = room_matches_configured_chatwoot_inbox(room_id)
+        if not matches:
+            configured_inbox_id = int(legacy.get_setting("chatwoot_inbox_id"))
+            print(
+                "matrix delivery ignored "
+                f"conversation={conversation_id} actual_inbox={actual_inbox_id} "
+                f"configured_inbox={configured_inbox_id}",
+                flush=True,
+            )
+            return
     return base_matrix_event_to_chatwoot(room_id, event)
 
 
