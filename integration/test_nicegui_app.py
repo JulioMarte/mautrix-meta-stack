@@ -65,6 +65,14 @@ class NiceGUIAdminTests(unittest.TestCase):
         module.save_configuration("http://chatwoot.example.com", "1", "2", "", False, "")
         self.assertEqual(legacy.get_setting("chatwoot_api_token"), "original-secret")
 
+    def test_saved_secrets_can_be_loaded_explicitly_by_admin_ui(self):
+        self.save_minimal("original-secret")
+        legacy.set_setting("proxy_url", "http://user:pass@proxy.example.com:8888")
+        self.assertEqual(module.get_saved_secret("chatwoot_api_token"), "original-secret")
+        self.assertIn("user:pass", module.get_saved_secret("proxy_url"))
+        with self.assertRaises(ValueError):
+            module.get_saved_secret("unknown")
+
     def test_bad_chatwoot_url_is_rejected_without_partial_write(self):
         with self.assertRaises(ValueError):
             module.save_configuration("https://user:pass@chatwoot.example.com", "1", "2", "token", False, "")
@@ -83,6 +91,41 @@ class NiceGUIAdminTests(unittest.TestCase):
             module.save_configuration("http://chatwoot.example.com", "account", "2", "token", False, "")
         with self.assertRaisesRegex(ValueError, "must be numeric"):
             module.save_configuration("http://chatwoot.example.com", "1", "inbox", "token", False, "")
+
+    def test_discover_chatwoot_finds_numeric_account_and_inboxes(self):
+        profile = Mock()
+        profile.raise_for_status.return_value = None
+        profile.json.return_value = {"account_id": 7}
+        inboxes = Mock()
+        inboxes.raise_for_status.return_value = None
+        inboxes.json.return_value = {"payload": [{"id": 11, "name": "Facebook Marketplace"}]}
+        session = Mock()
+        session.trust_env = True
+        session.get.side_effect = [profile, inboxes]
+        with patch.object(module.requests, "Session", return_value=session):
+            result = module.discover_chatwoot("http://chatwoot.example.com", "personal-token")
+        self.assertEqual(result["account_id"], 7)
+        self.assertEqual(result["inboxes"], [{"id": 11, "name": "Facebook Marketplace"}])
+        self.assertFalse(session.trust_env)
+        first_call = session.get.call_args_list[0]
+        self.assertTrue(first_call.args[0].endswith("/api/v1/profile"))
+        self.assertEqual(first_call.kwargs["headers"]["api_access_token"], "personal-token")
+        self.assertTrue(session.get.call_args_list[1].args[0].endswith("/api/v1/accounts/7/inboxes"))
+
+    def test_discover_chatwoot_can_reuse_saved_token(self):
+        self.save_minimal("saved-token")
+        profile = Mock()
+        profile.raise_for_status.return_value = None
+        profile.json.return_value = {"accounts": [{"id": 3}]}
+        inboxes = Mock()
+        inboxes.raise_for_status.return_value = None
+        inboxes.json.return_value = {"payload": []}
+        session = Mock()
+        session.get.side_effect = [profile, inboxes]
+        with patch.object(module.requests, "Session", return_value=session):
+            result = module.discover_chatwoot("http://chatwoot.example.com", "")
+        self.assertEqual(result["account_id"], 3)
+        self.assertEqual(session.get.call_args_list[0].kwargs["headers"]["api_access_token"], "saved-token")
 
     def test_proxy_is_optional_and_disabled_by_default(self):
         self.save_minimal()
@@ -162,7 +205,7 @@ class NiceGUIAdminTests(unittest.TestCase):
     def test_verify_chatwoot_requires_selected_inbox_to_exist(self):
         self.save_minimal()
         with patch.object(module.prod, "cw_get", return_value={"payload": [{"id": 99}] }):
-            with self.assertRaisesRegex(RuntimeError, "inbox was not found"):
+            with self.assertRaisesRegex(RuntimeError, "Inbox Identifier token"):
                 module.verify_chatwoot()
 
     def test_verify_chatwoot_accepts_selected_inbox(self):
@@ -182,6 +225,15 @@ class NiceGUIAdminTests(unittest.TestCase):
         session.trust_env = True
         session.get.return_value = response
         return session
+
+    def test_proxy_url_can_be_tested_without_saving_or_enabling(self):
+        direct_session = self._ip_session("198.51.100.20")
+        proxy_session = self._ip_session("203.0.113.10")
+        with patch.object(module.requests, "Session", side_effect=[direct_session, proxy_session]):
+            result = module.test_proxy_url("http://user:pass@proxy.example.com:8888")
+        self.assertTrue(result["different"])
+        self.assertEqual(legacy.get_setting("proxy_enabled"), "")
+        self.assertEqual(legacy.get_setting("proxy_url"), "")
 
     def test_verify_proxy_compares_direct_and_proxy_public_ips(self):
         legacy.set_setting("proxy_enabled", "1")
