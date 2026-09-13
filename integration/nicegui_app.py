@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import ipaddress
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import requests
@@ -19,6 +21,7 @@ prod = runtime.prod
 
 COOKIE_SECURE = os.getenv("INTEGRATION_COOKIE_SECURE", "true").lower() == "true"
 ALLOW_INSECURE_CHATWOOT = os.getenv("ALLOW_INSECURE_CHATWOOT", "false").lower() == "true"
+IP_CHECK_URL = "https://api.ipify.org?format=json"
 
 
 async def _security_headers(request: Request, call_next):
@@ -117,20 +120,35 @@ def verify_chatwoot() -> str:
     return "Chatwoot connection verified"
 
 
-def verify_proxy() -> str:
+def _public_ip(session: requests.Session, proxies=None) -> str:
+    response = session.get(IP_CHECK_URL, proxies=proxies, timeout=20)
+    response.raise_for_status()
+    observed = str(response.json().get("ip", "")).strip()
+    try:
+        return str(ipaddress.ip_address(observed))
+    except ValueError as exc:
+        raise RuntimeError("IP check service returned an invalid public IP") from exc
+
+
+def verify_proxy() -> dict:
     _, enabled, proxy = effective_proxy()
     if not enabled or not proxy:
         raise RuntimeError("Proxy is not configured")
-    response = requests.get(
-        "https://api.ipify.org?format=json",
-        proxies={"http": proxy, "https": proxy},
-        timeout=20,
-    )
-    response.raise_for_status()
-    observed = response.json().get("ip", "unknown")
-    if not observed or observed == "unknown":
-        raise RuntimeError("Proxy responded but no public exit IP was returned")
-    return f"Proxy egress verified: {observed}"
+
+    direct_session = requests.Session()
+    direct_session.trust_env = False
+    direct_ip = _public_ip(direct_session)
+
+    proxy_session = requests.Session()
+    proxy_session.trust_env = False
+    proxy_ip = _public_ip(proxy_session, proxies={"http": proxy, "https": proxy})
+
+    return {
+        "direct_ip": direct_ip,
+        "proxy_ip": proxy_ip,
+        "different": direct_ip != proxy_ip,
+        "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
 
 
 @app.get("/")
@@ -368,6 +386,24 @@ def admin_page():
                 with ui.column().classes("gap-0"):
                     ui.label("Validate connectivity").classes("text-xl font-semibold")
                     ui.label("Run these checks after every deployment or credential change.").classes("text-slate-500")
+
+            proxy_result = None
+            direct_ip_label = None
+            proxy_ip_label = None
+            proxy_status = None
+            checked_at_label = None
+            if state["proxy_enabled"]:
+                with ui.card().classes("w-full p-4 mb-4 bg-slate-50 border border-slate-200") as proxy_result:
+                    with ui.row().classes("w-full gap-4 flex-wrap"):
+                        with ui.column().classes("grow min-w-56 gap-1"):
+                            ui.label("Direct VPS public IP").classes("text-xs uppercase tracking-wide text-slate-500")
+                            direct_ip_label = ui.label("Not tested yet").classes("text-lg font-mono font-semibold")
+                        with ui.column().classes("grow min-w-56 gap-1"):
+                            ui.label("Proxy public IP").classes("text-xs uppercase tracking-wide text-slate-500")
+                            proxy_ip_label = ui.label("Not tested yet").classes("text-lg font-mono font-semibold")
+                    proxy_status = ui.label("Run the test to compare direct egress with proxy egress.").classes("text-sm text-slate-600 mt-2")
+                    checked_at_label = ui.label("").classes("text-xs text-slate-400")
+
             with ui.row().classes("gap-3 flex-wrap"):
                 async def test_chatwoot():
                     try:
@@ -378,16 +414,29 @@ def admin_page():
 
                 async def test_proxy():
                     try:
-                        message = await asyncio.to_thread(verify_proxy)
-                        ui.notify(message, type="positive", close_button=True)
+                        result = await asyncio.to_thread(verify_proxy)
+                        direct_ip_label.text = result["direct_ip"]
+                        proxy_ip_label.text = result["proxy_ip"]
+                        checked_at_label.text = f"Last checked: {result['checked_at']}"
+                        if result["different"]:
+                            proxy_status.text = "Proxy is changing the public egress IP. This is the expected result for a residential proxy."
+                            proxy_status.classes(replace="text-sm text-green-700 mt-2")
+                            ui.notify(f"Proxy verified: {result['proxy_ip']}", type="positive", close_button=True)
+                        else:
+                            proxy_status.text = "Warning: direct and proxy IP are identical. Do not assume the proxy is protecting Meta traffic until this is explained."
+                            proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
+                            ui.notify("Proxy test is suspicious: proxy IP matches the direct VPS IP", type="warning", close_button=True)
                     except Exception as exc:
+                        if proxy_status:
+                            proxy_status.text = f"Proxy test failed: {exc}"
+                            proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
                         ui.notify(f"Proxy test failed: {exc}", type="negative", close_button=True)
 
                 ui.button("Test Chatwoot", on_click=test_chatwoot, icon="dns")
                 if state["proxy_enabled"]:
-                    ui.button("Test proxy egress", on_click=test_proxy, icon="public").props("outline")
+                    ui.button("What's my IP through the proxy?", on_click=test_proxy, icon="public").props("outline")
             if state["proxy_enabled"]:
-                ui.label("The proxy test must report a residential/provider exit IP — never the Contabo VPS public IP.").classes("text-sm text-amber-700 mt-3")
+                ui.label("The proxy IP should normally differ from the direct Contabo/VPS IP. A different IP proves egress changed, but it does not by itself prove the exit is residential or that Meta accepts it.").classes("text-sm text-amber-700 mt-3")
 
         with ui.card().classes("w-full p-6"):
             with ui.row().classes("items-center gap-3 mb-3"):
