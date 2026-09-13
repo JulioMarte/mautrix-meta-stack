@@ -209,7 +209,7 @@ def discover_chatwoot(base: str, token: str = "") -> dict:
         "account_id": int(account_id),
         "inboxes": [
             {"id": int(item["id"]), "name": str(item.get("name") or f"Inbox {item['id']}")}
-            for item in inboxes if item.get("id") is not None
+            for item in inboxes if isinstance(item, dict) and item.get("id") is not None
         ],
     }
 
@@ -221,7 +221,9 @@ def verify_chatwoot() -> str:
     inbox_id = str(legacy.get_setting("chatwoot_inbox_id"))
     data = prod.cw_get(f"/api/v1/accounts/{account_id}/inboxes")
     inboxes = data.get("payload") if isinstance(data, dict) else data
-    if not isinstance(inboxes, list) or not any(str(item.get("id")) == inbox_id for item in inboxes):
+    if not isinstance(inboxes, list) or not any(
+        isinstance(item, dict) and str(item.get("id")) == inbox_id for item in inboxes
+    ):
         raise RuntimeError(
             "Configured Chatwoot inbox was not found. Use the numeric Inbox ID returned by Chatwoot, "
             "not the Inbox Identifier token shown in the inbox Configuration tab."
@@ -231,27 +233,89 @@ def verify_chatwoot() -> str:
     return f"PASS — authenticated to Chatwoot; account {account_id}; inbox {inbox_id}; {checked_at}"
 
 
+def _extract_webhook_records(data) -> list[dict]:
+    """Normalize webhook-list responses across Chatwoot API response shapes."""
+    if isinstance(data, list):
+        records = [item for item in data if isinstance(item, dict)]
+        if data and not records:
+            raise RuntimeError("Chatwoot returned a webhook list without webhook objects")
+        return records
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Chatwoot returned an unsupported webhook response ({type(data).__name__})")
+
+    if "url" in data or "subscriptions" in data:
+        return [data]
+
+    # Current self-hosted Chatwoot renders {"payload": {"webhooks": [...]}}.
+    # Older/documented variants may return a top-level list, payload list, or
+    # top-level webhooks list, so keep the parser deliberately tolerant.
+    for key in ("payload", "webhooks", "data"):
+        if key in data and data[key] is not None:
+            try:
+                return _extract_webhook_records(data[key])
+            except RuntimeError:
+                continue
+
+    values = [value for value in data.values() if isinstance(value, dict)]
+    if values and len(values) == len(data):
+        return values
+
+    raise RuntimeError(
+        "Chatwoot returned webhook data in an unexpected format. "
+        "The integration did not change any settings; update Chatwoot or retry after updating this integration."
+    )
+
+
+def _webhook_subscriptions(value) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple, set)):
+        result = set()
+        for item in value:
+            if isinstance(item, str):
+                result.add(item)
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("event") or item.get("id")
+                if name:
+                    result.add(str(name))
+        return result
+    if isinstance(value, dict):
+        return {str(key) for key, enabled in value.items() if enabled}
+    return set()
+
+
 def verify_webhook_registration(expected_url: str) -> str:
     if not legacy.configured():
         raise RuntimeError("Save and test Chatwoot first")
     account_id = int(legacy.get_setting("chatwoot_account_id"))
     data = prod.cw_get(f"/api/v1/accounts/{account_id}/webhooks")
-    if isinstance(data, list):
-        hooks = data
-    elif isinstance(data, dict):
-        hooks = data.get("payload") or data.get("webhooks") or []
-    else:
-        hooks = []
+    hooks = _extract_webhook_records(data)
     expected = expected_url.rstrip("/")
     for hook in hooks:
         if str(hook.get("url") or "").rstrip("/") != expected:
             continue
-        subscriptions = hook.get("subscriptions") or []
+        subscriptions = _webhook_subscriptions(hook.get("subscriptions"))
         if "message_created" not in subscriptions:
             raise RuntimeError("Webhook URL exists in Chatwoot but message_created is not selected")
+
+        remote_secret = str(hook.get("secret") or "").strip()
+        stored_secret = legacy.get_setting("chatwoot_webhook_signing_secret")
+        secret_imported = False
+        if remote_secret and remote_secret != stored_secret:
+            legacy.set_setting("chatwoot_webhook_signing_secret", remote_secret)
+            legacy.set_setting("webhook_delivery_verified_at", "")
+            secret_imported = True
+
         checked_at = _now_utc()
         legacy.set_setting("webhook_registration_verified_at", checked_at)
-        return f"PASS — Chatwoot has this webhook URL with message_created enabled; {checked_at}"
+        if remote_secret:
+            secret_note = "signing secret imported automatically" if secret_imported else "signing secret confirmed"
+        elif stored_secret:
+            secret_note = "saved signing secret retained"
+        else:
+            secret_note = "registration verified, but this Chatwoot response did not expose the signing secret"
+        return f"PASS — webhook URL + message_created verified; {secret_note}; {checked_at}"
     raise RuntimeError("Webhook URL was not found in Chatwoot. Add the exact URL shown below, then retry")
 
 
@@ -509,10 +573,10 @@ def admin_page(request: Request):
                 next_action = "Next: run Test Chatwoot below."
             elif state["proxy_enabled"] and not state["proxy_verified_at"]:
                 next_action = "Next: run the proxy test and confirm the proxy IP is different from the VPS IP."
-            elif not state["webhook_secret_saved"]:
-                next_action = "Next: create the webhook in Chatwoot, paste the signing secret it gives you, then Save."
             elif not state["webhook_registration_verified_at"]:
-                next_action = "Next: run Check webhook registration below."
+                next_action = "Next: create the webhook in Chatwoot, then run Verify webhook & import secret below."
+            elif not state["webhook_secret_saved"]:
+                next_action = "Next: this Chatwoot version did not expose the signing secret through the API; paste it in Step 3 and Save."
             elif not state["webhook_delivery_verified_at"]:
                 next_action = "Next: send a real message/reply so Chatwoot delivers one signed webhook."
             else:
@@ -522,7 +586,8 @@ def admin_page(request: Request):
                 _check_row("Chatwoot saved", state["chatwoot_ready"], "URL, token, account and inbox are stored in the private integration volume.")
                 _check_row("Chatwoot API tested", bool(state["chatwoot_verified_at"]), state["chatwoot_verified_at"] or "Not tested yet")
                 _check_row("Meta proxy", (not state["proxy_enabled"]) or bool(state["proxy_verified_at"]), "Not required (disabled)" if not state["proxy_enabled"] else (state["proxy_verified_at"] or "Enabled but not tested yet"))
-                _check_row("Webhook configured", bool(state["webhook_secret_saved"] and state["webhook_registration_verified_at"]), state["webhook_registration_verified_at"] or "Signing secret and registration still need verification")
+                _check_row("Webhook registered", bool(state["webhook_registration_verified_at"]), state["webhook_registration_verified_at"] or "Registration still needs verification")
+                _check_row("Webhook signing secret", state["webhook_secret_saved"], "Stored in the integration volume" if state["webhook_secret_saved"] else "Not stored yet")
                 _check_row("Signed webhook received", bool(state["webhook_delivery_verified_at"]), state["webhook_delivery_verified_at"] or "No verified Chatwoot delivery yet")
 
         with ui.row().classes("w-full gap-4 flex-wrap"):
@@ -651,14 +716,14 @@ def admin_page(request: Request):
             with ui.row().classes("items-center gap-3 mb-2"):
                 ui.avatar("3", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Chatwoot webhook signing secret").classes("text-xl font-semibold")
-                    ui.label("This is the secret Chatwoot gives you for webhook signature verification. It belongs here, not in Coolify.").classes("text-slate-500")
+                    ui.label("Webhook signing secret · normally automatic").classes("text-xl font-semibold")
+                    ui.label("The webhook verification step below imports this secret automatically when your Chatwoot version exposes it through the API.").classes("text-slate-500")
             webhook_secret_input = ui.input(
                 "Webhook signing secret",
                 value=get_saved_secret("chatwoot_webhook_signing_secret"),
                 password=True,
                 password_toggle_button=True,
-                placeholder="Paste the secret shown by Chatwoot after creating the webhook",
+                placeholder="Usually detected automatically; paste only if your Chatwoot does not expose it",
             ).props("outlined autocomplete=off").classes("w-full")
 
             async def save():
@@ -702,7 +767,7 @@ def admin_page(request: Request):
                 ui.avatar("5", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
                     ui.label("Configure and verify the Chatwoot webhook").classes("text-xl font-semibold")
-                    ui.label("No URL secret is required. Chatwoot signs each delivery with the signing secret you saved above.").classes("text-slate-500")
+                    ui.label("No secret belongs in the URL. This panel verifies the registration and imports the signing secret when Chatwoot exposes it.").classes("text-slate-500")
 
             ui.label("In Chatwoot: Settings → Integrations → Webhooks → Add new webhook. Paste this exact URL and select only message_created.").classes("text-slate-700")
             with ui.row().classes("w-full items-center gap-2"):
@@ -711,7 +776,7 @@ def admin_page(request: Request):
                     await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(webhook_url)})")
                     ui.notify("Webhook URL copied", type="positive")
                 ui.button(icon="content_copy", on_click=copy_webhook_url).props("flat round")
-            ui.label("After Chatwoot creates the webhook, copy the webhook signing secret it shows you, paste it into Step 3 above, and Save.").classes("text-sm text-slate-600")
+            ui.label("After creating the webhook in Chatwoot, click the button below. The panel checks the exact URL and message_created subscription and stores the webhook signing secret automatically when available.").classes("text-sm text-slate-600")
 
             registration_status = ui.label(
                 f"PASS — registration verified {state['webhook_registration_verified_at']}" if state["webhook_registration_verified_at"] else "Registration has not been verified yet."
@@ -725,13 +790,13 @@ def admin_page(request: Request):
                     message = await asyncio.to_thread(verify_webhook_registration, webhook_url)
                     registration_status.text = message
                     registration_status.classes(replace="text-sm text-green-700 font-medium mt-3")
-                    ui.notify("Webhook registration verified in Chatwoot", type="positive")
+                    ui.notify("Webhook registration verified", type="positive")
                 except Exception as exc:
                     registration_status.text = f"FAIL — {exc}"
                     registration_status.classes(replace="text-sm text-red-700 font-medium mt-3")
                     ui.notify(f"Webhook check failed: {exc}", type="negative", close_button=True)
 
-            ui.button("Check webhook registration", on_click=check_webhook_registration, icon="verified").classes("mt-3")
+            ui.button("Verify webhook & import secret", on_click=check_webhook_registration, icon="verified").classes("mt-3")
             ui.label("The final signed-delivery check turns green automatically after Chatwoot sends a real signed webhook to this server. Refresh this page after the first reply/message event.").classes("text-xs text-slate-500 mt-2")
 
         with ui.card().classes("w-full p-6 border border-emerald-100"):
