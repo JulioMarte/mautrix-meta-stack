@@ -12,17 +12,17 @@ The preserved multi-tenant work remains available on `archive/multi-tenant-contr
 
 - Synapse: local Matrix homeserver.
 - mautrix-meta: upstream v26.07 Facebook/Messenger bridge.
-- integration: small sidecar owned by this repository.
+- integration: small Python sidecar owned by this repository.
 
-The integration sidecar has two responsibilities only: Matrix <-> Chatwoot message transport and a visual admin for Chatwoot plus optional Meta proxy configuration. The HTTP service runs under Gunicorn with one worker and multiple threads. One worker is intentional because the process owns exactly one Matrix `/sync` loop for this single-client deployment.
+The integration sidecar has two responsibilities only: Matrix <-> Chatwoot message transport and the visual operator surface. The operator surface is implemented with NiceGUI 3.16.0 on top of its FastAPI/Uvicorn runtime. The service intentionally runs as one process because this single-client deployment owns exactly one Matrix `/sync` loop.
 
 ## Admin
 
-The admin is exposed by the `integration` service at `/admin` and uses the deployment-level `INTEGRATION_ADMIN_PASSWORD`. The browser session is signed, HttpOnly, SameSite=Strict and Secure by default. Login and all state-changing forms are CSRF-protected.
+The admin is exposed by the `integration` service at `/admin`. The UI is built with NiceGUI rather than hand-written server-rendered HTML. NiceGUI's per-user storage is signed with `INTEGRATION_SESSION_SECRET`; the session cookie is configured `SameSite=Strict`, Secure in production and limited to eight hours.
 
 The admin configures the Chatwoot base URL, account ID, inbox ID and API token. It can also configure a per-instance Meta proxy when the proxy is not managed by Coolify. The Chatwoot API token is persisted in the private `integration-data-v1` volume and is never rendered back. If `META_PROXY_URL` is defined in Coolify, the proxy becomes deployment-managed: the admin shows a redacted status and cannot replace the secret value.
 
-The panel provides connectivity tests for the configured Chatwoot inbox and active proxy egress.
+The panel provides explicit actions for saving configuration, testing the configured Chatwoot inbox, testing the active proxy egress and logging out. NiceGUI event callbacks replace traditional state-changing HTML form posts; API endpoints remain separately authenticated.
 
 ## Matrix -> Chatwoot
 
@@ -44,7 +44,7 @@ This is separate from Meta's own Messenger E2EE transport. mautrix-meta may stil
 
 Chatwoot posts `message_created` webhooks to `/webhooks/chatwoot/<secret>`. Outgoing non-private agent messages are routed to the Matrix room mapped to that Chatwoot conversation. mautrix-meta then delivers the Matrix message to Meta.
 
-The webhook secret comes from `CHATWOOT_WEBHOOK_SECRET`. Message IDs are persisted for duplicate suppression. An event is marked processed only after downstream Matrix delivery succeeds. Gunicorn access logs are disabled so secret-bearing webhook paths are not written to normal Coolify application logs.
+The webhook secret comes from `CHATWOOT_WEBHOOK_SECRET`. Message IDs are persisted for duplicate suppression. An event is marked processed only after downstream Matrix delivery succeeds. Uvicorn access logging is disabled so secret-bearing webhook paths are not written to normal application access logs.
 
 ## Proxy
 
@@ -63,7 +63,7 @@ When proxying is disabled, the authenticated resolver returns an empty proxy URL
 
 ## Container hardening
 
-The integration container runs with a read-only root filesystem, `no-new-privileges`, all Linux capabilities dropped and a writable private `/data` volume. A tmpfs is mounted at `/tmp` for temporary files.
+The integration container runs with a read-only root filesystem, `no-new-privileges`, all Linux capabilities dropped and a writable private `/data` volume. A tmpfs is mounted at `/tmp` for temporary files. NiceGUI/Uvicorn runs a single process and the service is expected to remain behind Coolify/Traefik HTTPS.
 
 ## Deliberate limitations
 
