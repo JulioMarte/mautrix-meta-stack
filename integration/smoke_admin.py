@@ -1,3 +1,4 @@
+import base64
 import http.cookiejar
 import os
 import re
@@ -13,8 +14,9 @@ cookies = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
 
 
-def get(path):
-    return opener.open(BASE + path, timeout=10)
+def get(path, headers=None):
+    req = urllib.request.Request(BASE + path, headers=headers or {})
+    return opener.open(req, timeout=10)
 
 
 def post(path, data):
@@ -57,13 +59,22 @@ assert save_response.status == 200
 assert "https://chatwoot.example.com" in saved_html
 assert "smoke-chatwoot-token-must-not-render" not in saved_html
 
+# Resolver is not available without internal Basic Auth.
 try:
     get("/internal/proxy")
-    raise AssertionError("legacy proxy endpoint must not be public")
+    raise AssertionError("proxy resolver must reject unauthenticated access")
 except urllib.error.HTTPError as exc:
     assert exc.code == 404
 
-resolver = get("/internal/proxy/" + urllib.parse.quote(PROXY_SECRET, safe=""))
+# Transitional secret-in-path endpoint is disabled in the final runtime.
+try:
+    get("/internal/proxy/" + urllib.parse.quote(PROXY_SECRET, safe=""))
+    raise AssertionError("secret-in-path proxy resolver must be disabled")
+except urllib.error.HTTPError as exc:
+    assert exc.code == 404
+
+basic = base64.b64encode(("mautrix:" + PROXY_SECRET).encode()).decode()
+resolver = get("/internal/proxy", {"Authorization": "Basic " + basic})
 resolver_body = resolver.read().decode()
 assert resolver.status == 200
 assert '"proxy_url":""' in resolver_body.replace(" ", "")
