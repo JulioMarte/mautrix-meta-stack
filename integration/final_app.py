@@ -1,8 +1,10 @@
 """Final production entrypoint: applies deployment-only guards before Matrix sync starts."""
+import hmac
 import os
 import threading
 import time
 
+from flask import abort, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # prod_app starts Matrix sync at import time. Suppress it until all final guards are installed.
@@ -14,6 +16,25 @@ import prod_app as prod  # noqa: E402
 legacy = prod.legacy
 application = prod.application
 application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
+def internal_proxy_resolver():
+    auth = request.authorization
+    if not auth or auth.username != "mautrix" or not hmac.compare_digest(auth.password or "", prod.PROXY_RESOLVER_SECRET):
+        abort(404)
+    _, enabled, proxy = prod.effective_proxy()
+    if not enabled:
+        return {"proxy_url": ""}
+    if not proxy:
+        return {"error": "proxy enabled but not configured"}, 503
+    return {"proxy_url": proxy}
+
+
+# Reuse the original /internal/proxy route, but replace its unauthenticated implementation.
+application.view_functions["proxy_resolver"] = internal_proxy_resolver
+# Disable the transitional secret-in-path route so secrets never need to appear in URLs.
+if "protected_proxy_resolver" in application.view_functions:
+    application.view_functions["protected_proxy_resolver"] = lambda secret: abort(404)
 
 
 def ensure_activation_boundary():
