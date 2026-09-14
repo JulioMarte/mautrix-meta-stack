@@ -95,7 +95,7 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest test_nicegui_app.py
+            meta-chatwoot-integration python -m unittest test_nicegui_app.py test_meta_route_runtime.py
 
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
@@ -137,7 +137,7 @@ jobs:
         run: |
           docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
           docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
-          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True and d['admin_ui'] == 'nicegui'"
+          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True and d['admin_ui'] == 'nicegui' and d['proxy_mode'] in ('DIRECT','PROXY')"
           docker compose -f compose.yaml exec -T integration python /app/smoke_admin.py
 
       - name: Seed persisted admin configuration
