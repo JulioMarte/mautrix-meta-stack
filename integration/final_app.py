@@ -203,6 +203,17 @@ import runtime_enhancements as enhancements  # noqa: E402
 
 enhancements.install_runtime_enhancements()
 
+# Admin v2 fixes the first-sync invite checkpoint and provides the multi-page UI.
+import admin_v2  # noqa: E402
+
+admin_v2.install()
+
+# A 200 response from Matrix /join is not considered sufficient: confirm the
+# membership state really became join and retry a small bounded number of times.
+import autojoin_verify  # noqa: E402
+
+autojoin_verify.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
