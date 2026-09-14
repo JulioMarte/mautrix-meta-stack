@@ -196,6 +196,13 @@ def save_settings_with_activation_boundary():
 
 application.view_functions["save_settings"] = save_settings_with_activation_boundary
 
+# Install operational improvements before the single Matrix /sync owner starts.
+# Importing here is intentional: runtime_enhancements imports this module to reuse
+# the final inbox guards, so all guards above must already exist first.
+import runtime_enhancements as enhancements  # noqa: E402
+
+enhancements.install_runtime_enhancements()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
