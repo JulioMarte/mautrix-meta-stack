@@ -92,6 +92,7 @@ services:
           .backfill.enabled = true |
           .backfill.max_initial_messages = 100 |
           .backfill.max_catchup_messages = 500 |
+          .bridge.resend_bridge_info = true |
           .bridge.permissions = {} |
           .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
           .bridge.permissions[strenv(EFFECTIVE_MATRIX_ADMIN_MXID)] = "admin" |
