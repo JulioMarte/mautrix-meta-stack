@@ -15,6 +15,12 @@ import media_context_v3 as media
 
 legacy = media.legacy
 
+# Capture PR #44's verified text-only path before media_context_v3.install replaces
+# the public callback hook. Existing text semantics and tests stay unchanged; only
+# messages that actually contain attachments take the media-aware path.
+_text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
+_original_media_outgoing = media.handle_chatwoot_outgoing
+
 
 def _truthy_marker(value) -> bool:
     return value is True or value == 1 or str(value).strip().lower() in {"true", "1", "yes"}
@@ -89,17 +95,18 @@ def post_chatwoot_media(conversation_id: int, *, data: bytes, filename: str, mim
     return response.json() if response.content else {}
 
 
-_original_outgoing = media.handle_chatwoot_outgoing
-
-
 def handle_chatwoot_outgoing(payload: dict, *, signature_verified: bool) -> dict:
     attributes = payload.get("content_attributes") or {}
-    if isinstance(attributes, dict) and (
-        _truthy_marker(attributes.get(delivery.HISTORY_MARKER))
-        or _truthy_marker(attributes.get(media.MIRROR_MARKER))
-    ):
-        return {"ok": True, "ignored": True, "reason": "matrix_mirror"}
-    return _original_outgoing(payload, signature_verified=signature_verified)
+    if isinstance(attributes, dict):
+        if _truthy_marker(attributes.get(delivery.HISTORY_MARKER)):
+            return {"ok": True, "ignored": True, "reason": "history_import"}
+        if _truthy_marker(attributes.get(media.MIRROR_MARKER)):
+            return {"ok": True, "ignored": True, "reason": "matrix_mirror"}
+
+    attachments = [item for item in (payload.get("attachments") or []) if isinstance(item, dict)]
+    if not attachments:
+        return _text_only_outgoing(payload, signature_verified=signature_verified)
+    return _original_media_outgoing(payload, signature_verified=signature_verified)
 
 
 def install() -> None:
