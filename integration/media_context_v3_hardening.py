@@ -7,7 +7,7 @@ object-store URL contained in an attachment callback.
 from __future__ import annotations
 
 import os
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -22,6 +22,9 @@ legacy = media.legacy
 _text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
 _original_media_outgoing = media.handle_chatwoot_outgoing
 _original_outgoing = _original_media_outgoing
+_original_mirror_matrix_event = media.mirror_matrix_event
+_original_live_matrix_event = media.live_matrix_event
+_original_download_matrix_media = media.download_matrix_media
 
 
 def _truthy_marker(value) -> bool:
@@ -52,6 +55,26 @@ _original_bounded_download = media._bounded_download
 
 def bounded_download(url: str, *, headers: dict | None = None):
     return _original_bounded_download(url, headers=_safe_download_headers(url, headers))
+
+
+def download_matrix_media(content: dict):
+    """Try both supported Synapse media download paths for Meta attachments."""
+    try:
+        return _original_download_matrix_media(content)
+    except requests.RequestException:
+        mxc = str(content.get("url") or "")
+        server, media_id = media._mxc_parts(mxc)
+        url = (
+            f"{legacy.MATRIX_HOMESERVER}/_matrix/media/v3/download/"
+            f"{quote(server, safe='')}/{quote(media_id, safe='')}"
+        )
+        data, response_mime = bounded_download(url, headers=legacy.matrix_headers())
+        info = content.get("info") or {}
+        mimetype = str(info.get("mimetype") or response_mime or "application/octet-stream")
+        filename = str(content.get("filename") or content.get("body") or "attachment").strip() or "attachment"
+        body = str(content.get("body") or "").strip()
+        caption = body if body and body != filename else ""
+        return data, filename, mimetype, caption
 
 
 _original_context_sync = media.sync_conversation_context
@@ -97,6 +120,32 @@ def post_chatwoot_media(conversation_id: int, *, data: bytes, filename: str, mim
     return response.json() if response.content else {}
 
 
+def _normalize_sticker_event(event: dict) -> dict:
+    """Normalize Matrix `m.sticker` into the media core's room-message shape."""
+    if event.get("type") != "m.sticker":
+        return event
+    normalized = dict(event)
+    content = dict(event.get("content") or {})
+    content["msgtype"] = "m.sticker"
+    normalized["type"] = "m.room.message"
+    normalized["content"] = content
+    return normalized
+
+
+def mirror_matrix_event(room_id: str, event: dict, *, history: bool = False) -> bool:
+    return _original_mirror_matrix_event(
+        room_id,
+        _normalize_sticker_event(event),
+        history=history,
+    )
+
+
+def live_matrix_event(room_id: str, event: dict):
+    # Normalize first so stickers pass the same activation boundary, stale-link
+    # repair, inbox validation, provenance and dedupe guards as other attachments.
+    return _original_live_matrix_event(room_id, _normalize_sticker_event(event))
+
+
 def handle_chatwoot_outgoing(payload: dict, *, signature_verified: bool) -> dict:
     attributes = payload.get("content_attributes") or {}
     if isinstance(attributes, dict):
@@ -123,8 +172,14 @@ def import_recent_history(room_id: str) -> int:
 
 def install() -> None:
     media._bounded_download = bounded_download
+    media.download_matrix_media = download_matrix_media
     media.sync_conversation_context = safe_sync_conversation_context
     media.post_chatwoot_media = post_chatwoot_media
+    media.mirror_matrix_event = mirror_matrix_event
+    media.live_matrix_event = live_matrix_event
+    media.enhancements.enhanced_live_matrix_event = live_matrix_event
+    media.prod.matrix_event_to_chatwoot = mirror_matrix_event
+    legacy.matrix_event_to_chatwoot = live_matrix_event
     media.handle_chatwoot_outgoing = handle_chatwoot_outgoing
     media.enhancements.import_recent_history = import_recent_history
     delivery.handle_chatwoot_outgoing_verified = handle_chatwoot_outgoing
