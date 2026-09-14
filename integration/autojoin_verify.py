@@ -181,6 +181,7 @@ def robust_auto_join_room(room_id: str, room: dict) -> bool:
 
 
 def install() -> None:
-    require_registration_access()
+    if os.getenv("START_MATRIX_SYNC", "true").lower() == "true":
+        require_registration_access()
     legacy.set_setting("auto_join_meta_portals", "1")
     enhancements.auto_join_room = robust_auto_join_room
