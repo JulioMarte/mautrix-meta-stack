@@ -7,6 +7,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
 import yaml
 
 
@@ -196,6 +197,28 @@ class MediaContextV3Tests(unittest.TestCase):
                 headers={"api_access_token": "secret-token"},
             )
         self.assertEqual(download.call_args.kwargs["headers"]["api_access_token"], "secret-token")
+
+    def test_matrix_media_download_falls_back_to_media_v3(self):
+        content = {
+            "msgtype": "m.image", "body": "photo.png", "url": "mxc://remote.example/media",
+            "info": {"mimetype": "image/png"},
+        }
+        with patch.object(hardening, "_original_download_matrix_media", side_effect=requests.HTTPError("gone")), \
+             patch.object(hardening, "bounded_download", return_value=(b"png", "image/png")) as download:
+            result = hardening.download_matrix_media(content)
+        self.assertEqual(result, (b"png", "photo.png", "image/png", ""))
+        self.assertIn("/_matrix/media/v3/download/remote.example/media", download.call_args.args[0])
+
+    def test_true_matrix_sticker_event_is_normalized_for_media_pipeline(self):
+        event = {
+            "event_id": "$sticker", "type": "m.sticker", "sender": "@meta_222:matrix.example.com",
+            "content": {"body": "sticker.webp", "url": "mxc://matrix.example.com/sticker", "info": {"mimetype": "image/webp"}},
+        }
+        with patch.object(hardening, "_original_mirror_matrix_event", return_value=True) as mirror:
+            self.assertTrue(hardening.mirror_matrix_event("!market:matrix.example.com", event))
+        normalized = mirror.call_args.args[1]
+        self.assertEqual(normalized["type"], "m.room.message")
+        self.assertEqual(normalized["content"]["msgtype"], "m.sticker")
 
     def test_string_mirror_marker_suppresses_chatwoot_replay(self):
         payload = {
