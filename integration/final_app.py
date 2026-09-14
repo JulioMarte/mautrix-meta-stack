@@ -228,16 +228,17 @@ import delivery_history_v2  # noqa: E402
 
 delivery_history_v2.install()
 
+# Import both media layers before installing either one. The hardening layer needs
+# to capture PR #44's verified text callback before media_context_v3 replaces it.
+import media_context_v3  # noqa: E402
+import media_context_v3_hardening  # noqa: E402
+
 # Attachments, authoritative from-me classification from mautrix-meta's read-only
 # bridge database, and Marketplace conversation labels/custom attributes.
-import media_context_v3  # noqa: E402
-
 media_context_v3.install()
 
 # Keep credentials away from external attachment object stores and normalize
 # multipart replay markers across Chatwoot versions.
-import media_context_v3_hardening  # noqa: E402
-
 media_context_v3_hardening.install()
 
 ensure_activation_boundary()
