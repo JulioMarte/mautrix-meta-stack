@@ -214,6 +214,13 @@ import autojoin_verify  # noqa: E402
 
 autojoin_verify.install()
 
+# /sync is the fast path, but it is not an authoritative inventory of old invites
+# or pre-existing Marketplace portals. Reconcile against Synapse's server-admin
+# membership/state APIs and keep doing so periodically so Element is never required.
+import meta_portal_reconcile  # noqa: E402
+
+meta_portal_reconcile.install(admin_v2, start_background=_start_matrix_sync)
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()

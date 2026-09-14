@@ -19,10 +19,11 @@ class AdminV2Tests(unittest.TestCase):
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
-        global module, runtime, legacy, enhancements
+        global module, runtime, legacy, enhancements, reconciler
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("admin_v2")
         enhancements = importlib.import_module("runtime_enhancements")
+        reconciler = importlib.import_module("meta_portal_reconcile")
         legacy = runtime.legacy
         legacy.init_db()
 
@@ -107,12 +108,15 @@ class AdminV2Tests(unittest.TestCase):
 
     def test_reconcile_pending_invites_does_not_touch_live_checkpoint(self):
         legacy.set_setting("matrix_next_batch", "live-token")
-        snapshot = {"rooms": {"invite": {"!one:matrix.example.com": self.invite_room()}}}
-        with patch.object(module, "_matrix_sync_snapshot", return_value=snapshot), \
-             patch.object(enhancements, "auto_join_room", return_value=True), \
-             patch.object(enhancements, "import_recent_history", return_value=0):
+        with patch.object(reconciler, "user_memberships", return_value={"!one:matrix.example.com": "invite"}), \
+             patch.object(reconciler, "verified_meta_portal", return_value=(True, "test")), \
+             patch.object(reconciler, "_join_verified_portal", return_value=True), \
+             patch.object(enhancements, "import_recent_history", return_value=0), \
+             patch.object(reconciler, "_link_exists", return_value=False):
             result = module.reconcile_pending_meta_invites()
         self.assertEqual(result["joined"], 1)
+        self.assertEqual(result["invited"], 1)
+        self.assertIn("checked_at", result)
         self.assertEqual(legacy.get_setting("matrix_next_batch"), "live-token")
 
     def test_basic_connection_change_invalidates_api_callback_verification(self):

@@ -4,6 +4,10 @@ Trust is derived from the installed Matrix application-service registration rath
 than guessed MXID prefixes. The appservice bot (`sender_localpart`) is trusted
 explicitly and remote-user ghosts are trusted only when they match an *exclusive*
 `namespaces.users` entry from that registration.
+
+For this product, trusted Meta portal auto-join is mandatory: Chatwoot must never
+require an operator to click Accept in Element. The security boundary is portal
+provenance, not an operator-facing enable/disable toggle.
 """
 from __future__ import annotations
 
@@ -109,20 +113,20 @@ def trusted_meta_inviter(mxid: str) -> tuple[bool, str]:
 
     for pattern in trust.exclusive_user_regexes:
         try:
-            # Generated mautrix registration regexes describe the complete ghost
-            # MXID. fullmatch avoids accepting a user with an appended suffix.
             if re.fullmatch(pattern, mxid):
                 return True, "exclusive_appservice_user_namespace"
         except re.error:
-            # Already validated while loading; keep fail-closed behavior if this
-            # somehow changes between calls.
             continue
     return False, "outside_exclusive_appservice_namespace"
 
 
 def robust_auto_join_room(room_id: str, room: dict) -> bool:
-    if not enhancements.setting_bool("auto_join_meta_portals", True):
-        return False
+    """Join a trusted portal invite and verify that membership really persisted.
+
+    There is intentionally no configurable OFF switch here. If a room cannot be
+    proven to originate from the installed mautrix-meta appservice it is rejected;
+    if it can, the dedicated integration account must accept it automatically.
+    """
     inviter = enhancements.invite_sender(room)
     trusted, trust_reason = trusted_meta_inviter(inviter)
     if not trusted:
@@ -153,4 +157,5 @@ def robust_auto_join_room(room_id: str, room: dict) -> bool:
 
 
 def install() -> None:
+    legacy.set_setting("auto_join_meta_portals", "1")
     enhancements.auto_join_room = robust_auto_join_room

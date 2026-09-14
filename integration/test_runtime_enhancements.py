@@ -109,11 +109,15 @@ class RuntimeEnhancementTests(unittest.TestCase):
             self.assertFalse(module.auto_join_room("!evil:matrix.example.com", self.invite("@someone:matrix.example.com")))
         join.assert_not_called()
 
-    def test_auto_join_can_be_disabled(self):
+    def test_old_off_setting_does_not_disable_trusted_auto_join(self):
         legacy.set_setting("auto_join_meta_portals", "0")
-        with patch.object(module, "_matrix_post") as join:
-            self.assertFalse(module.auto_join_room("!new:matrix.example.com", self.invite()))
-        join.assert_not_called()
+        membership = Mock()
+        membership.content = b'{"membership":"join"}'
+        membership.json.return_value = {"membership": "join"}
+        with patch.object(module, "_matrix_post") as join, \
+             patch.object(module, "_matrix_get", return_value=membership):
+            self.assertTrue(module.auto_join_room("!new:matrix.example.com", self.invite()))
+        join.assert_called_once()
 
     def test_real_matrix_display_name_is_used_for_contact(self):
         profile = {"displayname": "Julio Alberto Marte Balbuena", "avatar_url": ""}
