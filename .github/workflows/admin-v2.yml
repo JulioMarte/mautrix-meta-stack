@@ -18,3 +18,5 @@ jobs:
         run: docker run --rm meta-chatwoot-integration python -m unittest test_autojoin_verify.py
       - name: Run authoritative Meta portal reconciliation tests
         run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_reconcile.py
+      - name: Run outbound delivery and day-history tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_delivery_history_v2.py
