@@ -93,6 +93,37 @@ class FinalRuntimeTests(unittest.TestCase):
         final.ensure_activation_boundary()
         self.assertEqual(legacy.get_setting("chatwoot_enabled_at_ms"), first)
 
+    def test_chatwoot_target_change_resets_links_dedupe_and_activation_boundary(self):
+        room_id = self.configure_chatwoot_link(inbox_id="2", conversation_id=77)
+        legacy.mark_event("$incoming", "matrix_to_chatwoot")
+        legacy.mark_event("chatwoot:11", "chatwoot_to_matrix")
+        legacy.set_setting("chatwoot_enabled_at_ms", "123")
+        legacy.set_setting("api_inbox_delivery_verified_at", "old")
+        old_target = final._chatwoot_target()
+        legacy.set_setting("chatwoot_inbox_id", "9")
+        new_target = final._chatwoot_target()
+
+        with patch.object(final.time, "time", return_value=2_000_000_000):
+            final._reset_chatwoot_target_state(old_target, new_target)
+
+        self.assertIsNone(final._linked_conversation_id(room_id))
+        self.assertFalse(legacy.event_seen("$incoming"))
+        self.assertFalse(legacy.event_seen("chatwoot:11"))
+        self.assertEqual(legacy.get_setting("chatwoot_enabled_at_ms"), "2000000000000")
+        self.assertEqual(legacy.get_setting("api_inbox_delivery_verified_at"), "")
+
+    def test_same_chatwoot_target_does_not_reset_sync_state(self):
+        room_id = self.configure_chatwoot_link(inbox_id="2", conversation_id=77)
+        legacy.mark_event("$incoming", "matrix_to_chatwoot")
+        legacy.set_setting("chatwoot_enabled_at_ms", "123")
+        target = final._chatwoot_target()
+
+        final._reset_chatwoot_target_state(target, target)
+
+        self.assertEqual(final._linked_conversation_id(room_id), 77)
+        self.assertTrue(legacy.event_seen("$incoming"))
+        self.assertEqual(legacy.get_setting("chatwoot_enabled_at_ms"), "123")
+
     def test_conversation_inbox_parser_accepts_supported_shapes(self):
         self.assertEqual(final._conversation_inbox_id({"inbox_id": 2}), 2)
         self.assertEqual(final._conversation_inbox_id({"inbox": {"id": "3"}}), 3)

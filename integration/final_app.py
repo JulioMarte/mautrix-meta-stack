@@ -185,11 +185,59 @@ def guarded_send_matrix_message(room_id, content, txn_id):
 
 legacy.send_matrix_message = guarded_send_matrix_message
 
+
+def _chatwoot_target():
+    """Return the persisted destination identity without including credentials."""
+    return (
+        legacy.get_setting("chatwoot_base_url").strip().rstrip("/"),
+        legacy.get_setting("chatwoot_account_id").strip(),
+        legacy.get_setting("chatwoot_inbox_id").strip(),
+    )
+
+
+def _reset_chatwoot_target_state(old_target, new_target) -> None:
+    """Reset destination-scoped state after a deliberate Chatwoot reconfiguration.
+
+    Matrix room IDs and mautrix-meta history are the durable source. Chatwoot
+    conversation IDs and processed-event dedupe rows belong to one Chatwoot target.
+    Keeping them when the base URL/account/inbox changes would either point replies
+    at stale conversations or prevent history from being rebuilt in the new inbox.
+    """
+    if old_target == new_target or not any(new_target):
+        return
+    with legacy.db() as conn:
+        links = conn.execute("SELECT COUNT(*) AS n FROM room_links").fetchone()["n"]
+        events = conn.execute("SELECT COUNT(*) AS n FROM processed_events").fetchone()["n"]
+        conn.execute("DELETE FROM room_links")
+        conn.execute("DELETE FROM processed_events")
+    now_ms = str(int(time.time() * 1000))
+    legacy.set_setting("chatwoot_enabled_at_ms", now_ms)
+    for key in (
+        "api_inbox_callback_verified_at",
+        "api_inbox_delivery_verified_at",
+        "last_chatwoot_matrix_delivery_at",
+        "last_chatwoot_matrix_event_id",
+        "last_chatwoot_matrix_conversation_id",
+        "last_chatwoot_matrix_error",
+        "last_chatwoot_matrix_error_at",
+        "historical_direction_repair_needed",
+    ):
+        legacy.set_setting(key, "")
+    print(
+        "Chatwoot target changed; reset destination-scoped sync state "
+        f"old={old_target!r} new={new_target!r} links={links} processed_events={events}",
+        flush=True,
+    )
+
+
 base_save_settings = prod.save_settings
 
 
 def save_settings_with_activation_boundary():
+    old_target = _chatwoot_target()
     response = base_save_settings()
+    new_target = _chatwoot_target()
+    _reset_chatwoot_target_state(old_target, new_target)
     ensure_activation_boundary()
     return response
 
@@ -227,6 +275,26 @@ meta_portal_reconcile.install(admin_v2, start_background=_start_matrix_sync)
 import delivery_history_v2  # noqa: E402
 
 delivery_history_v2.install()
+
+# Import both media layers before installing either one. The hardening layer needs
+# to capture PR #44's verified text callback before media_context_v3 replaces it.
+import media_context_v3  # noqa: E402
+import media_context_v3_hardening  # noqa: E402
+
+# Attachments, authoritative from-me classification from mautrix-meta's read-only
+# bridge database, and Marketplace conversation labels/custom attributes.
+media_context_v3.install()
+
+# Keep credentials away from external attachment object stores and normalize
+# multipart replay markers across Chatwoot versions.
+media_context_v3_hardening.install()
+
+# Rebuild deleted Chatwoot conversations from room-scoped Matrix history, mirror
+# Facebook-authored self messages on the fast /sync path, and register Marketplace
+# metadata so listing context is visible in the Chatwoot sidebar.
+import marketplace_rebuild_v4  # noqa: E402
+
+marketplace_rebuild_v4.install()
 
 ensure_activation_boundary()
 if _start_matrix_sync:
