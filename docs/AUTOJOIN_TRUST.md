@@ -19,4 +19,8 @@ Runtime policy:
 5. Never trust an MXID merely because it starts with `@meta_`.
 6. After requesting `/join`, verify the admin's `m.room.member` state actually becomes `join` before importing history or forwarding data to Chatwoot.
 
+Pending invitations and already-joined historical portals use different provenance evidence. A pending invite may be verified directly from the current `m.room.member` state event for the dedicated integration MXID when the event sender belongs to the installed mautrix application service. Already-joined/backfill rooms are verified from durable bridge state such as `m.bridge`/`uk.half-shot.bridge` before old history is imported.
+
+To keep that durable bridge metadata available for older Marketplace portals, the stack sets mautrix-meta's documented `bridge.resend_bridge_info: true`. mautrix-meta then re-sends `m.bridge` metadata for its existing portals on startup. This is intentionally a repair mechanism for portals that predate the current reconciliation code or were created while bridge-state publication was incomplete; it does not weaken the invite trust boundary or accept rooms by name.
+
 The registration file is mounted read-only into the integration container, so this policy automatically follows future mautrix-meta-generated ghost namespace changes after a valid registration regeneration/redeploy instead of requiring code changes for each ghost naming convention.

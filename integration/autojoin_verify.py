@@ -11,6 +11,7 @@ provenance, not an operator-facing enable/disable toggle.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -95,6 +96,29 @@ def appservice_trust() -> AppserviceTrust:
     return AppserviceTrust(bot_mxid=bot_mxid, exclusive_user_regexes=tuple(dict.fromkeys(patterns)))
 
 
+def require_registration_access() -> AppserviceTrust:
+    """Fail startup when the mounted appservice trust boundary cannot be read.
+
+    Auto-join is mandatory for this product. Running while registration.yaml is
+    unreadable only creates a deceptively healthy service that can never accept Meta
+    portal invitations, so treat that deployment state as a hard readiness failure.
+    """
+    trust = appservice_trust()
+    if trust.bot_mxid:
+        return trust
+    path = legacy.REGISTRATION_PATH
+    try:
+        stat = os.stat(path)
+        mode = oct(stat.st_mode & 0o777)
+        detail = f"exists owner={stat.st_uid}:{stat.st_gid} mode={mode}"
+    except OSError as exc:
+        detail = f"stat failed: {exc}"
+    raise RuntimeError(
+        "mautrix registration trust boundary is unreadable or missing sender_localpart: "
+        f"path={path} ({detail})"
+    )
+
+
 def appservice_user_regexes() -> tuple[str, ...]:
     """Compatibility helper used by tests/status code."""
     return appservice_trust().exclusive_user_regexes
@@ -157,5 +181,7 @@ def robust_auto_join_room(room_id: str, room: dict) -> bool:
 
 
 def install() -> None:
+    if os.getenv("START_MATRIX_SYNC", "true").lower() == "true":
+        require_registration_access()
     legacy.set_setting("auto_join_meta_portals", "1")
     enhancements.auto_join_room = robust_auto_join_room
