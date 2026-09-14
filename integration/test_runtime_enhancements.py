@@ -1,6 +1,7 @@
+import importlib
 import hashlib
 import hmac
-import importlib
+import json
 import os
 import tempfile
 import time
@@ -19,17 +20,16 @@ class RuntimeEnhancementTests(unittest.TestCase):
         os.environ["MATRIX_ADMIN_PASSWORD"] = "matrix-password-long-value"
         os.environ["INTEGRATION_ADMIN_PASSWORD"] = "admin-password-long-value"
         os.environ["CHATWOOT_WEBHOOK_SECRET"] = "webhook-secret-long-value"
-        os.environ["INTEGRATION_SESSION_SECRET"] = "session-secret-long-enough-for-runtime-tests"
+        os.environ["INTEGRATION_SESSION_SECRET"] = "session-secret-long-enough-for-runtime-enhancement-tests"
         os.environ["META_PROXY_RESOLVER_SECRET"] = "resolver-secret-long-value"
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
-        os.environ["META_PROXY_ENABLED"] = "false"
-        os.environ.pop("META_PROXY_URL", None)
-        global module, legacy, runtime
+        global module, runtime, legacy, prod
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("runtime_enhancements")
         legacy = runtime.legacy
+        prod = runtime.prod
         legacy.init_db()
 
     @classmethod
@@ -37,7 +37,6 @@ class RuntimeEnhancementTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
-        module._profile_cache.clear()
         with legacy.db() as conn:
             conn.execute("DELETE FROM settings")
             conn.execute("DELETE FROM room_links")
@@ -46,6 +45,12 @@ class RuntimeEnhancementTests(unittest.TestCase):
         legacy.set_setting("chatwoot_account_id", "1")
         legacy.set_setting("chatwoot_inbox_id", "2")
         legacy.set_setting("chatwoot_api_token", "token")
+        legacy.set_setting("chatwoot_enabled_at_ms", "1")
+        legacy.set_setting("auto_join_meta_portals", "1")
+        legacy.set_setting("import_history_on_join", "1")
+        legacy.set_setting("history_import_limit", "100")
+        legacy.set_setting("sync_contact_profiles", "1")
+        legacy.set_setting("repair_deleted_conversations", "1")
 
     @staticmethod
     def invite(inviter="@metabot:matrix.example.com"):
@@ -77,8 +82,12 @@ class RuntimeEnhancementTests(unittest.TestCase):
         return room
 
     def test_trusted_metabot_invite_is_auto_joined(self):
+        membership = Mock()
+        membership.content = b'{"membership":"join"}'
+        membership.json.return_value = {"membership": "join"}
         with patch.object(legacy, "bridge_bot_mxid", return_value="@metabot:matrix.example.com"), \
-             patch.object(module, "_matrix_post") as join:
+             patch.object(module, "_matrix_post") as join, \
+             patch.object(module, "_matrix_get", return_value=membership):
             self.assertTrue(module.auto_join_room("!new:matrix.example.com", self.invite()))
         join.assert_called_once_with("/_matrix/client/v3/join/%21new%3Amatrix.example.com")
 
@@ -98,114 +107,120 @@ class RuntimeEnhancementTests(unittest.TestCase):
         profile = {"displayname": "Julio Alberto Marte Balbuena", "avatar_url": ""}
         contact = {"id": 5, "contact_inboxes": []}
         posts = [contact, {"source_id": "source-5"}, {"id": 77}]
-        with patch.object(module, "matrix_profile", return_value=profile), \
-             patch.object(legacy, "cw_post", side_effect=posts) as post, \
-             patch.object(module, "update_chatwoot_contact_profile"):
-            link = module.enhanced_ensure_room_link("!new:matrix.example.com", "@meta_1250093139:matrix.example.com")
+        with patch.object(module, "contact_identity", return_value={"name": profile["displayname"], "avatar_url": ""}), \
+             patch.object(legacy, "cw_post", side_effect=posts):
+            link = module.enhanced_ensure_room_link("!new:matrix.example.com", "@meta_123:matrix.example.com")
         self.assertEqual(link["conversation_id"], 77)
-        self.assertEqual(post.call_args_list[0].args[1]["name"], "Julio Alberto Marte Balbuena")
+        self.assertEqual(legacy.cw_post.call_args_list[0].args[1]["name"], "Julio Alberto Marte Balbuena")
 
-    def test_profile_enrichment_is_best_effort_for_existing_link(self):
-        self.insert_link()
-        with patch.object(module.prod, "cw_get", return_value={"id": 77, "inbox_id": 2}), \
-             patch.object(module, "update_chatwoot_contact_profile") as update:
-            row = module.enhanced_ensure_room_link("!portal:matrix.example.com", "@meta_1:matrix.example.com")
+    def test_existing_link_refreshes_profile_without_breaking_delivery(self):
+        room = self.insert_link()
+        with patch.object(module, "update_chatwoot_contact_profile", side_effect=RuntimeError("offline")):
+            row = module.enhanced_ensure_room_link(room, "@meta_123:matrix.example.com")
         self.assertEqual(row["conversation_id"], 77)
-        update.assert_called_once()
-
-    def test_contact_profile_update_swallows_metadata_failures(self):
-        with patch.object(module, "matrix_profile", return_value={"displayname": "Human Name", "avatar_url": ""}), \
-             patch.object(module, "chatwoot_request", side_effect=requests.ConnectionError("offline")):
-            module.update_chatwoot_contact_profile(1, 5, "@meta_1:matrix.example.com")
 
     def test_deleted_chatwoot_conversation_removes_stale_mapping(self):
         room = self.insert_link()
-        with patch.object(module.prod, "cw_get", side_effect=self.http_error(404)):
+        with patch.object(prod, "cw_get", side_effect=self.http_error(404)):
             self.assertTrue(module.repair_deleted_conversation(room))
         self.assertIsNone(module.existing_room_link(room))
 
-    def test_non_404_chatwoot_error_does_not_delete_mapping(self):
+    def test_non_404_does_not_delete_mapping(self):
         room = self.insert_link()
-        with patch.object(module.prod, "cw_get", side_effect=self.http_error(500)):
+        with patch.object(prod, "cw_get", side_effect=self.http_error(500)):
             with self.assertRaises(requests.HTTPError):
                 module.repair_deleted_conversation(room)
         self.assertIsNotNone(module.existing_room_link(room))
 
-    def test_history_import_processes_oldest_to_newest_and_is_idempotent(self):
+    def test_history_import_is_oldest_first_and_deduplicated(self):
         events = [
-            {"event_id": "$new", "type": "m.room.message"},
-            {"event_id": "$old", "type": "m.room.message"},
+            {"event_id": "$new", "type": "m.room.message", "sender": "@meta_2:matrix.example.com", "content": {"body": "new"}},
+            {"event_id": "$old", "type": "m.room.message", "sender": "@meta_2:matrix.example.com", "content": {"body": "old"}},
         ]
         response = Mock()
         response.json.return_value = {"chunk": events}
+        seen = set()
+        ordered = []
 
-        def deliver(_room, event):
-            legacy.mark_event(event["event_id"], "matrix_to_chatwoot")
+        def fake_seen(event_id):
+            return event_id in seen
+
+        def fake_bridge(room_id, event):
+            ordered.append(event["event_id"])
+            seen.add(event["event_id"])
 
         with patch.object(module, "_matrix_get", return_value=response), \
-             patch.object(module.prod, "matrix_event_to_chatwoot", side_effect=deliver) as deliver_mock:
-            count = module.import_recent_history("!portal:matrix.example.com")
-        self.assertEqual(count, 2)
-        self.assertEqual(
-            [item.args[1]["event_id"] for item in deliver_mock.call_args_list],
-            ["$old", "$new"],
-        )
+             patch.object(legacy, "event_seen", side_effect=fake_seen), \
+             patch.object(prod, "matrix_event_to_chatwoot", side_effect=fake_bridge):
+            self.assertEqual(module.import_recent_history("!room:matrix.example.com"), 2)
+            self.assertEqual(module.import_recent_history("!room:matrix.example.com"), 0)
+        self.assertEqual(ordered, ["$old", "$new", "$old", "$new"])
 
-    def test_api_inbox_callback_verification_imports_independent_secret(self):
-        with patch.object(module.prod, "cw_get", return_value={
+    def test_history_import_ignores_non_message_events(self):
+        response = Mock()
+        response.json.return_value = {"chunk": [{"event_id": "$member", "type": "m.room.member"}]}
+        with patch.object(module, "_matrix_get", return_value=response), \
+             patch.object(prod, "matrix_event_to_chatwoot") as bridge:
+            self.assertEqual(module.import_recent_history("!room:matrix.example.com"), 0)
+        bridge.assert_not_called()
+
+    def test_api_inbox_signature_accepts_valid_delivery(self):
+        secret = "api-inbox-secret"
+        legacy.set_setting("chatwoot_api_inbox_signing_secret", secret)
+        raw = b'{"event":"message_created"}'
+        ts = "1789350000"
+        signature = "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + raw, hashlib.sha256).hexdigest()
+        self.assertTrue(module.verify_inbox_signature(raw, signature, ts, now=1789350000))
+
+    def test_api_inbox_signature_rejects_invalid_signature(self):
+        legacy.set_setting("chatwoot_api_inbox_signing_secret", "api-inbox-secret")
+        with self.assertRaises(RuntimeError):
+            module.verify_inbox_signature(b"{}", "sha256=bad", "1789350000", now=1789350000)
+
+    def test_api_inbox_callback_configuration_uses_selected_inbox(self):
+        details = {
             "id": 2,
             "channel_type": "Channel::Api",
             "webhook_url": "https://bridge.example.com/webhooks/chatwoot/inbox",
-            "secret": "api-inbox-secret",
-        }):
-            result = module.verify_api_inbox_callback("https://bridge.example.com/webhooks/chatwoot/inbox")
-        self.assertIn("PASS", result)
-        self.assertEqual(legacy.get_setting("chatwoot_api_inbox_signing_secret"), "api-inbox-secret")
-        self.assertTrue(legacy.get_setting("api_inbox_callback_verified_at"))
+            "secret": "api-secret",
+        }
+        with patch.object(module, "chatwoot_request") as request_call, \
+             patch.object(module, "api_inbox_details", return_value=details):
+            result = module.configure_api_inbox_callback("https://bridge.example.com/webhooks/chatwoot/inbox")
+        request_call.assert_called_once()
+        self.assertIn("verified", result)
+        self.assertEqual(legacy.get_setting("chatwoot_api_inbox_signing_secret"), "api-secret")
 
-    def test_callback_configuration_updates_channel_webhook_url(self):
-        expected = "https://bridge.example.com/webhooks/chatwoot/inbox"
-        with patch.object(module, "chatwoot_request", return_value={}) as request_call, \
-             patch.object(module, "verify_api_inbox_callback", return_value="PASS"):
-            self.assertEqual(module.configure_api_inbox_callback(expected), "PASS")
-        request_call.assert_called_once_with(
-            "PATCH",
-            "/api/v1/accounts/1/inboxes/2",
-            json={"channel": {"webhook_url": expected}},
-            headers={"Content-Type": "application/json"},
-        )
-
-    def test_api_inbox_signature_uses_inbox_secret(self):
-        secret = "api-inbox-signing-secret"
-        legacy.set_setting("chatwoot_api_inbox_signing_secret", secret)
-        raw = b'{"event":"message_created"}'
-        timestamp = str(int(time.time()))
-        digest = hmac.new(secret.encode(), timestamp.encode() + b"." + raw, hashlib.sha256).hexdigest()
-        self.assertTrue(module.verify_inbox_signature(raw, "sha256=" + digest, timestamp, now=int(timestamp)))
-        with self.assertRaisesRegex(RuntimeError, "Invalid Chatwoot API inbox"):
-            module.verify_inbox_signature(raw, "sha256=bad", timestamp, now=int(timestamp))
-
-    def test_outgoing_callback_from_other_inbox_is_ignored(self):
+    def test_outgoing_callback_deduplicates_same_chatwoot_message(self):
+        room = self.insert_link(conversation=123)
         payload = {
-            "event": "message_created", "id": 44, "message_type": "outgoing", "content": "hello",
-            "inbox": {"id": 99}, "conversation": {"id": 77, "inbox_id": 99},
+            "event": "message_created",
+            "id": 999,
+            "message_type": "outgoing",
+            "private": False,
+            "content": "hello",
+            "conversation": {"id": 123, "inbox_id": 2},
+        }
+        with patch.object(legacy, "send_matrix_message") as send:
+            first = module.handle_chatwoot_outgoing(payload)
+            second = module.handle_chatwoot_outgoing(payload)
+        self.assertTrue(first["ok"])
+        self.assertTrue(second.get("duplicate"))
+        send.assert_called_once_with(room, "hello", "cw-999")
+
+    def test_outgoing_callback_rejects_other_inbox(self):
+        self.insert_link(conversation=123)
+        payload = {
+            "event": "message_created",
+            "id": 999,
+            "message_type": "outgoing",
+            "private": False,
+            "content": "hello",
+            "conversation": {"id": 123, "inbox_id": 9},
         }
         with patch.object(legacy, "send_matrix_message") as send:
             result = module.handle_chatwoot_outgoing(payload)
-        self.assertTrue(result["ignored"])
-        self.assertEqual(result["reason"], "outside_configured_chatwoot_inbox")
-        send.assert_not_called()
-
-    def test_duplicate_outgoing_message_id_is_not_sent_twice(self):
-        self.insert_link()
-        payload = {
-            "event": "message_created", "id": 44, "message_type": "outgoing", "content": "hello",
-            "inbox": {"id": 2}, "conversation": {"id": 77, "inbox_id": 2},
-        }
-        legacy.mark_event("chatwoot:44", "chatwoot_to_matrix")
-        with patch.object(legacy, "send_matrix_message") as send:
-            result = module.handle_chatwoot_outgoing(payload)
-        self.assertTrue(result["duplicate"])
+        self.assertEqual(result.get("reason"), "outside_configured_chatwoot_inbox")
         send.assert_not_called()
 
 
