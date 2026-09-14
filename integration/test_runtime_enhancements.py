@@ -173,7 +173,7 @@ class RuntimeEnhancementTests(unittest.TestCase):
              patch.object(prod, "matrix_event_to_chatwoot", side_effect=fake_bridge):
             self.assertEqual(module.import_recent_history("!room:matrix.example.com"), 2)
             self.assertEqual(module.import_recent_history("!room:matrix.example.com"), 0)
-        self.assertEqual(ordered, ["$old", "$new", "$old", "$new"])
+        self.assertEqual(ordered, ["$old", "$new"])
 
     def test_history_import_ignores_non_message_events(self):
         response = Mock()
