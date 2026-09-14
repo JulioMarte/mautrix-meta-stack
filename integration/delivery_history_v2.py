@@ -15,11 +15,14 @@ agent messages to Meta.
 """
 from __future__ import annotations
 
-import contextvars
+import json
 import time
 from urllib.parse import quote
 
 import requests
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from nicegui import app as nicegui_app
 
 import autojoin_verify
 import runtime_enhancements as enhancements
@@ -32,15 +35,8 @@ MAX_HISTORY_DAYS = 3650
 MATRIX_PAGE_SIZE = 100
 HISTORY_MARKER = "matrix_history_import"
 
-_signature_verified: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "chatwoot_api_inbox_signature_verified", default=False
-)
-
-_original_verify_inbox_signature = enhancements.verify_inbox_signature
-_original_handle_chatwoot_outgoing = enhancements.handle_chatwoot_outgoing
 _original_operations_state = enhancements.operations_state
 _original_save_operations_settings = enhancements.save_operations_settings
-_original_contact_object = prod.contact_object
 
 
 def _now_utc() -> str:
@@ -49,10 +45,6 @@ def _now_utc() -> str:
 
 def _message_type_is_outgoing(value) -> bool:
     return value in ("outgoing", 1, "1")
-
-
-def _message_type_is_incoming(value) -> bool:
-    return value in ("incoming", 0, "0")
 
 
 def _payload_messages(data) -> list[dict]:
@@ -98,33 +90,14 @@ def robust_contact_object(payload):
     return None
 
 
-def verify_inbox_signature_compatible(raw_body: bytes, signature: str, timestamp: str, now: int | None = None) -> bool:
-    """Prefer Chatwoot HMAC, but allow authenticated API verification as fallback.
-
-    Timestamp freshness is still mandatory. An invalid or mismatched HMAC does not
-    grant trust by itself; it only selects the slower Chatwoot-API verification in
-    ``handle_chatwoot_outgoing_verified``.
-    """
+def _fresh_callback_timestamp(timestamp: str, now: int | None = None) -> None:
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError) as exc:
-        _signature_verified.set(False)
         raise RuntimeError("Invalid Chatwoot webhook timestamp") from exc
     current = int(time.time()) if now is None else int(now)
     if abs(current - timestamp_int) > enhancements.WEBHOOK_MAX_AGE_SECONDS:
-        _signature_verified.set(False)
         raise RuntimeError("Chatwoot webhook timestamp is too old or too far in the future")
-    try:
-        result = _original_verify_inbox_signature(raw_body, signature, timestamp, now=current)
-        _signature_verified.set(bool(result))
-        return True
-    except RuntimeError as exc:
-        # Chatwoot issue #13809 documents API-channel installations where the
-        # exposed secret differs from the internal signing key. Do not accept the
-        # callback here; require an authenticated API read of the exact message.
-        _signature_verified.set(False)
-        print(f"Chatwoot API inbox HMAC unavailable/mismatched; requiring API verification: {exc}", flush=True)
-        return True
 
 
 def _conversation_id(payload: dict) -> int:
@@ -154,11 +127,11 @@ def verify_outgoing_against_chatwoot(payload: dict) -> dict:
     account_id = int(legacy.get_setting("chatwoot_account_id"))
 
     conversation = prod.cw_get(f"/api/v1/accounts/{account_id}/conversations/{conversation_id}")
-    actual_inbox = runtime_inbox = None
+    actual_inbox = None
     try:
-        runtime_inbox = int(legacy.get_setting("chatwoot_inbox_id"))
-    except (TypeError, ValueError):
-        pass
+        configured_inbox = int(legacy.get_setting("chatwoot_inbox_id"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Configured Chatwoot inbox is invalid") from exc
     for candidate in (
         conversation.get("inbox_id") if isinstance(conversation, dict) else None,
         ((conversation.get("inbox") or {}).get("id") if isinstance(conversation, dict) and isinstance(conversation.get("inbox"), dict) else None),
@@ -169,7 +142,7 @@ def verify_outgoing_against_chatwoot(payload: dict) -> dict:
             break
         except (TypeError, ValueError):
             continue
-    if runtime_inbox is None or actual_inbox != runtime_inbox:
+    if actual_inbox != configured_inbox:
         raise RuntimeError("Chatwoot callback conversation is outside the configured inbox")
 
     data = prod.cw_get(f"/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages")
@@ -202,7 +175,7 @@ def verify_matrix_event(room_id: str, event_id: str, expected_body: str) -> None
         raise RuntimeError("Matrix acknowledged an outbound event with unexpected content")
 
 
-def handle_chatwoot_outgoing_verified(payload: dict) -> dict:
+def handle_chatwoot_outgoing_verified(payload: dict, *, signature_verified: bool) -> dict:
     if payload.get("event") != "message_created":
         return {"ok": True, "ignored": True}
     if not _message_type_is_outgoing(payload.get("message_type")) or payload.get("private") is True:
@@ -224,7 +197,7 @@ def handle_chatwoot_outgoing_verified(payload: dict) -> dict:
     if legacy.event_seen(event_key):
         return {"ok": True, "duplicate": True}
 
-    if not _signature_verified.get():
+    if not signature_verified:
         verify_outgoing_against_chatwoot(payload)
 
     with legacy.db() as conn:
@@ -256,6 +229,35 @@ def handle_chatwoot_outgoing_verified(payload: dict) -> dict:
     return {"ok": True, "matrix_event_id": event_id}
 
 
+async def outbound_callback_middleware(request: Request, call_next):
+    if request.url.path != "/webhooks/chatwoot/inbox" or request.method.upper() != "POST":
+        return await call_next(request)
+
+    raw = await request.body()
+    timestamp = request.headers.get("X-Chatwoot-Timestamp", "")
+    signature = request.headers.get("X-Chatwoot-Signature", "")
+    try:
+        _fresh_callback_timestamp(timestamp)
+        payload = json.loads(raw.decode("utf-8"))
+        signature_verified = False
+        try:
+            signature_verified = enhancements.verify_inbox_signature(raw, signature, timestamp)
+        except RuntimeError as exc:
+            # Chatwoot issue #13809 documents API-channel installations where the
+            # secret exposed through REST differs from the internal signing key.
+            # The callback is not trusted yet: the exact message is authenticated
+            # against Chatwoot's REST API below before any Matrix send is allowed.
+            print(f"Chatwoot API inbox HMAC mismatch; using authenticated API fallback: {exc}", flush=True)
+        result = handle_chatwoot_outgoing_verified(payload, signature_verified=bool(signature_verified))
+        return JSONResponse(result)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        legacy.set_setting("last_chatwoot_matrix_error", error[:1000])
+        legacy.set_setting("last_chatwoot_matrix_error_at", _now_utc())
+        print(f"Chatwoot outgoing delivery failed: {error}", flush=True)
+        return JSONResponse({"error": "delivery failed"}, status_code=502)
+
+
 def history_days() -> int:
     return enhancements.setting_int("history_import_days", DEFAULT_HISTORY_DAYS, 0, MAX_HISTORY_DAYS)
 
@@ -263,8 +265,6 @@ def history_days() -> int:
 def operations_state_days() -> dict:
     state = _original_operations_state()
     days = history_days()
-    # Keep the existing key as a compatibility surface for admin_v2 while changing
-    # its semantics and label to days.
     state["history_limit"] = days
     state["history_days"] = days
     return state
@@ -273,9 +273,6 @@ def operations_state_days() -> dict:
 def save_operations_settings_days(*, auto_join: bool, import_history: bool, history_limit: int,
                                   sync_profiles: bool, repair_deleted: bool) -> None:
     days = max(0, min(MAX_HISTORY_DAYS, int(history_limit)))
-    # Preserve all existing settings and mandatory auto-join behavior. The old
-    # count setting is retained only for downgrade compatibility and is no longer
-    # consulted by the active importer.
     _original_save_operations_settings(
         auto_join=True,
         import_history=import_history,
@@ -383,16 +380,16 @@ def import_recent_history_days(room_id: str) -> int:
                 imported += 1
         except Exception as exc:
             print(f"history import failed room={room_id} event={event_id}: {type(exc).__name__}: {exc}", flush=True)
-            # Continue: one malformed/legacy event must not abort the entire room.
             continue
     return imported
 
 
 def install() -> None:
     prod.contact_object = robust_contact_object
-    enhancements.verify_inbox_signature = verify_inbox_signature_compatible
-    enhancements.handle_chatwoot_outgoing = handle_chatwoot_outgoing_verified
     enhancements.operations_state = operations_state_days
     enhancements.save_operations_settings = save_operations_settings_days
     enhancements.import_recent_history = import_recent_history_days
     legacy.set_setting("history_import_days", str(history_days()))
+    if not getattr(nicegui_app, "_meta_outbound_callback_middleware_v2", False):
+        nicegui_app.middleware("http")(outbound_callback_middleware)
+        setattr(nicegui_app, "_meta_outbound_callback_middleware_v2", True)
