@@ -22,6 +22,7 @@ import runtime_enhancements as enhancements
 import autojoin_verify
 
 legacy = runtime.legacy
+prod = runtime.prod
 
 RECONCILE_INTERVAL_SECONDS = 30
 _RECONCILE_LOCK = threading.Lock()
@@ -61,14 +62,7 @@ def room_admin_state(room_id: str) -> list[dict]:
 
 
 def _trusted_pending_invite_from_state(state: list[dict]) -> tuple[bool, str]:
-    """Verify the current admin invite directly from authoritative room state.
-
-    This is the important reconciliation fallback for portal rooms that do not yet
-    expose an m.bridge event through Synapse's current-state view. The invitation
-    itself is still a durable Matrix state event: if the current membership for the
-    dedicated integration account is ``invite`` and the event sender is the installed
-    mautrix appservice bot/ghost, that is sufficient provenance to auto-join.
-    """
+    """Verify the current admin invite directly from authoritative room state."""
     for event in state:
         if event.get("type") != "m.room.member":
             continue
@@ -84,15 +78,33 @@ def _trusted_pending_invite_from_state(state: list[dict]) -> tuple[bool, str]:
     return False, "no_current_admin_invite_membership"
 
 
-def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) -> tuple[bool, str]:
-    """Verify bridge provenance from authoritative Synapse room state.
+def _trusted_bridge_state_from_state(state: list[dict]) -> tuple[bool, str]:
+    """Verify durable portal metadata by the authenticated Matrix event sender.
 
-    Joined/backfill rooms are verified by their m.bridge metadata. Pending invitations
-    get one additional proof path: the current m.room.member invite for our dedicated
-    integration user may itself have been sent by the registered mautrix appservice.
-    That is stronger and more reliable than requiring m.bridge metadata to be visible
-    before the invited account has joined.
+    The previous implementation trusted the user-controlled ``content.bridgebot``
+    field. That was both weaker security-wise and incompatible with live mautrix-meta
+    rooms where the current bridge-info payload may not exactly match the local bot
+    MXID. Matrix's event ``sender`` is authoritative: ordinary room members cannot
+    forge an event as the appservice bot or an exclusive appservice ghost.
     """
+    saw_bridge_state = False
+    last_reason = "no_bridge_state"
+    for event in state:
+        if event.get("type") not in {"m.bridge", "uk.half-shot.bridge"}:
+            continue
+        saw_bridge_state = True
+        sender = str(event.get("sender") or "")
+        trusted, reason = autojoin_verify.trusted_meta_inviter(sender)
+        if trusted:
+            return True, f"trusted_bridge_state_sender:{reason}"
+        last_reason = f"untrusted_bridge_state_sender:{reason}"
+    if saw_bridge_state:
+        return False, last_reason
+    return False, "no_bridge_state"
+
+
+def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) -> tuple[bool, str]:
+    """Verify bridge provenance from authoritative Synapse room state."""
     trust = autojoin_verify.appservice_trust()
     if not trust.bot_mxid:
         return False, "registration_has_no_appservice_sender"
@@ -108,18 +120,35 @@ def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) ->
         if verified:
             return True, reason
 
-    for event in state:
-        if event.get("type") not in {"m.bridge", "uk.half-shot.bridge"}:
-            continue
-        content = event.get("content") or {}
-        bridgebot = str(content.get("bridgebot") or "").strip()
-        if bridgebot == trust.bot_mxid:
-            return True, "bridge_state_matches_registered_bot"
+    verified, bridge_reason = _trusted_bridge_state_from_state(state)
+    if verified:
+        return True, bridge_reason
 
     if allow_pending_invite:
         _, invite_reason = _trusted_pending_invite_from_state(state)
-        return False, f"no_matching_bridge_state;{invite_reason}"
-    return False, "no_matching_bridge_state"
+        return False, f"{bridge_reason};{invite_reason}"
+    return False, bridge_reason
+
+
+def runtime_is_bridge_portal(room_id: str) -> bool:
+    """Use the same authoritative provenance rule for live Matrix events.
+
+    ``prod.matrix_event_to_chatwoot`` calls ``prod.is_bridge_portal`` before creating
+    or updating Chatwoot. Keeping a second, content-based verifier there caused valid
+    Marketplace messages to be silently dropped even after reconciliation had joined
+    the room. Patch the live path to this single verifier and cache only successful
+    proofs.
+    """
+    portal_cache = getattr(prod, "_portal_cache", None)
+    if isinstance(portal_cache, set) and room_id in portal_cache:
+        return True
+    verified, reason = verified_meta_portal(room_id)
+    if verified:
+        if isinstance(portal_cache, set):
+            portal_cache.add(room_id)
+        return True
+    print(f"Matrix message ignored: room is not a verified Meta portal room={room_id} reason={reason}", flush=True)
+    return False
 
 
 def _link_exists(room_id: str) -> bool:
@@ -170,10 +199,6 @@ def reconcile_meta_portals() -> dict:
         result = _empty_result()
         verified_rooms: set[str] = set()
 
-        # Invites first. For pending rooms, trust the authoritative current membership
-        # event when its sender belongs to the installed mautrix appservice. Requiring
-        # m.bridge here stranded real portals in Element on deployments where bridge
-        # metadata was not visible until after the user joined.
         for room_id, membership in list(memberships.items()):
             if membership != "invite":
                 continue
@@ -198,11 +223,6 @@ def reconcile_meta_portals() -> dict:
             legacy.set_setting("meta_portal_reconcile_error", "Chatwoot is not configured")
             return result
 
-        # Scan every joined room. This intentionally repairs portals that pre-date the
-        # integration checkpoint (notably Marketplace backfill rooms already visible in
-        # Element) and therefore never generated a new /sync timeline for our sidecar.
-        # Once joined, require durable bridge metadata; the old invite event is no longer
-        # current state and must not be guessed from room names or presentation data.
         for room_id, membership in memberships.items():
             if membership != "join":
                 continue
@@ -215,6 +235,8 @@ def reconcile_meta_portals() -> dict:
                 before = _link_exists(room_id)
                 imported = enhancements.import_recent_history(room_id)
                 result["history_imported"] += imported
+                if imported:
+                    print(f"Meta portal history imported room={room_id} count={imported}", flush=True)
                 if _link_exists(room_id):
                     result["linked"] += 1
                 elif not before and imported == 0:
@@ -249,6 +271,11 @@ def _loop() -> None:
 def install(admin_module=None, *, start_background: bool = True) -> None:
     """Install mandatory auto-join semantics and authoritative reconciliation."""
     legacy.set_setting("auto_join_meta_portals", "1")
+
+    # One provenance verifier must govern both reconciliation and the live Matrix
+    # event path. This prevents a joined room from passing reconciliation and then
+    # being silently rejected by prod.matrix_event_to_chatwoot.
+    prod.is_bridge_portal = runtime_is_bridge_portal
 
     original_save = enhancements.save_operations_settings
     original_state = enhancements.operations_state

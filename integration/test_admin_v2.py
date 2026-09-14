@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import os
 import tempfile
 import unittest
@@ -135,6 +136,13 @@ class AdminV2Tests(unittest.TestCase):
         with patch.object(module, "_chatwoot_request", return_value=payload):
             hooks = module.legacy_account_webhooks("https://bridge.example.com/webhooks/chatwoot")
         self.assertEqual([hook["id"] for hook in hooks], [1])
+
+    def test_advanced_ui_does_not_offer_auto_join_toggle(self):
+        source = inspect.getsource(module.advanced_page)
+        self.assertNotIn("Automatically join Meta portal rooms", source)
+        self.assertNotIn("auto_join.value", source)
+        self.assertIn("auto_join=True", source)
+        self.assertIn("cannot be disabled", source)
 
 
 if __name__ == "__main__":
