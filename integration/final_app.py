@@ -203,12 +203,16 @@ import runtime_enhancements as enhancements  # noqa: E402
 
 enhancements.install_runtime_enhancements()
 
-# Admin v2 also fixes the first-sync invite race: the previous enhanced sync
-# checkpoint skipped invitations when matrix_next_batch did not exist yet, which
-# could leave a Meta portal waiting for a manual Accept in Element.
+# Admin v2 fixes the first-sync invite checkpoint and provides the multi-page UI.
 import admin_v2  # noqa: E402
 
 admin_v2.install()
+
+# A 200 response from Matrix /join is not considered sufficient: confirm the
+# membership state really became join and retry a small bounded number of times.
+import autojoin_verify  # noqa: E402
+
+autojoin_verify.install()
 
 ensure_activation_boundary()
 if _start_matrix_sync:
