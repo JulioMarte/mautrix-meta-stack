@@ -28,6 +28,10 @@ _RECONCILE_LOCK = threading.Lock()
 _STOP = threading.Event()
 
 
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+
+
 def _admin_get(path: str, *, timeout: int = 20) -> dict:
     response = requests.get(
         f"{legacy.MATRIX_HOMESERVER}{path}",
@@ -106,38 +110,35 @@ def _join_verified_portal(room_id: str) -> bool:
     raise RuntimeError(f"verified Meta portal join did not persist: {last_error}")
 
 
+def _empty_result(*, already_running: bool = False) -> dict:
+    return {
+        "checked_at": _utc_now(),
+        "already_running": already_running,
+        "invited": 0,
+        "joined": 0,
+        "verified_portals": 0,
+        "linked": 0,
+        "history_imported": 0,
+        "ignored": 0,
+        "errors": [],
+    }
+
+
 def reconcile_meta_portals() -> dict:
     """Repair invited and already-joined Meta portals from authoritative membership state."""
     if not _RECONCILE_LOCK.acquire(blocking=False):
-        return {
-            "already_running": True,
-            "invited": 0,
-            "joined": 0,
-            "verified_portals": 0,
-            "linked": 0,
-            "history_imported": 0,
-            "ignored": 0,
-            "errors": [],
-        }
+        return _empty_result(already_running=True)
     try:
         # Auto-join is a product invariant. Persist the migration so the admin UI and
         # status surface cannot resurrect an old OFF value from earlier builds.
         legacy.set_setting("auto_join_meta_portals", "1")
 
         memberships = user_memberships()
-        result = {
-            "already_running": False,
-            "invited": 0,
-            "joined": 0,
-            "verified_portals": 0,
-            "linked": 0,
-            "history_imported": 0,
-            "ignored": 0,
-            "errors": [],
-        }
+        result = _empty_result()
+        verified_rooms: set[str] = set()
 
         # Invites first, so a room can immediately participate in the joined-room pass.
-        for room_id, membership in memberships.items():
+        for room_id, membership in list(memberships.items()):
             if membership != "invite":
                 continue
             result["invited"] += 1
@@ -147,7 +148,7 @@ def reconcile_meta_portals() -> dict:
                     result["ignored"] += 1
                     print(f"pending Matrix invite not a verified Meta portal room={room_id} reason={reason}", flush=True)
                     continue
-                result["verified_portals"] += 1
+                verified_rooms.add(room_id)
                 if _join_verified_portal(room_id):
                     result["joined"] += 1
                     memberships[room_id] = "join"
@@ -155,6 +156,9 @@ def reconcile_meta_portals() -> dict:
                 result["errors"].append(f"{room_id}: join failed: {exc}")
 
         if not legacy.configured():
+            result["verified_portals"] = len(verified_rooms)
+            result["checked_at"] = _utc_now()
+            legacy.set_setting("meta_invite_reconcile_at", result["checked_at"])
             legacy.set_setting("meta_portal_reconcile_error", "Chatwoot is not configured")
             return result
 
@@ -165,10 +169,11 @@ def reconcile_meta_portals() -> dict:
             if membership != "join":
                 continue
             try:
-                verified, reason = verified_meta_portal(room_id)
-                if not verified:
-                    continue
-                result["verified_portals"] += 1
+                if room_id not in verified_rooms:
+                    verified, reason = verified_meta_portal(room_id)
+                    if not verified:
+                        continue
+                    verified_rooms.add(room_id)
                 before = _link_exists(room_id)
                 imported = enhancements.import_recent_history(room_id)
                 result["history_imported"] += imported
@@ -182,8 +187,9 @@ def reconcile_meta_portals() -> dict:
             except Exception as exc:
                 result["errors"].append(f"{room_id}: reconcile failed: {exc}")
 
-        checked = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-        legacy.set_setting("meta_invite_reconcile_at", checked)
+        result["verified_portals"] = len(verified_rooms)
+        result["checked_at"] = _utc_now()
+        legacy.set_setting("meta_invite_reconcile_at", result["checked_at"])
         legacy.set_setting("meta_invite_reconcile_joined", str(result["joined"]))
         legacy.set_setting("meta_portal_reconcile_verified", str(result["verified_portals"]))
         legacy.set_setting("meta_portal_reconcile_linked", str(result["linked"]))
