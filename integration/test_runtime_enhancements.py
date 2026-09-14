@@ -5,7 +5,7 @@ import os
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -105,12 +105,18 @@ class RuntimeEnhancementTests(unittest.TestCase):
         self.assertEqual(link["conversation_id"], 77)
         self.assertEqual(post.call_args_list[0].args[1]["name"], "Julio Alberto Marte Balbuena")
 
-    def test_profile_enrichment_failure_never_blocks_message_link(self):
+    def test_profile_enrichment_is_best_effort_for_existing_link(self):
         self.insert_link()
-        with patch.object(module, "update_chatwoot_contact_profile", side_effect=None) as update:
+        with patch.object(module.prod, "cw_get", return_value={"id": 77, "inbox_id": 2}), \
+             patch.object(module, "update_chatwoot_contact_profile") as update:
             row = module.enhanced_ensure_room_link("!portal:matrix.example.com", "@meta_1:matrix.example.com")
         self.assertEqual(row["conversation_id"], 77)
         update.assert_called_once()
+
+    def test_contact_profile_update_swallows_metadata_failures(self):
+        with patch.object(module, "matrix_profile", return_value={"displayname": "Human Name", "avatar_url": ""}), \
+             patch.object(module, "chatwoot_request", side_effect=requests.ConnectionError("offline")):
+            module.update_chatwoot_contact_profile(1, 5, "@meta_1:matrix.example.com")
 
     def test_deleted_chatwoot_conversation_removes_stale_mapping(self):
         room = self.insert_link()
@@ -191,7 +197,7 @@ class RuntimeEnhancementTests(unittest.TestCase):
         send.assert_not_called()
 
     def test_duplicate_outgoing_message_id_is_not_sent_twice(self):
-        room = self.insert_link()
+        self.insert_link()
         payload = {
             "event": "message_created", "id": 44, "message_type": "outgoing", "content": "hello",
             "inbox": {"id": 2}, "conversation": {"id": 77, "inbox_id": 2},
