@@ -199,7 +199,7 @@ jobs:
           end=$((SECONDS + 60))
           while [ "$SECONDS" -lt "$end" ]; do
             status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
-            echo "$service: $status"
+            echo "integration after restart: $status"
             [ "$status" = "healthy" ] && break
             [ "$status" = "unhealthy" ] && exit 1
             sleep 2
