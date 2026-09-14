@@ -289,6 +289,13 @@ media_context_v3.install()
 # multipart replay markers across Chatwoot versions.
 media_context_v3_hardening.install()
 
+# Rebuild deleted Chatwoot conversations from room-scoped Matrix history, mirror
+# Facebook-authored self messages on the fast /sync path, and register Marketplace
+# metadata so listing context is visible in the Chatwoot sidebar.
+import marketplace_rebuild_v4  # noqa: E402
+
+marketplace_rebuild_v4.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
