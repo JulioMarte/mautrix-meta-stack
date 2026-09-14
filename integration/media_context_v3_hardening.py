@@ -6,6 +6,7 @@ object-store URL contained in an attachment callback.
 """
 from __future__ import annotations
 
+import os
 from urllib.parse import urlparse
 
 import requests
@@ -110,9 +111,20 @@ def handle_chatwoot_outgoing(payload: dict, *, signature_verified: bool) -> dict
     return _original_media_outgoing(payload, signature_verified=signature_verified)
 
 
+def import_recent_history(room_id: str) -> int:
+    # Production has the mautrix data volume mounted read-only. Unit tests and
+    # disaster-recovery/offline environments may not. In that case preserve the
+    # already-proven PR #44 importer rather than silently misclassifying history or
+    # attempting remote profile lookups from an unavailable bridge database.
+    if not os.path.isfile(media.META_DB_PATH):
+        return delivery.import_recent_history_days(room_id)
+    return media.import_recent_history(room_id)
+
+
 def install() -> None:
     media._bounded_download = bounded_download
     media.sync_conversation_context = safe_sync_conversation_context
     media.post_chatwoot_media = post_chatwoot_media
     media.handle_chatwoot_outgoing = handle_chatwoot_outgoing
+    media.enhancements.import_recent_history = import_recent_history
     delivery.handle_chatwoot_outgoing_verified = handle_chatwoot_outgoing
