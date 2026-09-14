@@ -204,10 +204,12 @@ class MediaContextV3Tests(unittest.TestCase):
             "info": {"mimetype": "image/png"},
         }
         with patch.object(hardening, "_original_download_matrix_media", side_effect=requests.HTTPError("gone")), \
+             patch.object(legacy, "matrix_headers", return_value={"Authorization": "Bearer unit-test"}), \
              patch.object(hardening, "bounded_download", return_value=(b"png", "image/png")) as download:
             result = hardening.download_matrix_media(content)
         self.assertEqual(result, (b"png", "photo.png", "image/png", ""))
         self.assertIn("/_matrix/media/v3/download/remote.example/media", download.call_args.args[0])
+        self.assertEqual(download.call_args.kwargs["headers"], {"Authorization": "Bearer unit-test"})
 
     def test_true_matrix_sticker_event_is_normalized_for_media_pipeline(self):
         event = {
