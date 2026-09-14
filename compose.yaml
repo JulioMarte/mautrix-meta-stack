@@ -29,7 +29,7 @@ services:
         exec /start.py generate
 
   mautrix-config-init:
-    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
     user: "0:0"
     restart: "no"
     volumes:
@@ -88,7 +88,10 @@ services:
           .network.proxy_e2ee = true |
           .network.proxy_messenger_lite = true |
           .network.proxy_other = true |
-          .network.thread_backfill.batch_count = 0 |
+          .network.thread_backfill.batch_count = -1 |
+          .backfill.enabled = true |
+          .backfill.max_initial_messages = 100 |
+          .backfill.max_catchup_messages = 500 |
           .bridge.permissions = {} |
           .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
           .bridge.permissions[strenv(EFFECTIVE_MATRIX_ADMIN_MXID)] = "admin" |
@@ -109,7 +112,7 @@ services:
         echo "mautrix-meta config patched for $$MATRIX_SERVER_NAME"
 
   mautrix-registration-init:
-    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
     user: "0:0"
     restart: "no"
     depends_on:
@@ -293,7 +296,7 @@ services:
     stop_grace_period: 15s
 
   mautrix-meta:
-    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.07}
+    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
     restart: unless-stopped
     depends_on:
       synapse:
