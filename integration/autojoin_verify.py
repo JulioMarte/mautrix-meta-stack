@@ -1,21 +1,29 @@
 """Verified auto-join for mautrix-meta portal invitations.
 
-A successful Matrix /join HTTP response is not treated as sufficient. We confirm the
-admin membership state is actually `join` and retry a short bounded number of times.
-Portal rooms may be created/invited by the bridge bot *or* by a bridge-controlled
-Meta ghost user, so trust is derived from the appservice registration user namespace
-instead of assuming every portal invite sender is the bot MXID.
+Trust is derived from the installed Matrix application-service registration rather
+than guessed MXID prefixes. The appservice bot (`sender_localpart`) is trusted
+explicitly and remote-user ghosts are trusted only when they match an *exclusive*
+`namespaces.users` entry from that registration.
 """
 from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from urllib.parse import quote
+
+import yaml
 
 import final_app as runtime
 import runtime_enhancements as enhancements
 
 legacy = runtime.legacy
+
+
+@dataclass(frozen=True)
+class AppserviceTrust:
+    bot_mxid: str
+    exclusive_user_regexes: tuple[str, ...]
 
 
 def _membership(room_id: str) -> str:
@@ -28,69 +36,88 @@ def _membership(room_id: str) -> str:
     return str(data.get("membership") or "")
 
 
-def _yaml_scalar(value: str) -> str:
-    """Decode the simple quoted scalars emitted in mautrix appservice registrations."""
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        quote_char = value[0]
-        value = value[1:-1]
-        if quote_char == "'":
-            value = value.replace("''", "'")
-        else:
-            # Registration regexes only need the common YAML/JSON escapes here.
-            value = value.replace('\\"', '"').replace('\\\\', '\\')
-    return value
+def _local_server(mxid: str) -> str:
+    if not mxid.startswith("@") or ":" not in mxid:
+        return ""
+    return mxid.split(":", 1)[1]
+
+
+def _load_registration() -> dict:
+    try:
+        with open(legacy.REGISTRATION_PATH, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"mautrix registration unavailable for invite trust: {exc}", flush=True)
+        return {}
+    if not isinstance(data, dict):
+        print("mautrix registration is not a YAML object; invite trust disabled", flush=True)
+        return {}
+    return data
+
+
+def appservice_trust() -> AppserviceTrust:
+    """Build the exact trust boundary represented by registration.yaml.
+
+    Matrix AS semantics distinguish *interest* from *ownership*. A non-exclusive
+    user namespace can match ordinary Matrix users and therefore is not sufficient
+    evidence that mautrix controls the inviter. Only exclusive user namespaces are
+    accepted for ghost identities. The appservice sender user is trusted separately,
+    as defined by `sender_localpart` in the registration contract.
+    """
+    data = _load_registration()
+    server = legacy.MATRIX_SERVER_NAME
+    sender_localpart = str(data.get("sender_localpart") or "").strip()
+    bot_mxid = f"@{sender_localpart}:{server}" if sender_localpart else ""
+
+    namespaces = data.get("namespaces") or {}
+    users = namespaces.get("users") if isinstance(namespaces, dict) else []
+    if not isinstance(users, list):
+        users = []
+
+    patterns: list[str] = []
+    for entry in users:
+        if not isinstance(entry, dict) or entry.get("exclusive") is not True:
+            continue
+        pattern = str(entry.get("regex") or "").strip()
+        if not pattern:
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            print(f"invalid exclusive mautrix user regex ignored pattern={pattern!r}: {exc}", flush=True)
+            continue
+        patterns.append(pattern)
+
+    return AppserviceTrust(bot_mxid=bot_mxid, exclusive_user_regexes=tuple(dict.fromkeys(patterns)))
 
 
 def appservice_user_regexes() -> tuple[str, ...]:
-    """Return user-MXID regexes from the installed mautrix-meta registration.
-
-    The registration is the authoritative ownership boundary Synapse itself uses for
-    application-service users. If it cannot be parsed, callers fail closed and only
-    the explicit bridge bot MXID remains trusted.
-    """
-    patterns: list[str] = []
-    in_users = False
-    try:
-        with open(legacy.REGISTRATION_PATH, "r", encoding="utf-8") as fh:
-            for raw in fh:
-                stripped = raw.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if stripped == "users:":
-                    in_users = True
-                    continue
-                if in_users and stripped in {"aliases:", "rooms:"}:
-                    in_users = False
-                    continue
-                if not in_users:
-                    continue
-                # Generated registrations use either `regex:` or `- regex:`.
-                candidate = stripped[2:].strip() if stripped.startswith("- ") else stripped
-                if candidate.startswith("regex:"):
-                    pattern = _yaml_scalar(candidate.split(":", 1)[1])
-                    if pattern:
-                        patterns.append(pattern)
-    except OSError as exc:
-        print(f"mautrix registration unavailable for invite trust: {exc}", flush=True)
-        return ()
-    return tuple(dict.fromkeys(patterns))
+    """Compatibility helper used by tests/status code."""
+    return appservice_trust().exclusive_user_regexes
 
 
 def trusted_meta_inviter(mxid: str) -> tuple[bool, str]:
-    """Trust the bot or any user MXID owned by the mautrix-meta appservice."""
-    expected_bot = legacy.bridge_bot_mxid()
-    if expected_bot and mxid == expected_bot:
-        return True, "bridge_bot"
+    """Trust only official local identities controlled by this mautrix appservice."""
     if not mxid:
         return False, "missing_inviter"
-    for pattern in appservice_user_regexes():
+    if _local_server(mxid) != legacy.MATRIX_SERVER_NAME:
+        return False, "non_local_inviter"
+
+    trust = appservice_trust()
+    if trust.bot_mxid and mxid == trust.bot_mxid:
+        return True, "appservice_sender_localpart"
+
+    for pattern in trust.exclusive_user_regexes:
         try:
+            # Generated mautrix registration regexes describe the complete ghost
+            # MXID. fullmatch avoids accepting a user with an appended suffix.
             if re.fullmatch(pattern, mxid):
-                return True, "appservice_user_namespace"
-        except re.error as exc:
-            print(f"invalid mautrix registration user regex ignored pattern={pattern!r}: {exc}", flush=True)
-    return False, "outside_appservice_user_namespace"
+                return True, "exclusive_appservice_user_namespace"
+        except re.error:
+            # Already validated while loading; keep fail-closed behavior if this
+            # somehow changes between calls.
+            continue
+    return False, "outside_exclusive_appservice_namespace"
 
 
 def robust_auto_join_room(room_id: str, room: dict) -> bool:
