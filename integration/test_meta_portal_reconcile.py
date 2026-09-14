@@ -70,15 +70,21 @@ class MetaPortalReconcileTests(unittest.TestCase):
             }
         ]
 
+    @staticmethod
+    def invite_state(sender="@metabot:matrix.example.com"):
+        return [
+            {
+                "type": "m.room.member",
+                "state_key": "@admin:matrix.example.com",
+                "sender": sender,
+                "content": {"membership": "invite"},
+            }
+        ]
+
     def test_persisted_off_setting_cannot_disable_trusted_live_invite(self):
         legacy.set_setting("auto_join_meta_portals", "0")
         room = {
-            "invite_state": {"events": [{
-                "type": "m.room.member",
-                "state_key": "@admin:matrix.example.com",
-                "sender": "@metabot:matrix.example.com",
-                "content": {"membership": "invite"},
-            }]}
+            "invite_state": {"events": self.invite_state()}
         }
         membership = Mock(content=b'{"membership":"join"}')
         membership.json.return_value = {"membership": "join"}
@@ -100,7 +106,41 @@ class MetaPortalReconcileTests(unittest.TestCase):
         self.assertEqual(result["history_imported"], 3)
         join.assert_called_once_with("!meta:matrix.example.com")
 
-    def test_invite_without_bridge_state_is_never_joined(self):
+    def test_trusted_metabot_invite_joins_even_without_bridge_state(self):
+        memberships = {"!pending:matrix.example.com": "invite"}
+        with patch.object(module, "user_memberships", return_value=memberships), \
+             patch.object(module, "room_admin_state", return_value=self.invite_state()), \
+             patch.object(module, "_join_verified_portal", return_value=True) as join, \
+             patch.object(enhancements, "import_recent_history", return_value=1), \
+             patch.object(module, "_link_exists", return_value=True):
+            result = module.reconcile_meta_portals()
+        self.assertEqual(result["invited"], 1)
+        self.assertEqual(result["joined"], 1)
+        self.assertEqual(result["ignored"], 0)
+        join.assert_called_once_with("!pending:matrix.example.com")
+
+    def test_trusted_exclusive_ghost_invite_joins_without_bridge_state(self):
+        memberships = {"!pending-ghost:matrix.example.com": "invite"}
+        with patch.object(module, "user_memberships", return_value=memberships), \
+             patch.object(module, "room_admin_state", return_value=self.invite_state("@meta_123:matrix.example.com")), \
+             patch.object(module, "_join_verified_portal", return_value=True) as join, \
+             patch.object(enhancements, "import_recent_history", return_value=0), \
+             patch.object(module, "_link_exists", return_value=False):
+            result = module.reconcile_meta_portals()
+        self.assertEqual(result["joined"], 1)
+        self.assertEqual(result["ignored"], 0)
+        join.assert_called_once_with("!pending-ghost:matrix.example.com")
+
+    def test_untrusted_invite_without_bridge_state_is_never_joined(self):
+        with patch.object(module, "user_memberships", return_value={"!random:matrix.example.com": "invite"}), \
+             patch.object(module, "room_admin_state", return_value=self.invite_state("@evil:matrix.example.com")), \
+             patch.object(module, "_join_verified_portal") as join:
+            result = module.reconcile_meta_portals()
+        self.assertEqual(result["ignored"], 1)
+        self.assertEqual(result["joined"], 0)
+        join.assert_not_called()
+
+    def test_invite_with_no_membership_or_bridge_state_is_never_joined(self):
         with patch.object(module, "user_memberships", return_value={"!random:matrix.example.com": "invite"}), \
              patch.object(module, "room_admin_state", return_value=[]), \
              patch.object(module, "_join_verified_portal") as join:
