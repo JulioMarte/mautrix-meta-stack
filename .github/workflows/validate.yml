@@ -23,7 +23,7 @@ jobs:
       INTEGRATION_COOKIE_SECURE: 'false'
       ALLOW_INSECURE_CHATWOOT: 'false'
       SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
-      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.07
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.08.1
       YQ_IMAGE: mikefarah/yq:4.47.2
       TZ: America/Santo_Domingo
     steps:
@@ -81,6 +81,21 @@ jobs:
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
             meta-chatwoot-integration python -m unittest test_final_app.py
+
+      - name: Run runtime enhancement tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-runtime-enhancement-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-runtime-enhancement-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_runtime_enhancements.py
 
       - name: Run NiceGUI admin tests
         run: |
@@ -186,7 +201,10 @@ jobs:
             test "$(yq ".encryption.allow" /data/config.yaml)" = "false"
             test "$(yq ".encryption.default" /data/config.yaml)" = "false"
             test "$(yq ".encryption.require" /data/config.yaml)" = "false"
-            test "$(yq ".network.thread_backfill.batch_count" /data/config.yaml)" = "0"
+            test "$(yq ".network.thread_backfill.batch_count" /data/config.yaml)" = "-1"
+            test "$(yq ".backfill.enabled" /data/config.yaml)" = "true"
+            test "$(yq ".backfill.max_initial_messages" /data/config.yaml)" = "100"
+            test "$(yq ".backfill.max_catchup_messages" /data/config.yaml)" = "500"
           '
 
       - name: Dump stack logs on failure
