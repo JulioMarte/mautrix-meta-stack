@@ -506,8 +506,8 @@ def advanced_page():
 
         with ui.card().classes("w-full p-6"):
             ui.label("Portal automation & history").classes("text-xl font-semibold")
-            auto_join = ui.switch("Automatically join Meta portal rooms", value=state["auto_join"])
-            ui.label("Only invitations from the configured mautrix-meta bot are accepted. New customer chats must never require a manual Accept in Element.").classes("text-xs text-slate-500")
+            ui.label("Trusted Meta portal rooms are always joined automatically. This is required for Chatwoot sync and cannot be disabled.").classes("text-sm text-slate-600")
+            ui.label("Only invitations from the configured mautrix-meta appservice are accepted. New customer chats must never require a manual Accept in Element.").classes("text-xs text-slate-500")
             import_history = ui.switch("Import recent inbound history when a portal is joined", value=state["import_history"])
             history_limit = ui.number("Messages to inspect per portal", value=state["history_limit"], min=0, max=1000, step=25).classes("w-full")
             sync_profiles = ui.switch("Sync Meta display name and avatar into Chatwoot", value=state["sync_profiles"])
@@ -516,7 +516,7 @@ def advanced_page():
             async def save_runtime():
                 try:
                     enhancements.save_operations_settings(
-                        auto_join=bool(auto_join.value),
+                        auto_join=True,
                         import_history=bool(import_history.value),
                         history_limit=int(history_limit.value or 0),
                         sync_profiles=bool(sync_profiles.value),
