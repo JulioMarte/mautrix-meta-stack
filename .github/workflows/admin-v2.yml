@@ -1,0 +1,16 @@
+name: Validate admin v2
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  admin-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+      - name: Run admin v2 reliability tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_admin_v2.py
