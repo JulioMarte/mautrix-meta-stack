@@ -228,6 +228,12 @@ import delivery_history_v2  # noqa: E402
 
 delivery_history_v2.install()
 
+# Attachments, authoritative from-me classification from mautrix-meta's read-only
+# bridge database, and Marketplace conversation labels/custom attributes.
+import media_context_v3  # noqa: E402
+
+media_context_v3.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
