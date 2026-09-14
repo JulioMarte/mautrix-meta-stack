@@ -108,14 +108,16 @@ class RuntimeEnhancementTests(unittest.TestCase):
         contact = {"id": 5, "contact_inboxes": []}
         posts = [contact, {"source_id": "source-5"}, {"id": 77}]
         with patch.object(module, "contact_identity", return_value={"name": profile["displayname"], "avatar_url": ""}), \
-             patch.object(legacy, "cw_post", side_effect=posts):
+             patch.object(module, "update_chatwoot_contact_profile"), \
+             patch.object(legacy, "cw_post", side_effect=posts) as cw_post:
             link = module.enhanced_ensure_room_link("!new:matrix.example.com", "@meta_123:matrix.example.com")
         self.assertEqual(link["conversation_id"], 77)
-        self.assertEqual(legacy.cw_post.call_args_list[0].args[1]["name"], "Julio Alberto Marte Balbuena")
+        self.assertEqual(cw_post.call_args_list[0].args[1]["name"], "Julio Alberto Marte Balbuena")
 
     def test_existing_link_refreshes_profile_without_breaking_delivery(self):
         room = self.insert_link()
-        with patch.object(module, "update_chatwoot_contact_profile", side_effect=RuntimeError("offline")):
+        with patch.object(module, "repair_deleted_conversation", return_value=False), \
+             patch.object(module, "update_chatwoot_contact_profile", side_effect=RuntimeError("offline")):
             row = module.enhanced_ensure_room_link(room, "@meta_123:matrix.example.com")
         self.assertEqual(row["conversation_id"], 77)
 
