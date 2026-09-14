@@ -31,12 +31,13 @@ class MetaPortalReconcileTests(unittest.TestCase):
                 "  aliases: []\n"
                 "  rooms: []\n"
             )
-        global module, autojoin, enhancements, legacy
+        global module, autojoin, enhancements, legacy, prod
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("meta_portal_reconcile")
         autojoin = importlib.import_module("autojoin_verify")
         enhancements = importlib.import_module("runtime_enhancements")
         legacy = runtime.legacy
+        prod = runtime.prod
         legacy.init_db()
 
     @classmethod
@@ -48,6 +49,7 @@ class MetaPortalReconcileTests(unittest.TestCase):
             conn.execute("DELETE FROM settings")
             conn.execute("DELETE FROM room_links")
             conn.execute("DELETE FROM processed_events")
+        prod._portal_cache.clear()
         legacy.set_setting("chatwoot_base_url", "http://chatwoot.example.com")
         legacy.set_setting("chatwoot_account_id", "1")
         legacy.set_setting("chatwoot_inbox_id", "2")
@@ -56,13 +58,14 @@ class MetaPortalReconcileTests(unittest.TestCase):
         legacy.set_setting("history_import_limit", "100")
 
     @staticmethod
-    def bridge_state(room_name="Portal"):
+    def bridge_state(room_name="Portal", sender="@metabot:matrix.example.com", bridgebot="@metabot:matrix.example.com"):
         return [
             {
                 "type": "m.bridge",
                 "state_key": "net.maunium.meta://facebook/123",
+                "sender": sender,
                 "content": {
-                    "bridgebot": "@metabot:matrix.example.com",
+                    "bridgebot": bridgebot,
                     "creator": "@meta_123:matrix.example.com",
                     "protocol": {"id": "facebook", "displayname": "Facebook Messenger"},
                     "channel": {"id": "123", "displayname": room_name},
@@ -83,9 +86,7 @@ class MetaPortalReconcileTests(unittest.TestCase):
 
     def test_persisted_off_setting_cannot_disable_trusted_live_invite(self):
         legacy.set_setting("auto_join_meta_portals", "0")
-        room = {
-            "invite_state": {"events": self.invite_state()}
-        }
+        room = {"invite_state": {"events": self.invite_state()}}
         membership = Mock(content=b'{"membership":"join"}')
         membership.json.return_value = {"membership": "join"}
         with patch.object(enhancements, "_matrix_post") as join, \
@@ -149,13 +150,32 @@ class MetaPortalReconcileTests(unittest.TestCase):
         self.assertEqual(result["joined"], 0)
         join.assert_not_called()
 
-    def test_spoofed_bridge_state_with_other_bot_is_rejected(self):
-        state = self.bridge_state()
-        state[0]["content"]["bridgebot"] = "@evil:matrix.example.com"
+    def test_trusted_bridge_event_sender_is_authoritative_even_if_payload_bridgebot_differs(self):
+        state = self.bridge_state(bridgebot="@legacybot:matrix.example.com")
+        with patch.object(module, "room_admin_state", return_value=state):
+            verified, reason = module.verified_meta_portal("!portal:matrix.example.com")
+        self.assertTrue(verified)
+        self.assertIn("trusted_bridge_state_sender", reason)
+
+    def test_untrusted_sender_cannot_spoof_bridgebot_content(self):
+        state = self.bridge_state(sender="@evil:matrix.example.com", bridgebot="@metabot:matrix.example.com")
         with patch.object(module, "room_admin_state", return_value=state):
             verified, reason = module.verified_meta_portal("!fake:matrix.example.com")
         self.assertFalse(verified)
-        self.assertEqual(reason, "no_matching_bridge_state")
+        self.assertIn("untrusted_bridge_state_sender", reason)
+
+    def test_exclusive_ghost_can_authoritatively_send_bridge_state(self):
+        state = self.bridge_state(sender="@meta_123:matrix.example.com")
+        with patch.object(module, "room_admin_state", return_value=state):
+            verified, reason = module.verified_meta_portal("!legacy:matrix.example.com")
+        self.assertTrue(verified)
+        self.assertIn("exclusive_appservice_user_namespace", reason)
+
+    def test_runtime_verifier_uses_same_authoritative_rule_and_caches_success(self):
+        with patch.object(module, "verified_meta_portal", return_value=(True, "trusted")) as verify:
+            self.assertTrue(module.runtime_is_bridge_portal("!runtime:matrix.example.com"))
+            self.assertTrue(module.runtime_is_bridge_portal("!runtime:matrix.example.com"))
+        verify.assert_called_once_with("!runtime:matrix.example.com")
 
     def test_old_joined_marketplace_portal_imports_history_without_new_sync_event(self):
         memberships = {"!marketplace:matrix.example.com": "join"}
@@ -179,6 +199,7 @@ class MetaPortalReconcileTests(unittest.TestCase):
     def test_install_migrates_old_off_setting_and_forces_settings_api_on(self):
         legacy.set_setting("auto_join_meta_portals", "0")
         module.install(start_background=False)
+        self.assertIs(prod.is_bridge_portal, module.runtime_is_bridge_portal)
         self.assertEqual(legacy.get_setting("auto_join_meta_portals"), "1")
         enhancements.save_operations_settings(
             auto_join=False,
