@@ -70,6 +70,7 @@ class AdminV2Tests(unittest.TestCase):
             },
         }
         with patch.object(module.requests, "get", return_value=response), \
+             patch.object(legacy, "matrix_headers", return_value={"Authorization": "Bearer test"}), \
              patch.object(enhancements, "auto_join_room", return_value=True) as auto_join, \
              patch.object(enhancements, "import_recent_history", return_value=1) as history, \
              patch.object(enhancements, "enhanced_live_matrix_event") as live:
@@ -96,6 +97,7 @@ class AdminV2Tests(unittest.TestCase):
             },
         }
         with patch.object(module.requests, "get", return_value=response), \
+             patch.object(legacy, "matrix_headers", return_value={"Authorization": "Bearer test"}), \
              patch.object(enhancements, "auto_join_room", return_value=True), \
              patch.object(enhancements, "import_recent_history", return_value=0), \
              patch.object(enhancements, "enhanced_live_matrix_event") as live:
