@@ -95,7 +95,24 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest test_nicegui_app.py test_meta_route_runtime.py
+            meta-chatwoot-integration python -m unittest test_nicegui_app.py
+
+      - name: Run Meta runtime route tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-route-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-route-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            -e META_PROXY_ENABLED=false \
+            -e META_PROXY_URL='' \
+            meta-chatwoot-integration python -m unittest test_meta_route_runtime.py
 
       - name: Reproduce bootstrap through Synapse config preflight
         run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
