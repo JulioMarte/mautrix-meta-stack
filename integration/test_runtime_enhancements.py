@@ -117,9 +117,10 @@ class RuntimeEnhancementTests(unittest.TestCase):
     def test_existing_link_refreshes_profile_without_breaking_delivery(self):
         room = self.insert_link()
         with patch.object(module, "repair_deleted_conversation", return_value=False), \
-             patch.object(module, "update_chatwoot_contact_profile", side_effect=RuntimeError("offline")):
+             patch.object(module, "update_chatwoot_contact_profile") as profile_sync:
             row = module.enhanced_ensure_room_link(room, "@meta_123:matrix.example.com")
         self.assertEqual(row["conversation_id"], 77)
+        profile_sync.assert_called_once_with(1, 5, "@meta_123:matrix.example.com")
 
     def test_deleted_chatwoot_conversation_removes_stale_mapping(self):
         room = self.insert_link()
