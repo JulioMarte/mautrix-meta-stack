@@ -508,8 +508,9 @@ def advanced_page():
             ui.label("Portal automation & history").classes("text-xl font-semibold")
             ui.label("Trusted Meta portal rooms are always joined automatically. This is required for Chatwoot sync and cannot be disabled.").classes("text-sm text-slate-600")
             ui.label("Only invitations from the configured mautrix-meta appservice are accepted. New customer chats must never require a manual Accept in Element.").classes("text-xs text-slate-500")
-            import_history = ui.switch("Import recent inbound history when a portal is joined", value=state["import_history"])
-            history_limit = ui.number("Messages to inspect per portal", value=state["history_limit"], min=0, max=1000, step=25).classes("w-full")
+            import_history = ui.switch("Import recent incoming and outgoing conversation history", value=state["import_history"])
+            history_limit = ui.number("Days of history to import per portal", value=state["history_limit"], min=0, max=3650, step=1).classes("w-full")
+            ui.label("0 disables history import. Matrix is paginated backwards until the day cutoff is crossed; the setting is not a message-count cap.").classes("text-xs text-slate-500")
             sync_profiles = ui.switch("Sync Meta display name and avatar into Chatwoot", value=state["sync_profiles"])
             repair_deleted = ui.switch("Recreate deleted Chatwoot conversations automatically", value=state["repair_deleted"])
 
@@ -559,7 +560,15 @@ def status_page(request: Request):
         with ui.card().classes("w-full p-6"):
             _status_row("Chatwoot API", bool(legacy.get_setting("chatwoot_verified_at")), legacy.get_setting("chatwoot_verified_at") or "Not tested")
             _status_row("API Inbox callback", bool(legacy.get_setting("api_inbox_callback_verified_at")), legacy.get_setting("api_inbox_callback_verified_at") or callback_url)
-            _status_row("Signed API Inbox delivery", bool(legacy.get_setting("api_inbox_delivery_verified_at")), legacy.get_setting("api_inbox_delivery_verified_at") or "No signed callback received yet")
+            _status_row("API Inbox delivery", bool(legacy.get_setting("api_inbox_delivery_verified_at")), legacy.get_setting("api_inbox_delivery_verified_at") or "No callback has completed verified Matrix delivery yet")
+            last_matrix_event = legacy.get_setting("last_chatwoot_matrix_event_id")
+            last_matrix_at = legacy.get_setting("last_chatwoot_matrix_delivery_at")
+            last_matrix_error = legacy.get_setting("last_chatwoot_matrix_error")
+            _status_row(
+                "Chatwoot → Matrix acknowledgement",
+                bool(last_matrix_event),
+                (f"{last_matrix_at} · {last_matrix_event}" if last_matrix_event else (last_matrix_error or "No outbound Matrix event has been positively verified yet")),
+            )
             _status_row("Meta auto-join", bool(legacy.get_setting("last_meta_auto_join_at") or legacy.get_setting("meta_invite_reconcile_at")), legacy.get_setting("last_meta_auto_join_at") or legacy.get_setting("meta_invite_reconcile_at") or "No Meta portal has needed auto-join since this version started")
             _status_row("Linked Chatwoot conversations", links > 0, str(links))
             mode = "PROXY" if legacy.get_setting("proxy_enabled") == "1" else "DIRECT"
@@ -567,8 +576,8 @@ def status_page(request: Request):
 
         with ui.card().classes("w-full p-6 border border-emerald-100"):
             ui.label("Acceptance test").classes("text-xl font-semibold")
-            ui.label("1. From a different Facebook account, send a brand-new Messenger message. 2. Do not open Element. 3. Confirm the Chatwoot conversation appears with the real name/avatar. 4. Reply from Chatwoot and confirm delivery to Meta without Error sending. 5. Repeat with Marketplace. 6. Delete the Chatwoot conversation and send another Meta message; it should recreate automatically.").classes("text-slate-600")
-            ui.label("If Element still shows an invite visually but Chatwoot receives the conversation automatically, that is only stale client UI. If Chatwoot does not receive it, use Advanced → Reconcile pending Meta invites and inspect the status here.").classes("text-sm text-amber-700 mt-2")
+            ui.label("1. From a different Facebook account, send a brand-new Messenger message. 2. Do not open Element. 3. Confirm the Chatwoot conversation appears with the real name/avatar. 4. Reply from Chatwoot and confirm Status shows a Matrix event ID and the message reaches Meta. 5. Repeat with Marketplace. 6. Delete the Chatwoot conversation and send another Meta message; it should recreate automatically.").classes("text-slate-600")
+            ui.label("If an agent reply is marked sent in Chatwoot but no Matrix event ID appears here, the connector now fails the callback instead of silently claiming delivery. Inspect the integration log for the exact verification error.").classes("text-sm text-amber-700 mt-2")
 
 
 async def _admin_entry_redirect(request: Request, call_next):
