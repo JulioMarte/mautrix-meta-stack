@@ -221,6 +221,13 @@ import meta_portal_reconcile  # noqa: E402
 
 meta_portal_reconcile.install(admin_v2, start_background=_start_matrix_sync)
 
+# Chatwoot API-channel HMAC compatibility, positive Matrix delivery verification,
+# robust Chatwoot response parsing, and day-based bidirectional history import.
+# Install after reconciliation so this layer wraps its mandatory auto-join settings.
+import delivery_history_v2  # noqa: E402
+
+delivery_history_v2.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
