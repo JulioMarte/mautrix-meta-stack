@@ -48,41 +48,6 @@ def ensure_activation_boundary():
         legacy.set_setting("chatwoot_enabled_at_ms", str(int(time.time() * 1000)))
 
 
-base_matrix_event_to_chatwoot = prod.matrix_event_to_chatwoot
-
-
-def guarded_matrix_event_to_chatwoot(room_id, event):
-    cutoff_raw = legacy.get_setting("chatwoot_enabled_at_ms", "0")
-    try:
-        cutoff = int(cutoff_raw or 0)
-        event_ts = int(event.get("origin_server_ts") or 0)
-    except (TypeError, ValueError):
-        cutoff = 0
-        event_ts = 0
-    if cutoff and event_ts and event_ts < cutoff:
-        return
-
-    # New Matrix rooms are allowed through: prod.ensure_room_link creates their
-    # Chatwoot conversation in the configured inbox. Existing links are rechecked
-    # on every message so moving a conversation to another inbox immediately
-    # stops Meta -> Chatwoot delivery as well as Chatwoot -> Meta replies.
-    if event.get("type") == "m.room.message" and _linked_conversation_id(room_id) is not None:
-        matches, conversation_id, actual_inbox_id = room_matches_configured_chatwoot_inbox(room_id)
-        if not matches:
-            configured_inbox_id = int(legacy.get_setting("chatwoot_inbox_id"))
-            print(
-                "matrix delivery ignored "
-                f"conversation={conversation_id} actual_inbox={actual_inbox_id} "
-                f"configured_inbox={configured_inbox_id}",
-                flush=True,
-            )
-            return
-    return base_matrix_event_to_chatwoot(room_id, event)
-
-
-legacy.matrix_event_to_chatwoot = guarded_matrix_event_to_chatwoot
-
-
 def _int_or_none(value):
     try:
         return int(value)
@@ -150,6 +115,51 @@ def room_matches_configured_chatwoot_inbox(room_id):
         )
     return actual_inbox_id == configured_inbox_id, conversation_id, actual_inbox_id
 
+
+def _unlink_room_conversation(room_id, conversation_id):
+    with legacy.db() as conn:
+        conn.execute(
+            "DELETE FROM room_links WHERE room_id = ? AND conversation_id = ?",
+            (room_id, conversation_id),
+        )
+
+
+base_matrix_event_to_chatwoot = prod.matrix_event_to_chatwoot
+
+
+def guarded_matrix_event_to_chatwoot(room_id, event):
+    cutoff_raw = legacy.get_setting("chatwoot_enabled_at_ms", "0")
+    try:
+        cutoff = int(cutoff_raw or 0)
+        event_ts = int(event.get("origin_server_ts") or 0)
+    except (TypeError, ValueError):
+        cutoff = 0
+        event_ts = 0
+    if cutoff and event_ts and event_ts < cutoff:
+        return
+
+    # Every supported Meta portal is allowed into Chatwoot. New rooms are created
+    # in the configured inbox by prod.ensure_room_link. If an existing Chatwoot
+    # conversation was moved to another inbox, detach the stale local mapping so
+    # the next Meta message creates a fresh conversation in the configured inbox
+    # instead of silently following the moved conversation elsewhere.
+    if event.get("type") == "m.room.message":
+        existing_conversation_id = _linked_conversation_id(room_id)
+        if existing_conversation_id is not None:
+            matches, conversation_id, actual_inbox_id = room_matches_configured_chatwoot_inbox(room_id)
+            if not matches:
+                configured_inbox_id = int(legacy.get_setting("chatwoot_inbox_id"))
+                _unlink_room_conversation(room_id, conversation_id)
+                print(
+                    "matrix conversation relinked to configured inbox "
+                    f"old_conversation={conversation_id} actual_inbox={actual_inbox_id} "
+                    f"configured_inbox={configured_inbox_id}",
+                    flush=True,
+                )
+    return base_matrix_event_to_chatwoot(room_id, event)
+
+
+legacy.matrix_event_to_chatwoot = guarded_matrix_event_to_chatwoot
 
 base_send_matrix_message = legacy.send_matrix_message
 
