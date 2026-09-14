@@ -20,6 +20,7 @@ legacy = media.legacy
 # messages that actually contain attachments take the media-aware path.
 _text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
 _original_media_outgoing = media.handle_chatwoot_outgoing
+_original_outgoing = _original_media_outgoing
 
 
 def _truthy_marker(value) -> bool:
