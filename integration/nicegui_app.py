@@ -75,6 +75,17 @@ def effective_proxy():
     return False, legacy.get_setting("proxy_enabled") == "1", legacy.get_setting("proxy_url")
 
 
+def proxy_resolver_payload() -> dict:
+    """Return exactly what mautrix-meta receives from the authenticated proxy resolver."""
+    _, enabled, proxy = effective_proxy()
+    if not enabled:
+        return {"proxy_url": ""}
+    if not proxy:
+        raise RuntimeError("Proxy is enabled but no proxy URL is configured")
+    prod.validate_proxy_url(proxy)
+    return {"proxy_url": proxy}
+
+
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -103,6 +114,7 @@ def setup_state() -> dict:
         "proxy_ready": proxy_ready,
         "proxy_verified_at": legacy.get_setting("proxy_verified_at"),
         "proxy_verified_ip": legacy.get_setting("proxy_verified_ip"),
+        "proxy_verified_mode": legacy.get_setting("proxy_verified_mode"),
         "webhook_secret_saved": webhook_secret_saved,
         "webhook_registration_verified_at": legacy.get_setting("webhook_registration_verified_at"),
         "webhook_delivery_verified_at": legacy.get_setting("webhook_delivery_verified_at"),
@@ -176,6 +188,7 @@ def save_configuration(base: str, account: str, inbox: str, token: str,
     if new_proxy != old_proxy:
         legacy.set_setting("proxy_verified_at", "")
         legacy.set_setting("proxy_verified_ip", "")
+        legacy.set_setting("proxy_verified_mode", "")
     runtime.ensure_activation_boundary()
 
 
@@ -350,6 +363,7 @@ def _public_ip(session: requests.Session, proxies=None) -> str:
 
 
 def test_proxy_url(proxy: str) -> dict:
+    """Low-level helper for validating a proxy URL without changing active routing."""
     proxy = (proxy or "").strip()
     if not proxy:
         raise ValueError("Enter a proxy URL first")
@@ -361,14 +375,59 @@ def test_proxy_url(proxy: str) -> dict:
     proxy_session.trust_env = False
     proxy_ip = _public_ip(proxy_session, proxies={"http": proxy, "https": proxy})
     return {
+        "mode": "PROXY",
         "direct_ip": direct_ip,
+        "route_ip": proxy_ip,
         "proxy_ip": proxy_ip,
         "different": direct_ip != proxy_ip,
         "checked_at": _now_utc(),
     }
 
 
+def verify_meta_route() -> dict:
+    """Test the exact route currently returned to mautrix-meta by /internal/proxy."""
+    resolver = proxy_resolver_payload()
+    proxy = str(resolver.get("proxy_url") or "").strip()
+
+    direct_session = requests.Session()
+    direct_session.trust_env = False
+    direct_ip = _public_ip(direct_session)
+    checked_at = _now_utc()
+
+    if not proxy:
+        result = {
+            "mode": "DIRECT",
+            "direct_ip": direct_ip,
+            "route_ip": direct_ip,
+            "proxy_ip": "",
+            "different": False,
+            "checked_at": checked_at,
+        }
+        legacy.set_setting("proxy_verified_at", checked_at)
+        legacy.set_setting("proxy_verified_ip", "")
+        legacy.set_setting("proxy_verified_mode", "DIRECT")
+        return result
+
+    proxy_session = requests.Session()
+    proxy_session.trust_env = False
+    route_ip = _public_ip(proxy_session, proxies={"http": proxy, "https": proxy})
+    result = {
+        "mode": "PROXY",
+        "direct_ip": direct_ip,
+        "route_ip": route_ip,
+        "proxy_ip": route_ip,
+        "different": direct_ip != route_ip,
+        "checked_at": checked_at,
+    }
+    if result["different"]:
+        legacy.set_setting("proxy_verified_at", checked_at)
+        legacy.set_setting("proxy_verified_ip", route_ip)
+        legacy.set_setting("proxy_verified_mode", "PROXY")
+    return result
+
+
 def verify_proxy() -> dict:
+    """Backward-compatible proxy-only verification used by existing tests/callers."""
     _, enabled, proxy = effective_proxy()
     if not enabled or not proxy:
         raise RuntimeError("Proxy is not configured")
@@ -376,6 +435,7 @@ def verify_proxy() -> dict:
     if result["different"]:
         legacy.set_setting("proxy_verified_at", result["checked_at"])
         legacy.set_setting("proxy_verified_ip", result["proxy_ip"])
+        legacy.set_setting("proxy_verified_mode", "PROXY")
     return result
 
 
@@ -439,6 +499,7 @@ async def health():
         "configured": state["chatwoot_ready"],
         "proxy_enabled": state["proxy_enabled"],
         "proxy_ready": state["proxy_ready"],
+        "proxy_mode": "PROXY" if state["proxy_enabled"] else "DIRECT",
         "admin_ui": "nicegui",
     }
 
@@ -455,12 +516,10 @@ async def internal_proxy(request: Request):
         return JSONResponse({"detail": "not found"}, status_code=404)
     if not (hmac.compare_digest(username, "mautrix") and hmac.compare_digest(password, prod.PROXY_RESOLVER_SECRET)):
         return JSONResponse({"detail": "not found"}, status_code=404)
-    _, enabled, proxy = effective_proxy()
-    if not enabled:
-        return {"proxy_url": ""}
-    if not proxy:
-        return JSONResponse({"error": "proxy enabled but not configured"}, status_code=503)
-    return {"proxy_url": proxy}
+    try:
+        return proxy_resolver_payload()
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
 
 
 @app.post("/webhooks/chatwoot")
@@ -572,7 +631,7 @@ def admin_page(request: Request):
             elif not state["chatwoot_verified_at"]:
                 next_action = "Next: run Test Chatwoot below."
             elif state["proxy_enabled"] and not state["proxy_verified_at"]:
-                next_action = "Next: run the proxy test and confirm the proxy IP is different from the VPS IP."
+                next_action = "Next: save the Meta route, then test the current runtime route and confirm its egress IP."
             elif not state["webhook_registration_verified_at"]:
                 next_action = "Next: create the webhook in Chatwoot, then run Verify webhook & import secret below."
             elif not state["webhook_secret_saved"]:
@@ -585,7 +644,7 @@ def admin_page(request: Request):
             with ui.column().classes("gap-2 mt-3"):
                 _check_row("Chatwoot saved", state["chatwoot_ready"], "URL, token, account and inbox are stored in the private integration volume.")
                 _check_row("Chatwoot API tested", bool(state["chatwoot_verified_at"]), state["chatwoot_verified_at"] or "Not tested yet")
-                _check_row("Meta proxy", (not state["proxy_enabled"]) or bool(state["proxy_verified_at"]), "Not required (disabled)" if not state["proxy_enabled"] else (state["proxy_verified_at"] or "Enabled but not tested yet"))
+                _check_row("Meta route", (not state["proxy_enabled"]) or bool(state["proxy_verified_at"]), ("DIRECT — no proxy returned to mautrix-meta" if not state["proxy_enabled"] else (state["proxy_verified_at"] or "PROXY enabled but current route not tested yet")))
                 _check_row("Webhook registered", bool(state["webhook_registration_verified_at"]), state["webhook_registration_verified_at"] or "Registration still needs verification")
                 _check_row("Webhook signing secret", state["webhook_secret_saved"], "Stored in the integration volume" if state["webhook_secret_saved"] else "Not stored yet")
                 _check_row("Signed webhook received", bool(state["webhook_delivery_verified_at"]), state["webhook_delivery_verified_at"] or "No verified Chatwoot delivery yet")
@@ -598,12 +657,14 @@ def admin_page(request: Request):
                 )
                 status_badge("API token stored", state["token_saved"])
             with ui.card().classes("p-5 grow min-w-64"):
-                ui.label("Meta proxy · optional").classes("text-sm text-slate-500")
+                ui.label("Meta runtime route").classes("text-sm text-slate-500")
                 if state["proxy_enabled"]:
-                    ui.label(legacy.redact_proxy(state["proxy_value"])).classes("text-base font-medium")
-                    status_badge("Proxy configured", state["proxy_ready"])
+                    ui.label("PROXY").classes("text-xl font-semibold text-green-700")
+                    ui.label(legacy.redact_proxy(state["proxy_value"])).classes("text-sm text-slate-600")
+                    status_badge("Resolver returns proxy", state["proxy_ready"])
                 else:
-                    ui.label("Disabled · direct connection").classes("text-base font-medium")
+                    ui.label("DIRECT").classes("text-xl font-semibold text-blue-700")
+                    ui.label("Stored proxy credentials are retained but inactive.").classes("text-sm text-slate-500")
             with ui.card().classes("p-5 grow min-w-64"):
                 ui.label("Linked conversations").classes("text-sm text-slate-500")
                 ui.label(str(state["link_count"])).classes("text-2xl font-semibold")
@@ -661,10 +722,10 @@ def admin_page(request: Request):
             with ui.row().classes("items-center gap-3 mb-2"):
                 ui.avatar("2", color="primary", text_color="white")
                 with ui.column().classes("gap-0"):
-                    ui.label("Meta proxy · optional").classes("text-xl font-semibold")
-                    ui.label("Only Meta traffic uses this proxy. Matrix and Chatwoot stay direct.").classes("text-slate-500")
+                    ui.label("Meta route · direct or proxy").classes("text-xl font-semibold")
+                    ui.label("This switch controls the resolver that mautrix-meta reads when it connects. Matrix and Chatwoot always stay direct.").classes("text-slate-500")
 
-            proxy_switch = ui.switch("Use this proxy for Meta", value=state["proxy_enabled"])
+            proxy_switch = ui.switch("Route Meta through the saved proxy", value=state["proxy_enabled"])
             proxy_input = ui.input(
                 "Proxy URL",
                 value=get_saved_secret("proxy_url"),
@@ -672,45 +733,59 @@ def admin_page(request: Request):
                 password_toggle_button=True,
                 placeholder="http://user:password@host:8888",
             ).props("outlined autocomplete=off").classes("w-full")
-            ui.label("Supported: http, https, socks5, socks5h. The eye icon reveals the stored proxy credentials.").classes("text-xs text-slate-500")
+            ui.label("The proxy URL may remain stored while DIRECT is selected. Stored does not mean active. Save after changing the switch or URL.").classes("text-xs text-slate-500")
 
             with ui.card().classes("w-full p-4 mt-3 bg-slate-50 border border-slate-200"):
+                route_mode_label = ui.label(f"SAVED META ROUTE: {'PROXY' if state['proxy_enabled'] else 'DIRECT'}").classes("text-sm font-semibold text-slate-700")
                 with ui.row().classes("w-full gap-4 flex-wrap"):
                     with ui.column().classes("grow min-w-56 gap-1"):
                         ui.label("Direct VPS public IP").classes("text-xs uppercase tracking-wide text-slate-500")
                         direct_ip_label = ui.label("Not tested yet").classes("text-lg font-mono font-semibold")
                     with ui.column().classes("grow min-w-56 gap-1"):
-                        ui.label("Proxy public IP").classes("text-xs uppercase tracking-wide text-slate-500")
-                        proxy_ip_label = ui.label(state["proxy_verified_ip"] or "Not tested yet").classes("text-lg font-mono font-semibold")
+                        ui.label("Observed Meta route IP").classes("text-xs uppercase tracking-wide text-slate-500")
+                        initial_route_ip = state["proxy_verified_ip"] if state["proxy_enabled"] else "Not tested yet"
+                        route_ip_label = ui.label(initial_route_ip or "Not tested yet").classes("text-lg font-mono font-semibold")
                 proxy_status = ui.label(
-                    f"Last saved-proxy check: {state['proxy_verified_at']}" if state["proxy_verified_at"] else "Test the proxy before relying on it for Meta."
+                    f"Last runtime-route check: {state['proxy_verified_at']} ({state['proxy_verified_mode'] or 'unknown mode'})" if state["proxy_verified_at"] else "Save the route, then test exactly what mautrix-meta will receive from the resolver."
                 ).classes("text-sm text-slate-600 mt-2")
                 checked_at_label = ui.label("").classes("text-xs text-slate-400")
 
-            async def test_proxy_now():
+            async def test_meta_route_now():
                 try:
-                    candidate = (proxy_input.value or "").strip()
-                    result = await asyncio.to_thread(test_proxy_url, candidate)
+                    saved_enabled = effective_proxy()[1]
+                    saved_proxy = effective_proxy()[2]
+                    candidate_enabled = bool(proxy_switch.value)
+                    candidate_proxy = (proxy_input.value or "").strip()
+                    if candidate_enabled != saved_enabled or (candidate_enabled and candidate_proxy != saved_proxy):
+                        proxy_status.text = "SAVE REQUIRED — the controls contain unsaved route changes. Save first; this test never tests an unsaved proxy value."
+                        proxy_status.classes(replace="text-sm text-amber-700 mt-2 font-medium")
+                        ui.notify("Save the Meta route before testing it", type="warning", close_button=True)
+                        return
+
+                    result = await asyncio.to_thread(verify_meta_route)
                     direct_ip_label.text = result["direct_ip"]
-                    proxy_ip_label.text = result["proxy_ip"]
+                    route_ip_label.text = result["route_ip"]
+                    route_mode_label.text = f"SAVED META ROUTE: {result['mode']}"
                     checked_at_label.text = f"Checked: {result['checked_at']}"
-                    if result["different"]:
-                        proxy_status.text = "PASS — proxy changed the public egress IP. Confirm this IP belongs to your residential/provider network and is NOT the VPS IP."
+                    if result["mode"] == "DIRECT":
+                        proxy_status.text = "PASS — resolver returns DIRECT. Meta will connect without a proxy on its next connection/reconnection."
                         proxy_status.classes(replace="text-sm text-green-700 mt-2 font-medium")
-                        if bool(proxy_switch.value) and candidate == legacy.get_setting("proxy_url"):
-                            legacy.set_setting("proxy_verified_at", result["checked_at"])
-                            legacy.set_setting("proxy_verified_ip", result["proxy_ip"])
-                        ui.notify(f"Proxy HTTP egress works: {result['proxy_ip']}", type="positive")
+                        ui.notify(f"Current Meta route is DIRECT: {result['route_ip']}", type="positive")
+                    elif result["different"]:
+                        proxy_status.text = "PASS — resolver returns PROXY and the observed Meta route IP differs from the VPS IP."
+                        proxy_status.classes(replace="text-sm text-green-700 mt-2 font-medium")
+                        ui.notify(f"Current Meta route is PROXY: {result['route_ip']}", type="positive")
                     else:
-                        proxy_status.text = "FAIL — direct and proxy IP are identical. Do not use this proxy for Meta."
+                        proxy_status.text = "FAIL — resolver returns PROXY, but the observed route IP equals the VPS IP. Do not rely on this proxy."
                         proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
-                        ui.notify("Proxy IP matches the VPS IP", type="warning", close_button=True)
+                        ui.notify("Proxy route did not change the public IP", type="warning", close_button=True)
                 except Exception as exc:
                     proxy_status.text = f"FAIL — {exc}"
                     proxy_status.classes(replace="text-sm text-red-700 mt-2 font-medium")
-                    ui.notify(f"Proxy test failed: {exc}", type="negative", close_button=True)
+                    ui.notify(f"Meta route test failed: {exc}", type="negative", close_button=True)
 
-            ui.button("Test proxy now", on_click=test_proxy_now, icon="public").props("outline").classes("mt-2")
+            ui.button("Test current Meta route", on_click=test_meta_route_now, icon="route").props("outline").classes("mt-2")
+            ui.label("This checks the same resolver state mautrix-meta uses. It does not test a typed-but-unsaved URL. Existing Meta sockets may need to reconnect before a changed route affects that already-open connection.").classes("text-xs text-slate-500 mt-1")
 
             ui.separator().classes("my-5")
             with ui.row().classes("items-center gap-3 mb-2"):
@@ -733,7 +808,10 @@ def admin_page(request: Request):
                         base.value or "", account.value or "", inbox.value or "", token.value or "",
                         bool(proxy_switch.value), proxy_input.value or "", webhook_secret_input.value or "",
                     )
-                    ui.notify("Saved. Connection secrets are now stored in this admin's private volume.", type="positive")
+                    route_mode_label.text = f"SAVED META ROUTE: {'PROXY' if bool(proxy_switch.value) else 'DIRECT'}"
+                    proxy_status.text = "Saved. Run Test current Meta route to verify the effective resolver path."
+                    proxy_status.classes(replace="text-sm text-slate-600 mt-2")
+                    ui.notify("Saved. Connection secrets and Meta route are now stored in this admin's private volume.", type="positive")
                 except Exception as exc:
                     ui.notify(str(exc), type="negative", close_button=True)
 
