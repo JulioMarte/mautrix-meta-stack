@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import requests
+import yaml
 
 
 class RuntimeEnhancementTests(unittest.TestCase):
@@ -25,6 +26,19 @@ class RuntimeEnhancementTests(unittest.TestCase):
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
+        os.environ["MAUTRIX_REGISTRATION_PATH"] = os.path.join(cls.tmp.name, "registration.yaml")
+        with open(os.environ["MAUTRIX_REGISTRATION_PATH"], "w", encoding="utf-8") as fh:
+            yaml.safe_dump({
+                "id": "meta",
+                "sender_localpart": "metabot",
+                "namespaces": {
+                    "users": [
+                        {"regex": r"^@meta_[0-9]+:matrix\.example\.com$", "exclusive": True},
+                    ],
+                    "aliases": [],
+                    "rooms": [],
+                },
+            }, fh, sort_keys=False)
         global module, runtime, legacy, prod
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("runtime_enhancements")
@@ -85,15 +99,13 @@ class RuntimeEnhancementTests(unittest.TestCase):
         membership = Mock()
         membership.content = b'{"membership":"join"}'
         membership.json.return_value = {"membership": "join"}
-        with patch.object(legacy, "bridge_bot_mxid", return_value="@metabot:matrix.example.com"), \
-             patch.object(module, "_matrix_post") as join, \
+        with patch.object(module, "_matrix_post") as join, \
              patch.object(module, "_matrix_get", return_value=membership):
             self.assertTrue(module.auto_join_room("!new:matrix.example.com", self.invite()))
         join.assert_called_once_with("/_matrix/client/v3/join/%21new%3Amatrix.example.com")
 
     def test_arbitrary_matrix_invite_is_never_auto_joined(self):
-        with patch.object(legacy, "bridge_bot_mxid", return_value="@metabot:matrix.example.com"), \
-             patch.object(module, "_matrix_post") as join:
+        with patch.object(module, "_matrix_post") as join:
             self.assertFalse(module.auto_join_room("!evil:matrix.example.com", self.invite("@someone:matrix.example.com")))
         join.assert_not_called()
 
