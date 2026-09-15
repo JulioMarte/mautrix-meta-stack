@@ -1,0 +1,167 @@
+import json
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+import meta_provisioning as mp
+
+
+class ContractHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    requests = []
+
+    def log_message(self, *_args):
+        pass
+
+    def _reply(self, status, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _record(self):
+        parsed = urlparse(self.path)
+        length = int(self.headers.get("content-length") or "0")
+        body = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            payload = None
+        entry = {
+            "method": self.command,
+            "path": parsed.path,
+            "query": parse_qs(parsed.query),
+            "authorization": self.headers.get("authorization"),
+            "payload": payload,
+        }
+        type(self).requests.append(entry)
+        return entry
+
+    def _authorize(self, entry):
+        if entry["authorization"] != "Bearer integration-contract-secret":
+            self._reply(401, {"errcode": "M_UNKNOWN_TOKEN", "error": "Invalid auth token"})
+            return False
+        if entry["query"].get("user_id") != ["@admin:matrix.example.com"]:
+            self._reply(403, {"errcode": "M_FORBIDDEN", "error": "Missing user_id"})
+            return False
+        return True
+
+    def do_GET(self):
+        entry = self._record()
+        if not self._authorize(entry):
+            return
+        if entry["path"].endswith("/v3/login/flows"):
+            self._reply(200, {"flows": [
+                {"id": "facebook", "name": "facebook.com"},
+                {"id": "messenger", "name": "messenger.com"},
+            ]})
+        elif entry["path"].endswith("/v3/whoami"):
+            self._reply(200, {"network": {"display_name": "Meta"}, "logins": []})
+        elif entry["path"].endswith("/v3/logins"):
+            self._reply(200, {"login_ids": []})
+        else:
+            self._reply(404, {"errcode": "M_UNRECOGNIZED", "error": "unknown"})
+
+    def do_POST(self):
+        entry = self._record()
+        if not self._authorize(entry):
+            return
+        path = entry["path"]
+        if path.endswith("/v3/login/start/facebook"):
+            self._reply(200, {
+                "login_id": "process/with slash",
+                "step_id": "fi.mau.meta.cookies",
+                "txn_id": "txn/1",
+                "type": "cookies",
+                "cookies": {
+                    "url": "https://www.facebook.com/",
+                    "fields": [
+                        {"id": "c_user", "required": True},
+                        {"id": "xs", "required": True},
+                    ],
+                },
+            })
+        elif "/v3/login/step/" in path and path.endswith("/cookies"):
+            self._reply(200, {"type": "complete", "step_id": "fi.mau.meta.complete"})
+        elif "/v3/login/cancel/" in path:
+            self._reply(200, {})
+        elif "/v3/logout/" in path:
+            self._reply(200, {})
+        else:
+            self._reply(404, {"errcode": "M_UNRECOGNIZED", "error": "unknown"})
+
+
+class ProvisioningHTTPContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ContractHandler.requests = []
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), ContractHandler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        port = cls.server.server_address[1]
+        cls.config = mp.ProvisioningConfig(
+            base_url=f"http://127.0.0.1:{port}/_matrix/provision",
+            user_id="@admin:matrix.example.com",
+            shared_secret="integration-contract-secret",
+            timeout=3,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def setUp(self):
+        ContractHandler.requests.clear()
+        self.client = mp.MautrixProvisioningClient(self.config)
+
+    def test_full_cookie_flow_uses_exact_http_contract(self):
+        flows = self.client.flows()
+        self.assertEqual([flow["id"] for flow in flows], ["facebook", "messenger"])
+
+        step = self.client.start("facebook", existing_login_id="existing/login")
+        self.assertEqual(step["type"], "cookies")
+        self.assertEqual(step["login_id"], "process/with slash")
+
+        done = self.client.submit_cookies_trusted(
+            step["login_id"],
+            step["step_id"],
+            {"c_user": "123", "xs": "abc"},
+            txn_id=step["txn_id"],
+        )
+        self.assertEqual(done["type"], "complete")
+        self.client.cancel(step["login_id"])
+        self.client.logout("all")
+
+        start = ContractHandler.requests[1]
+        self.assertEqual(start["query"]["login_id"], ["existing/login"])
+        submit = ContractHandler.requests[2]
+        self.assertIn("process%2Fwith%20slash", submit["path"])
+        self.assertEqual(submit["query"]["txn_id"], ["txn/1"])
+        self.assertEqual(submit["payload"], {"c_user": "123", "xs": "abc"})
+        self.assertTrue(all(r["authorization"] == "Bearer integration-contract-secret" for r in ContractHandler.requests))
+
+    def test_real_http_rejects_bad_secret_without_leaking_it(self):
+        bad = mp.MautrixProvisioningClient(mp.ProvisioningConfig(
+            base_url=self.config.base_url,
+            user_id=self.config.user_id,
+            shared_secret="wrong-secret-long-enough",
+            timeout=3,
+        ))
+        with self.assertRaises(mp.ProvisioningError) as ctx:
+            bad.whoami()
+        self.assertEqual(ctx.exception.status_code, 401)
+        self.assertEqual(ctx.exception.errcode, "M_UNKNOWN_TOKEN")
+        self.assertNotIn("wrong-secret-long-enough", str(ctx.exception))
+
+    def test_whoami_and_logins_over_real_socket(self):
+        self.assertEqual(self.client.whoami()["network"]["display_name"], "Meta")
+        self.assertEqual(self.client.logins(), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
