@@ -7,11 +7,21 @@ credentials or making a login attempt against Meta.
 """
 from __future__ import annotations
 
-from meta_provisioning import MautrixProvisioningClient, safe_step
+from meta_provisioning import (
+    MautrixProvisioningClient,
+    ProvisioningConfig,
+    ProvisioningError,
+    default_config,
+    safe_step,
+)
 
 
 def main() -> None:
-    client = MautrixProvisioningClient()
+    config = default_config()
+    client = MautrixProvisioningClient(config)
+
+    assert config.shared_secret not in {"", "generate", "disable"}
+    assert len(config.shared_secret) >= 16
 
     whoami = client.whoami()
     assert isinstance(whoami, dict), "whoami did not return an object"
@@ -39,10 +49,21 @@ def main() -> None:
 
     client.cancel(str(sanitized["login_id"]))
 
-    # Confirm that the provisioning API remains healthy after cancelling an
-    # in-progress login state machine.
     post_cancel = client.whoami()
     assert isinstance(post_cancel.get("logins", []), list), "whoami.logins changed shape after cancel"
+
+    bad = MautrixProvisioningClient(ProvisioningConfig(
+        base_url=config.base_url,
+        user_id=config.user_id,
+        shared_secret="ci-invalid-provisioning-secret",
+        timeout=config.timeout,
+    ))
+    try:
+        bad.whoami()
+    except ProvisioningError as exc:
+        assert exc.status_code in {401, 403}, f"unexpected bad-secret status: {exc.status_code}"
+    else:
+        raise AssertionError("mautrix accepted an invalid provisioning secret")
 
     print("mautrix provisioning smoke: ok")
 
