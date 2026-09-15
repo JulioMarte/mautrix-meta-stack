@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from meta_helper_handoff import HandoffError, registry
+from meta_provisioning import ProvisioningError
 
 
 MAX_BODY_BYTES = 32768
@@ -71,7 +72,11 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
 
         token = _bearer(request)
         try:
-            item = registry.get(handoff_id, token, consume=True)
+            # First authenticate without spending the token. Malformed JSON or an
+            # incomplete local capture should not force the operator to generate a
+            # new pairing. The second atomic lookup below consumes it immediately
+            # before any raw cookie material crosses into mautrix.
+            item = registry.get(handoff_id, token, consume=False)
         except HandoffError:
             return _json({"error": "Invalid, expired, or already used helper pairing"}, 401)
 
@@ -97,6 +102,15 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
             return _json({"error": "Required Meta cookies were not captured", "missing": missing}, 400)
 
         try:
+            # Consume atomically only after the request is structurally valid. A
+            # concurrent replay racing this request will fail here before mautrix.
+            item = registry.get(handoff_id, token, consume=True)
+        except HandoffError:
+            clean.clear()
+            cookies.clear()
+            return _json({"error": "Invalid, expired, or already used helper pairing"}, 401)
+
+        try:
             next_step = client_factory().submit_cookies_trusted(
                 item.login_id,
                 item.step_id,
@@ -104,11 +118,12 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
                 txn_id=item.txn_id,
             )
             safe = store_step(next_step)
-        except Exception as exc:
-            # Pairing is intentionally spent even when Meta rejects the submitted
-            # session.  The operator can issue a fresh short-lived pairing without
-            # replaying the previous cookie payload.
+        except ProvisioningError as exc:
+            # ProvisioningError is normalized by the private adapter and is safe to
+            # return to the operator. Arbitrary exceptions are intentionally hidden.
             return _json({"error": str(exc)}, 400)
+        except Exception:
+            return _json({"error": "Meta authentication could not be completed"}, 400)
         finally:
             # Drop local references to raw cookie values as soon as the synchronous
             # provisioning submission has returned.

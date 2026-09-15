@@ -28,9 +28,12 @@ STEP = {
 class FakeProvisioning:
     def __init__(self):
         self.calls = []
+        self.fail = None
 
     def submit_cookies_trusted(self, login_id, step_id, cookies, *, txn_id=""):
         self.calls.append((login_id, step_id, dict(cookies), txn_id))
+        if self.fail:
+            raise self.fail
         return {"type": "complete", "step_id": "done", "instructions": "Logged in"}
 
 
@@ -68,6 +71,7 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertEqual(body["step"]["cookies"]["url"], "https://www.facebook.com/")
         self.assertNotIn(token, response.text)
         self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["pragma"], "no-cache")
 
     def test_complete_cookie_submission_is_one_time(self):
         handoff_id, token = self.pair()
@@ -83,7 +87,7 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 401)
         self.assertEqual(len(self.fake.calls), 1)
 
-    def test_missing_required_cookie_does_not_reach_provisioning(self):
+    def test_missing_required_cookie_can_be_retried_without_new_pairing(self):
         handoff_id, token = self.pair()
         response = self.client.post(
             f"/api/meta/helper/{handoff_id}",
@@ -93,10 +97,26 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("xs", response.json()["missing"])
         self.assertEqual(self.fake.calls, [])
-        # The token is still intentionally consumed: a partial or attacker-crafted
-        # submission cannot be repaired/replayed with the same bearer.
-        replay = self.client.get(f"/api/meta/helper/{handoff_id}", headers=self.headers(token))
-        self.assertEqual(replay.status_code, 401)
+        descriptor = self.client.get(f"/api/meta/helper/{handoff_id}", headers=self.headers(token))
+        self.assertEqual(descriptor.status_code, 200)
+        complete = self.client.post(
+            f"/api/meta/helper/{handoff_id}",
+            headers=self.headers(token),
+            json={"cookies": {"c_user": "123", "xs": "session"}},
+        )
+        self.assertEqual(complete.status_code, 200)
+        self.assertEqual(len(self.fake.calls), 1)
+
+    def test_invalid_json_does_not_spend_pairing(self):
+        handoff_id, token = self.pair()
+        response = self.client.post(
+            f"/api/meta/helper/{handoff_id}",
+            headers={**self.headers(token), "Content-Type": "application/json"},
+            content=b"{not-json",
+        )
+        self.assertEqual(response.status_code, 400)
+        retry = self.client.get(f"/api/meta/helper/{handoff_id}", headers=self.headers(token))
+        self.assertEqual(retry.status_code, 200)
 
     def test_wrong_bearer_never_reaches_provisioning(self):
         handoff_id, _token = self.pair()
@@ -107,6 +127,31 @@ class HelperRoutesTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.fake.calls, [])
+
+    def test_oversized_content_length_is_rejected_before_authentication(self):
+        handoff_id, token = self.pair()
+        response = self.client.post(
+            f"/api/meta/helper/{handoff_id}",
+            headers={**self.headers(token), "Content-Length": str(routes.MAX_BODY_BYTES + 1)},
+            content=b"{}",
+        )
+        self.assertEqual(response.status_code, 413)
+        retry = self.client.get(f"/api/meta/helper/{handoff_id}", headers=self.headers(token))
+        self.assertEqual(retry.status_code, 200)
+
+    def test_arbitrary_internal_exception_is_not_exposed(self):
+        handoff_id, token = self.pair()
+        self.fake.fail = RuntimeError("database-password=super-secret")
+        response = self.client.post(
+            f"/api/meta/helper/{handoff_id}",
+            headers=self.headers(token),
+            json={"cookies": {"c_user": "123", "xs": "session"}},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "Meta authentication could not be completed")
+        self.assertNotIn("super-secret", response.text)
+        replay = self.client.get(f"/api/meta/helper/{handoff_id}", headers=self.headers(token))
+        self.assertEqual(replay.status_code, 401)
 
 
 if __name__ == "__main__":

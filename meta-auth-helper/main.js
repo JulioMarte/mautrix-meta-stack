@@ -1,8 +1,15 @@
 "use strict";
 
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow } = require("electron");
+const {
+  PROTOCOL,
+  findProtocolUrl,
+  validatePairingUrl,
+  cookieFields,
+  allowedMetaNavigation,
+  completionPattern,
+} = require("./helper_logic");
 
-const PROTOCOL = "mautrix-meta-helper";
 let statusWindow = null;
 let authWindow = null;
 let activePairing = null;
@@ -42,32 +49,6 @@ function setStatus(title, message, error = false) {
   statusWindow.show();
 }
 
-function findProtocolUrl(argv) {
-  return argv.find((arg) => typeof arg === "string" && arg.startsWith(`${PROTOCOL}://`)) || "";
-}
-
-function validatePairingUrl(raw) {
-  const parsed = new URL(raw);
-  if (parsed.protocol !== `${PROTOCOL}:` || parsed.hostname !== "connect") {
-    throw new Error("Invalid helper link");
-  }
-  const originText = parsed.searchParams.get("origin") || "";
-  const id = parsed.searchParams.get("id") || "";
-  const token = parsed.searchParams.get("token") || "";
-  if (!originText || !id || !token || id.length > 128 || token.length > 256) {
-    throw new Error("Incomplete helper pairing link");
-  }
-  const origin = new URL(originText);
-  const localhost = ["localhost", "127.0.0.1", "::1"].includes(origin.hostname);
-  if (origin.protocol !== "https:" && !(localhost && origin.protocol === "http:")) {
-    throw new Error("The integration server must use HTTPS");
-  }
-  if (origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) {
-    throw new Error("Invalid integration server origin");
-  }
-  return { origin: origin.origin, id, token };
-}
-
 async function helperRequest(pairing, method, body) {
   const response = await fetch(`${pairing.origin}/api/meta/helper/${encodeURIComponent(pairing.id)}`, {
     method,
@@ -88,11 +69,6 @@ async function helperRequest(pairing, method, body) {
   return data;
 }
 
-function cookieFields(step) {
-  const fields = step?.cookies?.fields;
-  return Array.isArray(fields) ? fields.filter((field) => field && typeof field.id === "string") : [];
-}
-
 async function collectRequiredCookies(session, authUrl, fields) {
   const available = await session.cookies.get({ url: authUrl });
   const values = {};
@@ -104,29 +80,13 @@ async function collectRequiredCookies(session, authUrl, fields) {
   return { values, missing };
 }
 
-function allowedMetaNavigation(raw) {
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "https:") return false;
-    const host = url.hostname.toLowerCase();
-    return host === "facebook.com" || host.endsWith(".facebook.com") || host === "messenger.com" || host.endsWith(".messenger.com");
-  } catch (_) {
-    return false;
-  }
-}
-
 async function beginCookieLogin(pairing, descriptor) {
   const step = descriptor.step || {};
   const params = step.cookies || {};
   const authUrl = String(params.url || "");
   if (!allowedMetaNavigation(authUrl)) throw new Error("The bridge returned an unexpected authentication origin");
 
-  let completionPattern;
-  try {
-    completionPattern = new RegExp(String(params.wait_for_url_pattern || "^https://"));
-  } catch (_) {
-    throw new Error("The bridge returned an invalid completion URL pattern");
-  }
+  const completionRegex = completionPattern(params.wait_for_url_pattern);
   const fields = cookieFields(step);
   if (!fields.length) throw new Error("The bridge did not specify the required Meta cookies");
 
@@ -159,7 +119,7 @@ async function beginCookieLogin(pairing, descriptor) {
 
   let submitting = false;
   const maybeComplete = async (url) => {
-    if (submitting || !completionPattern.test(url)) return;
+    if (submitting || !completionRegex.test(url)) return;
     const captured = await collectRequiredCookies(ses, authUrl, fields);
     if (captured.missing.length) return;
     submitting = true;

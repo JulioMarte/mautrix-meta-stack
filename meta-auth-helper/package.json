@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js",
+    "check": "node --check main.js && node --check helper_logic.js",
+    "test": "node --test test/*.test.js",
     "dist": "electron-builder"
   },
   "devDependencies": {
@@ -19,6 +20,7 @@
     "asar": true,
     "files": [
       "main.js",
+      "helper_logic.js",
       "package.json"
     ],
     "protocols": [
