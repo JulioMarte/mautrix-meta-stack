@@ -89,6 +89,7 @@ class MarketplaceRebuildV4Tests(unittest.TestCase):
         legacy.set_setting("chatwoot_api_token", "secret-token")
         legacy.set_setting("import_history_on_join", "1")
         legacy.set_setting("history_import_days", "365")
+        module._SCHEMA_CACHE.clear()
 
         with sqlite3.connect(media.META_DB_PATH) as conn:
             conn.execute("DELETE FROM message")
@@ -110,8 +111,8 @@ class MarketplaceRebuildV4Tests(unittest.TestCase):
                 "INSERT INTO message(bridge_id,id,part_id,mxid,room_id,room_receiver,sender_id,sender_mxid,timestamp) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
-                    "meta", "fb-old", "", "$old", "555", "111", "222",
-                    "@meta_222:matrix.example.com", 1_700_000_000_000,
+                    "meta", "fb-old", "", "$old", "555", "111", "222222222",
+                    "@meta_222222222:matrix.example.com", 1_700_000_000_000,
                 ),
             )
 
@@ -157,18 +158,42 @@ class MarketplaceRebuildV4Tests(unittest.TestCase):
             self.assertFalse(module.mirror_matrix_event("!market:matrix.example.com", event))
         self.assertFalse(mirror.call_args.kwargs["history"])
 
-    def test_marketplace_room_name_exposes_listing_and_counterparty(self):
-        attrs = module._marketplace_name_attributes({
+    def test_marketplace_exposes_listing_without_duplicating_contact_name(self):
+        title = module._marketplace_listing_title({
             "name": "Alberto · Hp core i3",
             "is_marketplace": True,
         })
-        self.assertEqual(attrs["meta_thread_name"], "Alberto · Hp core i3")
-        self.assertEqual(attrs["marketplace_counterparty_name"], "Alberto")
-        self.assertEqual(attrs["marketplace_listing_title"], "Hp core i3")
+        self.assertEqual(title, "Hp core i3")
 
-    def test_schema_registration_creates_visible_attributes_and_labels(self):
-        module._SCHEMA_CACHE.clear()
-        responses = [[], []]
+    def test_facebook_profile_url_uses_numeric_remote_user_id(self):
+        self.assertEqual(
+            module.facebook_profile_url("!market:matrix.example.com"),
+            "https://www.facebook.com/profile.php?id=222222222",
+        )
+        self.assertEqual(module._facebook_numeric_id("100045218265910:4@msgr"), "100045218265910")
+        self.assertEqual(module._facebook_numeric_id("not-a-facebook-id"), "")
+
+    def test_schema_keeps_only_operator_fields_and_marketplace_label(self):
+        definitions = [
+            {
+                "id": 10,
+                "attribute_key": "matrix_room_id",
+                "attribute_description": module._OWNED_DESCRIPTION,
+            },
+            {
+                "id": 11,
+                "attribute_key": "custom_user_field",
+                "attribute_description": "Created by operator",
+            },
+        ]
+        labels = [
+            {
+                "id": 20,
+                "title": "facebook",
+                "description": "Conversation bridged from Facebook",
+            }
+        ]
+        responses = [definitions, labels]
         writes = []
 
         def fake_get(path):
@@ -182,19 +207,68 @@ class MarketplaceRebuildV4Tests(unittest.TestCase):
              patch.object(media, "_cw_json", side_effect=fake_write):
             module.ensure_chatwoot_marketplace_schema()
 
-        keys = {
+        created_keys = {
             call[2].get("attribute_key")
             for call in writes
-            if "/custom_attribute_definitions" in call[1]
+            if call[0] == "POST" and "/custom_attribute_definitions" in call[1]
         }
-        labels = {
+        deleted_paths = {call[1] for call in writes if call[0] == "DELETE"}
+        created_labels = {
             call[2].get("title")
             for call in writes
-            if call[1].endswith("/labels") and "title" in call[2]
+            if call[0] == "POST" and call[1].endswith("/labels")
         }
-        self.assertIn("marketplace_listing_title", keys)
-        self.assertIn("meta_thread_name", keys)
-        self.assertEqual(labels, {"facebook", "marketplace"})
+
+        self.assertEqual(created_keys, {"marketplace_listing_title", "facebook_profile_url"})
+        self.assertIn("/api/v1/accounts/1/custom_attribute_definitions/10", deleted_paths)
+        self.assertNotIn("/api/v1/accounts/1/custom_attribute_definitions/11", deleted_paths)
+        self.assertIn("/api/v1/accounts/1/labels/20", deleted_paths)
+        self.assertEqual(created_labels, {"marketplace"})
+
+    def test_context_sync_removes_bridge_plumbing_and_sets_useful_fields(self):
+        link = {"conversation_id": 117, "contact_id": 33}
+        conversation = {
+            "custom_attributes": {
+                "matrix_room_id": "!market:matrix.example.com",
+                "meta_channel": "facebook_marketplace",
+                "marketplace_counterparty_name": "Alberto",
+                "ai_mode": "human",
+            }
+        }
+        calls = []
+
+        def fake_get(path):
+            if path.endswith("/conversations/117"):
+                return conversation
+            if path.endswith("/conversations/117/labels"):
+                return {"payload": ["facebook", "lead_caliente"]}
+            raise AssertionError(path)
+
+        def fake_write(method, path, payload=None):
+            calls.append((method, path, payload))
+            return {}
+
+        with patch.object(module, "ensure_chatwoot_marketplace_schema"), \
+             patch.object(prod, "cw_get", side_effect=fake_get), \
+             patch.object(media, "_cw_json", side_effect=fake_write), \
+             patch.object(enhancements, "chatwoot_request") as contact_update:
+            module.sync_conversation_context("!market:matrix.example.com", link)
+
+        attrs_payload = next(
+            call[2]["custom_attributes"] for call in calls
+            if call[1].endswith("/custom_attributes")
+        )
+        self.assertEqual(
+            attrs_payload,
+            {"ai_mode": "human", "marketplace_listing_title": "Hp core i3"},
+        )
+        labels_payload = next(call[2]["labels"] for call in calls if call[1].endswith("/labels"))
+        self.assertEqual(labels_payload, ["lead_caliente", "marketplace"])
+        contact_update.assert_called_once()
+        self.assertEqual(
+            contact_update.call_args.kwargs["json"]["custom_attributes"]["facebook_profile_url"],
+            "https://www.facebook.com/profile.php?id=222222222",
+        )
 
 
 if __name__ == "__main__":
