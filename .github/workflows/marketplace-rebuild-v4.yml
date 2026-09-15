@@ -69,15 +69,15 @@ jobs:
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
             meta-chatwoot-integration python -m unittest test_sync_integrity_v6.py
-      - name: Run authenticated Marketplace item-link regressions
+      - name: Run authenticated Marketplace listing-link regressions
         run: |
           docker run --rm \
-            -e DATA_DIR=/tmp/integration-marketplace-listing-v7-test \
+            -e DATA_DIR=/tmp/integration-marketplace-listing-auth-v7-test \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
             -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
             -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
             -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
-            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-marketplace-listing-v7-tests \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-marketplace-listing-auth-v7-tests \
             -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
