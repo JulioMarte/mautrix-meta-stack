@@ -44,12 +44,12 @@ class MarketplaceListingV5Tests(unittest.TestCase):
             )
 
         global module, base, media, enhancements, delivery, legacy, prod
+        runtime = importlib.import_module("final_app")
         module = importlib.import_module("marketplace_listing_v5")
         base = importlib.import_module("marketplace_rebuild_v4")
         media = importlib.import_module("media_context_v3")
         enhancements = importlib.import_module("runtime_enhancements")
         delivery = importlib.import_module("delivery_history_v2")
-        runtime = importlib.import_module("final_app")
         legacy = runtime.legacy
         prod = runtime.prod
         legacy.init_db()
