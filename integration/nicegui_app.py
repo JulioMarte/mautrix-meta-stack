@@ -15,6 +15,7 @@ import nicegui_legacy as _legacy_ui
 from nicegui_legacy import *  # noqa: F401,F403 - compatibility surface
 from nicegui import ui
 
+from meta_helper_routes import create_pairing, register_helper_routes
 from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
@@ -129,6 +130,7 @@ def _install_admin_meta_link() -> None:
 
 
 _install_admin_meta_link()
+register_helper_routes(_legacy_ui.app, _prov_client, _store_meta_step)
 
 
 @ui.page("/admin/meta")
@@ -210,7 +212,10 @@ def meta_onboarding_page():
                     ui.notify(f"No se pudo desconectar: {exc}", type="negative", close_button=True)
 
             with ui.row().classes("gap-3 mt-3"):
-                ui.button("Conectar Facebook", icon="login", on_click=start_login).disable() if not flow_options else ui.button("Conectar Facebook", icon="login", on_click=start_login)
+                if flow_options:
+                    ui.button("Conectar Facebook", icon="login", on_click=start_login)
+                else:
+                    ui.button("Conectar Facebook", icon="login", on_click=start_login).disable()
                 if runtime.get("logins"):
                     ui.button("Desconectar", icon="link_off", on_click=disconnect_all).props("outline color=negative")
 
@@ -237,7 +242,24 @@ def meta_onboarding_page():
                     url = str((saved_step.get("cookies") or {}).get("url") or "https://www.facebook.com/")
                     ui.label("La versión actual de mautrix requiere una sesión web de Facebook para este método. Un navegador normal no puede entregar esas cookies de forma segura al panel.").classes("text-slate-700 mt-3")
                     ui.label(f"Sitio de autenticación: {url}").classes("text-sm text-slate-500")
-                    ui.label("El backend ya está listo para recibir este paso desde un helper local de confianza; no uses DevTools ni pegues cookies aquí.").classes("text-blue-700 font-medium mt-2")
+                    ui.label("Usa el helper local de autenticación. El emparejamiento dura 5 minutos, es de un solo uso y nunca contiene el secreto de provisioning.").classes("text-blue-700 font-medium mt-2")
+
+                    async def launch_helper():
+                        try:
+                            pairing = create_pairing(saved_step)
+                            handoff_id = json.dumps(pairing["id"])
+                            token = json.dumps(pairing["token"])
+                            await ui.run_javascript(
+                                "window.location.href = 'mautrix-meta-helper://connect?origin=' + "
+                                "encodeURIComponent(window.location.origin) + '&id=' + "
+                                f"encodeURIComponent({handoff_id}) + '&token=' + encodeURIComponent({token});"
+                            )
+                            ui.notify("Se abrió el helper. Si el navegador pregunta, autoriza abrir la aplicación.", type="info")
+                        except Exception as exc:
+                            ui.notify(f"No se pudo crear el emparejamiento: {exc}", type="negative", close_button=True)
+
+                    ui.button("Abrir helper de Facebook", icon="open_in_new", on_click=launch_helper).classes("mt-3")
+                    ui.label("Si el helper aún no está instalado, instala la aplicación de escritorio de este repositorio y vuelve a pulsar el botón.").classes("text-xs text-slate-500 mt-2")
 
                 elif step_type == "user_input":
                     inputs: dict[str, Any] = {}
