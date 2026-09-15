@@ -16,10 +16,12 @@ import media_context_v3 as media
 
 legacy = media.legacy
 
-# Capture PR #44's verified text-only path before media_context_v3.install replaces
-# the public callback hook. Existing text semantics and tests stay unchanged; only
-# messages that actually contain attachments take the media-aware path.
-_text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
+# Keep both implementations available. Text-only callbacks must use the media-core
+# path too: unlike the older PR #44 handler, it records the Matrix event ID as a
+# Chatwoot-origin event. Without that durable marker the periodic history importer
+# sees the Matrix echo a few seconds later and creates a second outgoing Chatwoot
+# row even though Meta received the message only once.
+_legacy_text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
 _original_media_outgoing = media.handle_chatwoot_outgoing
 _original_outgoing = _original_media_outgoing
 _original_mirror_matrix_event = media.mirror_matrix_event
@@ -154,9 +156,11 @@ def handle_chatwoot_outgoing(payload: dict, *, signature_verified: bool) -> dict
         if _truthy_marker(attributes.get(media.MIRROR_MARKER)):
             return {"ok": True, "ignored": True, "reason": "matrix_mirror"}
 
-    attachments = [item for item in (payload.get("attachments") or []) if isinstance(item, dict)]
-    if not attachments:
-        return _text_only_outgoing(payload, signature_verified=signature_verified)
+    # Use one delivery implementation for text and attachments. The media-core
+    # handler marks every newly-created Matrix event with
+    # `chatwoot_to_matrix_origin` before the history importer can mirror it back
+    # into Chatwoot. The previous split routed text through the legacy handler,
+    # which only marked `chatwoot:<message_id>` and caused the visible duplicate.
     return _original_media_outgoing(payload, signature_verified=signature_verified)
 
 
