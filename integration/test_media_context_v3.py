@@ -257,6 +257,19 @@ class MediaContextV3Tests(unittest.TestCase):
         self.assertEqual(direction, "chatwoot_to_matrix_origin")
         send.assert_called_once()
 
+        self.add_message("$text-origin", "111", "@meta_111:matrix.example.com")
+        echo = {
+            "event_id": "$text-origin", "type": "m.room.message", "sender": "@meta_111:matrix.example.com",
+            "origin_server_ts": int(time.time() * 1000),
+            "content": {"msgtype": "m.text", "body": "one visible Chatwoot row"},
+        }
+        response = Mock(); response.json.return_value = {"chunk": [echo]}
+        with patch.object(enhancements, "_matrix_get", return_value=response), \
+             patch.object(module, "_post_chatwoot_text") as post:
+            imported = module.import_recent_history("!market:matrix.example.com")
+        self.assertEqual(imported, 0)
+        post.assert_not_called()
+
     def test_attachment_only_chatwoot_message_uploads_and_sends_matrix_media(self):
         self.insert_link(conversation=123)
         payload = {
