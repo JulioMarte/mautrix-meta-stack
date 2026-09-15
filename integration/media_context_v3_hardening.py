@@ -187,4 +187,8 @@ def install() -> None:
     legacy.matrix_event_to_chatwoot = live_matrix_event
     media.handle_chatwoot_outgoing = handle_chatwoot_outgoing
     media.enhancements.import_recent_history = import_recent_history
+    # media_context_v3.install() mutates the legacy public handler. Restore that
+    # stable API for focused tests/callers and switch only the middleware dispatcher
+    # to the origin-aware implementation used in production.
+    delivery.handle_chatwoot_outgoing_verified = _legacy_text_only_outgoing
     delivery.callback_outgoing_handler = handle_chatwoot_outgoing
