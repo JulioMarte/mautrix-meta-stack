@@ -20,7 +20,8 @@ legacy = media.legacy
 # path too: unlike the older PR #44 handler, it records the Matrix event ID as a
 # Chatwoot-origin event. Without that durable marker the periodic history importer
 # sees the Matrix echo a few seconds later and creates a second outgoing Chatwoot
-# row even though Meta received the message only once.
+# row even though Meta received the message only once. The legacy reference remains
+# only so regression tests can prove it is never selected for live replies.
 _legacy_text_only_outgoing = delivery.handle_chatwoot_outgoing_verified
 _original_media_outgoing = media.handle_chatwoot_outgoing
 _original_outgoing = _original_media_outgoing
