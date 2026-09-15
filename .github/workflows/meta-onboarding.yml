@@ -10,6 +10,7 @@ on:
       - 'integration/nicegui_legacy.py'
       - 'integration/test_meta_provisioning.py'
       - 'integration/test_meta_helper_handoff.py'
+      - 'integration/test_meta_helper_routes.py'
       - 'meta-auth-helper/**'
       - 'docs/architecture/managed-meta-onboarding.md'
       - '.github/workflows/meta-onboarding.yml'
@@ -24,6 +25,7 @@ on:
       - 'integration/nicegui_legacy.py'
       - 'integration/test_meta_provisioning.py'
       - 'integration/test_meta_helper_handoff.py'
+      - 'integration/test_meta_helper_routes.py'
       - 'meta-auth-helper/**'
       - 'docs/architecture/managed-meta-onboarding.md'
       - '.github/workflows/meta-onboarding.yml'
@@ -41,7 +43,10 @@ jobs:
         run: |
           docker run --rm \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
-            meta-onboarding-test python -m unittest test_meta_provisioning.py test_meta_helper_handoff.py
+            meta-onboarding-test python -m unittest \
+              test_meta_provisioning.py \
+              test_meta_helper_handoff.py \
+              test_meta_helper_routes.py
 
       - name: Import full NiceGUI onboarding entrypoint
         run: |
