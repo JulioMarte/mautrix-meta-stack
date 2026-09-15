@@ -67,10 +67,11 @@ class MediaContextV3Tests(unittest.TestCase):
                 );
             """)
 
-        global runtime, module, hardening, legacy, prod, enhancements
+        global runtime, module, hardening, legacy, prod, enhancements, delivery
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("media_context_v3")
         hardening = importlib.import_module("media_context_v3_hardening")
+        delivery = importlib.import_module("delivery_history_v2")
         enhancements = importlib.import_module("runtime_enhancements")
         legacy = runtime.legacy
         prod = runtime.prod
@@ -232,6 +233,29 @@ class MediaContextV3Tests(unittest.TestCase):
             result = hardening.handle_chatwoot_outgoing(payload, signature_verified=True)
         self.assertEqual(result.get("reason"), "matrix_mirror")
         original.assert_not_called()
+
+    def test_text_callback_dispatches_to_origin_aware_handler_and_marks_matrix_event(self):
+        self.insert_link(conversation=123)
+        payload = {
+            "event": "message_created", "id": 1001, "message_type": "outgoing", "private": False,
+            "content": "one visible Chatwoot row", "content_attributes": {},
+            "conversation": {"id": 123, "inbox_id": 2},
+        }
+        self.assertIs(delivery.callback_outgoing_handler, hardening.handle_chatwoot_outgoing)
+        self.assertIsNot(delivery.callback_outgoing_handler, delivery.handle_chatwoot_outgoing_verified)
+        with patch.object(runtime, "room_matches_configured_chatwoot_inbox", return_value=(True, 123, 2)), \
+             patch.object(module, "_matrix_send", return_value="$text-origin") as send, \
+             patch.object(module, "_verify_matrix_content"):
+            result = delivery.callback_outgoing_handler(payload, signature_verified=True)
+        self.assertEqual(result["matrix_event_id"], "$text-origin")
+        self.assertTrue(legacy.event_seen("chatwoot:1001"))
+        self.assertTrue(legacy.event_seen("$text-origin"))
+        with legacy.db() as conn:
+            direction = conn.execute(
+                "SELECT direction FROM processed_events WHERE event_id = ?", ("$text-origin",)
+            ).fetchone()["direction"]
+        self.assertEqual(direction, "chatwoot_to_matrix_origin")
+        send.assert_called_once()
 
     def test_attachment_only_chatwoot_message_uploads_and_sends_matrix_media(self):
         self.insert_link(conversation=123)
