@@ -303,6 +303,13 @@ import marketplace_listing_v5  # noqa: E402
 
 marketplace_listing_v5.install()
 
+# Final production fixes: expose an actionable Marketplace link even when Meta did
+# not preserve the canonical item URL, preserve Chatwoot-origin dedupe markers across
+# room rebuilds, and retain original Matrix timestamps in Chatwoot metadata.
+import sync_integrity_v6  # noqa: E402
+
+sync_integrity_v6.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
