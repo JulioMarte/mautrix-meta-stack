@@ -96,6 +96,10 @@ class SyncIntegrityV6Tests(unittest.TestCase):
         self.assertEqual(value, "2024-09-14T22:49:00Z")
 
     def test_text_only_chatwoot_reply_uses_origin_marking_delivery_path(self):
+        # Production log sequence that regressed before this guard:
+        # Chatwoot message 7440 -> Matrix $Rhf... -> history importer -> Chatwoot 7441.
+        # The text path must therefore be the same core path that persists the
+        # Matrix event ID as `chatwoot_to_matrix_origin`.
         payload = {
             "event": "message_created",
             "id": 7440,
