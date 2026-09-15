@@ -71,37 +71,43 @@ jobs:
           wait_healthy integration 120
           wait_healthy mautrix-meta 120
 
-      - name: Verify final provisioning config access and generated secret
+      - name: Verify isolated secret and deny full config access
         run: |
           docker compose -f compose.yaml exec -T integration python - <<'PY'
           import os
           import stat
+          from pathlib import Path
           from meta_provisioning import default_config
 
-          path = '/mautrix/config.yaml'
-          st = os.stat(path)
+          secret_path = Path('/run/mautrix-provisioning/shared_secret')
+          st = secret_path.stat()
           mode = stat.S_IMODE(st.st_mode)
-          print(f'mautrix config visible to integration: uid={st.st_uid} gid={st.st_gid} mode={mode:o}')
-          assert mode & 0o004 == 0, 'mautrix config must not be world-readable'
-          with open(path, 'rb') as handle:
-              handle.read(1)
+          print(f'isolated provisioning secret: uid={st.st_uid} gid={st.st_gid} mode={mode:o}')
+          assert mode & 0o077 == 0, 'provisioning secret must not be group/world readable'
+          assert len(secret_path.read_text(encoding='utf-8').strip()) >= 16
 
           cfg = default_config()
           assert cfg.shared_secret not in {'', 'generate', 'disable'}
           assert len(cfg.shared_secret) >= 16
-          print('generated provisioning secret: materialized and readable server-side')
+
+          try:
+              Path('/mautrix/config.yaml').read_text(encoding='utf-8')
+          except PermissionError:
+              print('full mautrix config correctly inaccessible to integration')
+          else:
+              raise AssertionError('integration unexpectedly retained read access to full mautrix config')
           PY
 
       - name: Exercise real v26.08.1 provisioning state machine
         run: docker compose -f compose.yaml exec -T integration python /app/smoke_mautrix_provisioning.py
 
-      - name: Confirm config remains readable after mautrix runtime start
+      - name: Confirm isolated secret survives mautrix runtime rewrite
         run: |
           docker compose -f compose.yaml exec -T integration python - <<'PY'
           from meta_provisioning import default_config
           cfg = default_config()
           assert len(cfg.shared_secret) >= 16
-          print('provisioning secret remains readable after mautrix runtime start')
+          print('isolated provisioning secret remains readable after mautrix runtime start')
           PY
 
       - name: Confirm provisioning port is not host-published
@@ -115,7 +121,7 @@ jobs:
         if: failure()
         run: |
           docker compose -f compose.yaml ps -a || true
-          docker compose -f compose.yaml logs --no-color synapse integration mautrix-meta mautrix-config-init mautrix-configure mautrix-registration-init mautrix-config-permissions integration-data-init || true
+          docker compose -f compose.yaml logs --no-color synapse integration mautrix-meta mautrix-config-init mautrix-configure mautrix-registration-init mautrix-provisioning-secret-init integration-data-init || true
 
       - name: Cleanup
         if: always()
