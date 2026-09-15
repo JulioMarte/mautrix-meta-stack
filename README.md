@@ -77,6 +77,14 @@ The operator UI is implemented with **NiceGUI 3.16.0** and runs on the integrati
 
 NiceGUI uses a WebSocket after the initial page load, so the integration domain must allow WebSocket upgrades through Coolify/Traefik.
 
+## Managed Meta onboarding direction
+
+The next product-facing onboarding path will also live in `/admin`: users should connect, reconnect and disconnect Facebook Messenger / Marketplace without opening Element, sending bridge bot commands, copying browser cookies, or interacting with Matrix directly.
+
+The design extends the existing `integration` backend and keeps the mautrix provisioning interface private. A normal web page cannot generically extract Facebook session cookies from another origin, so iframe/popup cookie scraping is explicitly rejected. If the pinned bridge login flow requires privileged webview/cookie access, the supported path will use a trusted helper such as an Electron-based client rather than browser security workarounds.
+
+The complete architecture, security boundary, implementation phases and acceptance criteria are documented in `docs/architecture/managed-meta-onboarding.md`.
+
 ## Persistence
 
 Docker named volumes are used deliberately:
