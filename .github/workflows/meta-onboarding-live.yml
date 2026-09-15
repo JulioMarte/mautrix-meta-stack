@@ -1,0 +1,102 @@
+name: Meta onboarding live stack
+
+on:
+  push:
+    branches:
+      - feature/meta-onboarding-ci-validation
+    paths:
+      - 'compose.yaml'
+      - 'integration/**'
+      - 'meta-auth-helper/**'
+      - '.github/workflows/meta-onboarding-live.yml'
+      - '.github/workflows/meta-onboarding.yml'
+  pull_request:
+    paths:
+      - 'compose.yaml'
+      - 'integration/**'
+      - 'meta-auth-helper/**'
+      - '.github/workflows/meta-onboarding-live.yml'
+      - '.github/workflows/meta-onboarding.yml'
+
+jobs:
+  live-provisioning-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
+      INTEGRATION_ADMIN_PASSWORD: ci-integration-admin-long-value
+      INTEGRATION_SESSION_SECRET: ci-session-secret-012345678901234567890123456789
+      CHATWOOT_WEBHOOK_SECRET: ci-webhook-secret-long-value
+      META_PROXY_RESOLVER_SECRET: ci-resolver-secret-long-value
+      META_PROXY_ENABLED: 'false'
+      META_PROXY_URL: ''
+      INTEGRATION_COOKIE_SECURE: 'false'
+      ALLOW_INSECURE_CHATWOOT: 'false'
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.08.1
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      TZ: America/Santo_Domingo
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose model
+        run: docker compose -f compose.yaml config -q
+
+      - name: Start exact stack
+        run: docker compose -f compose.yaml up -d synapse integration mautrix-meta
+
+      - name: Wait for runtime health
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_healthy() {
+            service="$1"
+            timeout="$2"
+            cid="$(docker compose -f compose.yaml ps -q "$service")"
+            test -n "$cid"
+            end=$((SECONDS + timeout))
+            while [ "$SECONDS" -lt "$end" ]; do
+              status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+              echo "$service: $status"
+              [ "$status" = healthy ] && return 0
+              case "$status" in unhealthy|exited|dead) return 1;; esac
+              sleep 3
+            done
+            return 1
+          }
+          wait_healthy synapse 120
+          wait_healthy integration 120
+          wait_healthy mautrix-meta 120
+
+      - name: Verify generated provisioning secret is materialized
+        run: |
+          docker compose -f compose.yaml exec -T integration python - <<'PY'
+          from meta_provisioning import default_config
+          cfg = default_config()
+          assert cfg.shared_secret not in {'', 'generate', 'disable'}
+          assert len(cfg.shared_secret) >= 16
+          print('generated provisioning secret: materialized and readable server-side')
+          PY
+
+      - name: Exercise real v26.08.1 provisioning state machine
+        run: docker compose -f compose.yaml exec -T integration python /app/smoke_mautrix_provisioning.py
+
+      - name: Confirm provisioning port is not host-published
+        shell: bash
+        run: |
+          set -euo pipefail
+          published="$(docker compose -f compose.yaml port mautrix-meta 29319 2>/dev/null || true)"
+          test -z "$published"
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: |
+          docker compose -f compose.yaml ps -a || true
+          docker compose -f compose.yaml logs --no-color synapse integration mautrix-meta mautrix-config-init mautrix-configure mautrix-registration-init || true
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml down -v --remove-orphans || true
