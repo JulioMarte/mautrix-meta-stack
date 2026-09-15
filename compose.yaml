@@ -58,6 +58,7 @@ services:
       MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
       MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
       META_PROXY_RESOLVER_SECRET: ${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}
+      INTEGRATION_GID: ${INTEGRATION_GID:-1000}
     volumes:
       - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
@@ -67,6 +68,10 @@ services:
         : "$${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
         : "$${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
         : "$${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}"
+        : "$${INTEGRATION_GID:?INTEGRATION_GID is required}"
+        case "$$INTEGRATION_GID" in
+          *[!0-9]*|'') echo "INTEGRATION_GID must be numeric" >&2; exit 64 ;;
+        esac
         admin_localpart="$${MATRIX_ADMIN_MXID#@}"
         admin_localpart="$${admin_localpart%%:*}"
         if [ -z "$$admin_localpart" ]; then
@@ -110,7 +115,14 @@ services:
           .appservice.hostname = "0.0.0.0" |
           .appservice.port = 29319
         ' /data/config.yaml
+        # The integration sidecar needs the provisioning secret but must not run
+        # as root. Grant only its configured group read access to the private
+        # bridge config; no world-read bit or host bind is introduced.
+        chmod 0755 /data
+        chown 0:"$$INTEGRATION_GID" /data/config.yaml
+        chmod 0640 /data/config.yaml
         echo "mautrix-meta config patched for $$MATRIX_SERVER_NAME"
+        stat -c 'mautrix config owner/mode: %u:%g %a' /data/config.yaml
 
   mautrix-registration-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
@@ -245,6 +257,7 @@ services:
   integration:
     build:
       context: ./integration
+    user: "${INTEGRATION_UID:-1000}:${INTEGRATION_GID:-1000}"
     restart: unless-stopped
     read_only: true
     security_opt:
