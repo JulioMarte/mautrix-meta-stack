@@ -187,4 +187,4 @@ def install() -> None:
     legacy.matrix_event_to_chatwoot = live_matrix_event
     media.handle_chatwoot_outgoing = handle_chatwoot_outgoing
     media.enhancements.import_recent_history = import_recent_history
-    delivery.handle_chatwoot_outgoing_verified = handle_chatwoot_outgoing
+    delivery.callback_outgoing_handler = handle_chatwoot_outgoing
