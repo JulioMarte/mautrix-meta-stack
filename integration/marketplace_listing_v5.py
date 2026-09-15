@@ -7,9 +7,11 @@ whether the logged-in Facebook account is the buyer or the seller.
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import time
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 
@@ -27,8 +29,11 @@ LISTING_URL_DISPLAY = "Open Marketplace listing"
 LISTING_CARD_MARKER = "matrix_bridge_marketplace_listing_card"
 OWNED_DESCRIPTION = base._OWNED_DESCRIPTION
 CACHE_TTL_SECONDS = 6 * 60 * 60
+NEGATIVE_CACHE_TTL_SECONDS = 60
 _LISTING_CACHE: dict[str, tuple[float, dict]] = {}
 _SCHEMA_CACHE: set[tuple[str, str]] = set()
+_HTTP_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_FB_SCHEME_RE = re.compile(r"(?:fb|facebook)://marketplace/item/(\d+)", re.IGNORECASE)
 
 
 def _normalize_title(value: str) -> str:
@@ -46,8 +51,34 @@ def _walk(value, key: str = ""):
         yield key, value
 
 
+def _unwrap_facebook_redirect(raw: str) -> str:
+    """Unwrap Facebook /l.php links without following the redirect over the network."""
+    value = html.unescape(str(raw or "").strip())
+    for _ in range(3):
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            return value
+        host = (parsed.hostname or "").casefold()
+        if host not in {"facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "l.facebook.com"}:
+            return value
+        if parsed.path.rstrip("/").casefold() != "/l.php":
+            return value
+        target = (parse_qs(parsed.query).get("u") or [""])[0]
+        if not target:
+            return value
+        decoded = unquote(target).strip()
+        if not decoded or decoded == value:
+            return value
+        value = decoded
+    return value
+
+
 def _canonical_marketplace_url(value: str) -> str:
-    raw = str(value or "").strip()
+    raw = _unwrap_facebook_redirect(value)
+    scheme_match = _FB_SCHEME_RE.fullmatch(raw.rstrip("/"))
+    if scheme_match:
+        return f"https://www.facebook.com/marketplace/item/{scheme_match.group(1)}/"
     if not raw.startswith(("https://", "http://")):
         return ""
     try:
@@ -57,14 +88,33 @@ def _canonical_marketplace_url(value: str) -> str:
     host = (parsed.hostname or "").casefold()
     if host not in {"facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com"}:
         return ""
-    path = parsed.path.rstrip("/")
-    parts = [part for part in path.split("/") if part]
+    parts = [part for part in parsed.path.split("/") if part]
     if len(parts) < 3 or parts[0].casefold() != "marketplace" or parts[1].casefold() != "item":
         return ""
-    if not parts[2].isdigit():
+    item_id = parts[2]
+    if not item_id.isdigit():
         return ""
-    # Strip tracking query/fragment while retaining the canonical item identity.
-    return f"https://www.facebook.com/marketplace/item/{parts[2]}/"
+    return f"https://www.facebook.com/marketplace/item/{item_id}/"
+
+
+def _marketplace_urls_from_text(value: str) -> list[str]:
+    """Find listing URLs even when mautrix-meta put them in body/formatted_body captions."""
+    text = html.unescape(str(value or ""))
+    raw_candidates: list[str] = []
+    stripped = text.strip()
+    if stripped.startswith(("http://", "https://", "fb://", "facebook://")):
+        raw_candidates.append(stripped)
+    raw_candidates.extend(_HTTP_URL_RE.findall(text))
+    raw_candidates.extend(match.group(0) for match in _FB_SCHEME_RE.finditer(text))
+
+    found: list[str] = []
+    for raw in raw_candidates:
+        # URLs captured from prose/HTML frequently retain punctuation from the caption.
+        cleaned = raw.rstrip(".,;:!?)]}")
+        canonical = _canonical_marketplace_url(cleaned)
+        if canonical and canonical not in found:
+            found.append(canonical)
+    return found
 
 
 def _event_listing_candidate(event: dict, expected_title: str = "") -> dict:
@@ -81,9 +131,9 @@ def _event_listing_candidate(event: dict, expected_title: str = "") -> dict:
     image_keys = {"url", "og:image", "image", "image_url", "preview_url", "previewurl"}
 
     for key, value in _walk(event):
-        listing_url = _canonical_marketplace_url(value)
-        if listing_url and listing_url not in urls:
-            urls.append(listing_url)
+        for listing_url in _marketplace_urls_from_text(value):
+            if listing_url not in urls:
+                urls.append(listing_url)
         lowered = key.casefold()
         if lowered in title_keys and value.strip():
             titles.append(value.strip())
@@ -131,8 +181,7 @@ def _event_listing_candidate(event: dict, expected_title: str = "") -> dict:
 
 
 def _cache_candidate(room_id: str, candidate: dict) -> None:
-    if candidate:
-        _LISTING_CACHE[room_id] = (time.monotonic(), dict(candidate))
+    _LISTING_CACHE[room_id] = (time.monotonic(), dict(candidate))
 
 
 def _cached_candidate(room_id: str) -> dict | None:
@@ -140,7 +189,8 @@ def _cached_candidate(room_id: str) -> dict | None:
     if not cached:
         return None
     created, candidate = cached
-    if time.monotonic() - created > CACHE_TTL_SECONDS:
+    ttl = CACHE_TTL_SECONDS if candidate else NEGATIVE_CACHE_TTL_SECONDS
+    if time.monotonic() - created > ttl:
         _LISTING_CACHE.pop(room_id, None)
         return None
     return dict(candidate)
@@ -153,12 +203,14 @@ def discover_marketplace_listing(room_id: str, *, expected_title: str = "") -> d
 
     days = delivery.history_days()
     if days <= 0:
-        _LISTING_CACHE[room_id] = (time.monotonic(), {})
+        _cache_candidate(room_id, {})
         return {}
     cutoff_ms = int((time.time() - days * 86400) * 1000)
     path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
     token = ""
     candidates: list[dict] = []
+    scanned_events = 0
+    pages = 0
 
     while True:
         params = {"dir": "b", "limit": delivery.MATRIX_PAGE_SIZE}
@@ -169,8 +221,10 @@ def discover_marketplace_listing(room_id: str, *, expected_title: str = "") -> d
         chunk = [item for item in (payload.get("chunk") or []) if isinstance(item, dict)]
         if not chunk:
             break
+        pages += 1
         crossed = False
         for event in chunk:
+            scanned_events += 1
             try:
                 event_ts = int(event.get("origin_server_ts") or 0)
             except (TypeError, ValueError):
@@ -189,10 +243,23 @@ def discover_marketplace_listing(room_id: str, *, expected_title: str = "") -> d
     if candidates:
         # Prefer title-correlated XMA data; for ties choose the oldest event because the
         # Marketplace origin card normally predates links shared later in the chat.
-        best = max(candidates, key=lambda item: (int(item.get("score") or 0), -int(item.get("timestamp") or 0)))
+        best = max(
+            candidates,
+            key=lambda item: (int(item.get("score") or 0), -int(item.get("timestamp") or 0)),
+        )
+        print(
+            f"Marketplace listing resolved room={room_id} event={best.get('event_id') or '-'} "
+            f"url={best.get('url')} pages={pages} events={scanned_events}",
+            flush=True,
+        )
     else:
         best = {}
-    _LISTING_CACHE[room_id] = (time.monotonic(), dict(best))
+        print(
+            f"Marketplace listing URL not present in Matrix room={room_id} "
+            f"pages={pages} events={scanned_events}; will retry after negative-cache TTL",
+            flush=True,
+        )
+    _cache_candidate(room_id, best)
     return best
 
 
@@ -275,7 +342,6 @@ def _post_listing_thumbnail(account_id: int, conversation_id: int, candidate: di
         )
         response.raise_for_status()
     except Exception as exc:
-        # Thumbnail is optional presentation. Never block message/history delivery.
         print(
             f"Marketplace listing thumbnail sync failed conversation={conversation_id}: "
             f"{type(exc).__name__}: {exc}",
