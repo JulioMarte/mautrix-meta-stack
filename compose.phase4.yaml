@@ -1,0 +1,44 @@
+services:
+  chatwoot-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/chatwoot-double.ts"]
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  matrix-media-double:
+    image: oven/bun:1.4.2
+    restart: "no"
+    environment:
+      MATRIX_MEDIA_CI_TOKEN: ${MATRIX_MEDIA_CI_TOKEN:?MATRIX_MEDIA_CI_TOKEN is required}
+    volumes:
+      - ./test-fixtures:/fixtures:ro
+    command: ["bun", "/fixtures/matrix-media-double.ts"]
+    expose:
+      - "8081"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8081/health');process.exit(r.ok?0:1)"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  control-plane:
+    depends_on:
+      chatwoot-double:
+        condition: service_healthy
+      matrix-media-double:
+        condition: service_healthy
+    environment:
+      CHATWOOT_CI_TOKEN: ${CHATWOOT_CI_TOKEN:?CHATWOOT_CI_TOKEN is required}
+      MATRIX_MEDIA_BASE_URL: http://matrix-media-double:8081
+      MATRIX_MEDIA_ACCESS_TOKEN: ${MATRIX_MEDIA_CI_TOKEN:?MATRIX_MEDIA_CI_TOKEN is required}
+      MATRIX_MEDIA_MAX_BYTES: "10485760"

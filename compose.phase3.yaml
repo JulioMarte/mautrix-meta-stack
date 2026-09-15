@@ -1,0 +1,8 @@
+services:
+  mautrix-meta:
+    image: mautrix-meta:phase3-local
+    build:
+      context: .
+      dockerfile: mautrix-meta-fork/Dockerfile
+    environment:
+      MAUTRIX_META_EGRESS_TOKEN: ${CONTROL_PLANE_INTERNAL_TOKEN:?CONTROL_PLANE_INTERNAL_TOKEN is required}

@@ -1,0 +1,22 @@
+name: Validate admin v2
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  admin-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+      - name: Run admin navigation and sync tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_admin_v2.py
+      - name: Run verified auto-join tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_autojoin_verify.py
+      - name: Run authoritative Meta portal reconciliation tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_reconcile.py
+      - name: Run outbound delivery and day-history tests
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_delivery_history_v2.py

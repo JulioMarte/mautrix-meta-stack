@@ -1,0 +1,4 @@
+services:
+  control-plane:
+    environment:
+      EGRESS_PROXY_CI_PASSWORD: ${EGRESS_PROXY_CI_PASSWORD:?EGRESS_PROXY_CI_PASSWORD is required}

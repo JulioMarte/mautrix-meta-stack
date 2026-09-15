@@ -63,6 +63,7 @@ docker run --rm \
     yq -i '\''
       .network.mode = "facebook" |
       .network.marketplace_space = true |
+      .bridge.resend_bridge_info = true |
       .bridge.permissions."*" = "relay" |
       .bridge.permissions[strenv(MATRIX_SERVER_NAME)] = "user" |
       .bridge.permissions[strenv(MATRIX_ADMIN_MXID)] = "admin" |
