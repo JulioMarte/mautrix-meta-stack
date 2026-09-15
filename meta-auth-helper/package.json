@@ -1,0 +1,47 @@
+{
+  "name": "mautrix-meta-auth-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trusted local Facebook authentication helper for mautrix-meta-stack",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.quisqueyatech.mautrixmetaauth",
+    "productName": "Meta Connection Helper",
+    "asar": true,
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Meta Connection Helper",
+        "schemes": ["mautrix-meta-helper"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "hardenedRuntime": true
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Network"
+    }
+  }
+}
