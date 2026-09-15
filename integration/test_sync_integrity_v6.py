@@ -47,9 +47,10 @@ class SyncIntegrityV6Tests(unittest.TestCase):
             )
 
         importlib.import_module("final_app")
-        global module, runtime
+        global module, runtime, hardening
         module = importlib.import_module("sync_integrity_v6")
         runtime = importlib.import_module("final_app")
+        hardening = importlib.import_module("media_context_v3_hardening")
 
     @classmethod
     def tearDownClass(cls):
@@ -93,6 +94,24 @@ class SyncIntegrityV6Tests(unittest.TestCase):
         finally:
             module._EVENT_TS_MS.reset(token)
         self.assertEqual(value, "2024-09-14T22:49:00Z")
+
+    def test_text_only_chatwoot_reply_uses_origin_marking_delivery_path(self):
+        payload = {
+            "event": "message_created",
+            "id": 7440,
+            "message_type": "outgoing",
+            "private": False,
+            "content": "kkk",
+            "content_attributes": {},
+            "conversation": {"id": 176, "inbox_id": 12},
+        }
+        expected = {"ok": True, "matrix_event_id": "$matrix-origin"}
+        with patch.object(hardening, "_original_media_outgoing", return_value=expected) as origin_path, \
+             patch.object(hardening, "_legacy_text_only_outgoing") as legacy_path:
+            result = hardening.handle_chatwoot_outgoing(payload, signature_verified=True)
+        self.assertEqual(result, expected)
+        origin_path.assert_called_once_with(payload, signature_verified=True)
+        legacy_path.assert_not_called()
 
 
 if __name__ == "__main__":

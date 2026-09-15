@@ -229,6 +229,11 @@ def handle_chatwoot_outgoing_verified(payload: dict, *, signature_verified: bool
     return {"ok": True, "matrix_event_id": event_id}
 
 
+# Runtime layers may replace callback delivery semantics without mutating the
+# public legacy handler that its focused unit tests exercise directly.
+callback_outgoing_handler = handle_chatwoot_outgoing_verified
+
+
 async def outbound_callback_middleware(request: Request, call_next):
     if request.url.path != "/webhooks/chatwoot/inbox" or request.method.upper() != "POST":
         return await call_next(request)
@@ -248,7 +253,7 @@ async def outbound_callback_middleware(request: Request, call_next):
             # The callback is not trusted yet: the exact message is authenticated
             # against Chatwoot's REST API below before any Matrix send is allowed.
             print(f"Chatwoot API inbox HMAC mismatch; using authenticated API fallback: {exc}", flush=True)
-        result = handle_chatwoot_outgoing_verified(payload, signature_verified=bool(signature_verified))
+        result = callback_outgoing_handler(payload, signature_verified=bool(signature_verified))
         return JSONResponse(result)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
