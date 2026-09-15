@@ -115,9 +115,6 @@ services:
           .appservice.hostname = "0.0.0.0" |
           .appservice.port = 29319
         ' /data/config.yaml
-        # The integration sidecar needs the provisioning secret but must not run
-        # as root. Grant only its configured group read access to the private
-        # bridge config; no world-read bit or host bind is introduced.
         chmod 0755 /data
         chown 0:"$$INTEGRATION_GID" /data/config.yaml
         chmod 0640 /data/config.yaml
@@ -144,9 +141,6 @@ services:
           echo "mautrix-meta registration already exists"
         fi
         test -s /data/registration.yaml
-        # The integration mounts this volume read-only and must be able to read the
-        # registration trust boundary. Tokens remain confined to containers that mount
-        # this private named volume; no host/public bind is introduced.
         chmod 0755 /data
         chmod 0644 /data/registration.yaml
         stat -c 'mautrix registration owner/mode: %u:%g %a' /data/registration.yaml
@@ -254,6 +248,28 @@ services:
           -a \
           --exists-ok
 
+  integration-data-init:
+    image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
+    restart: "no"
+    environment:
+      INTEGRATION_UID: ${INTEGRATION_UID:-1000}
+      INTEGRATION_GID: ${INTEGRATION_GID:-1000}
+    volumes:
+      - integration-data-v1:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        case "$$INTEGRATION_UID:$$INTEGRATION_GID" in
+          *[!0-9:]*|*:|:) echo "INTEGRATION_UID and INTEGRATION_GID must be numeric" >&2; exit 64 ;;
+        esac
+        mkdir -p /data/nicegui
+        chown -R "$$INTEGRATION_UID:$$INTEGRATION_GID" /data
+        chmod 0750 /data
+        echo "integration data owner/mode prepared for $$INTEGRATION_UID:$$INTEGRATION_GID"
+        stat -c 'integration data owner/mode: %u:%g %a' /data
+
   integration:
     build:
       context: ./integration
@@ -272,6 +288,8 @@ services:
       synapse-admin-init:
         condition: service_completed_successfully
       mautrix-registration-init:
+        condition: service_completed_successfully
+      integration-data-init:
         condition: service_completed_successfully
     environment:
       MATRIX_HOMESERVER: http://synapse:8008
