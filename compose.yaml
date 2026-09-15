@@ -58,7 +58,6 @@ services:
       MATRIX_SERVER_NAME: ${MATRIX_SERVER_NAME}
       MATRIX_ADMIN_MXID: ${MATRIX_ADMIN_MXID}
       META_PROXY_RESOLVER_SECRET: ${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}
-      INTEGRATION_GID: ${INTEGRATION_GID:-1000}
     volumes:
       - mautrix-meta-data-v2:/data
     entrypoint: ["/bin/sh", "-c"]
@@ -68,10 +67,6 @@ services:
         : "$${MATRIX_SERVER_NAME:?MATRIX_SERVER_NAME is required}"
         : "$${MATRIX_ADMIN_MXID:?MATRIX_ADMIN_MXID is required}"
         : "$${META_PROXY_RESOLVER_SECRET:?META_PROXY_RESOLVER_SECRET is required}"
-        : "$${INTEGRATION_GID:?INTEGRATION_GID is required}"
-        case "$$INTEGRATION_GID" in
-          *[!0-9]*|'') echo "INTEGRATION_GID must be numeric" >&2; exit 64 ;;
-        esac
         admin_localpart="$${MATRIX_ADMIN_MXID#@}"
         admin_localpart="$${admin_localpart%%:*}"
         if [ -z "$$admin_localpart" ]; then
@@ -115,11 +110,7 @@ services:
           .appservice.hostname = "0.0.0.0" |
           .appservice.port = 29319
         ' /data/config.yaml
-        chmod 0755 /data
-        chown 0:"$$INTEGRATION_GID" /data/config.yaml
-        chmod 0640 /data/config.yaml
         echo "mautrix-meta config patched for $$MATRIX_SERVER_NAME"
-        stat -c 'mautrix config owner/mode: %u:%g %a' /data/config.yaml
 
   mautrix-registration-init:
     image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
@@ -144,6 +135,34 @@ services:
         chmod 0755 /data
         chmod 0644 /data/registration.yaml
         stat -c 'mautrix registration owner/mode: %u:%g %a' /data/registration.yaml
+
+  mautrix-config-permissions:
+    image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      mautrix-registration-init:
+        condition: service_completed_successfully
+    environment:
+      INTEGRATION_GID: ${INTEGRATION_GID:-1000}
+    volumes:
+      - mautrix-meta-data-v2:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        : "$${INTEGRATION_GID:?INTEGRATION_GID is required}"
+        case "$$INTEGRATION_GID" in
+          *[!0-9]*|'') echo "INTEGRATION_GID must be numeric" >&2; exit 64 ;;
+        esac
+        test -s /data/config.yaml
+        test -s /data/registration.yaml
+        chmod 0755 /data
+        chown 0:"$$INTEGRATION_GID" /data/config.yaml
+        chmod 0640 /data/config.yaml
+        chmod 0644 /data/registration.yaml
+        echo "mautrix final config access prepared for integration group $$INTEGRATION_GID"
+        stat -c 'mautrix final config owner/mode: %u:%g %a' /data/config.yaml
 
   synapse-configure:
     image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
@@ -287,7 +306,7 @@ services:
         condition: service_healthy
       synapse-admin-init:
         condition: service_completed_successfully
-      mautrix-registration-init:
+      mautrix-config-permissions:
         condition: service_completed_successfully
       integration-data-init:
         condition: service_completed_successfully
@@ -342,7 +361,7 @@ services:
         condition: service_healthy
       synapse-admin-init:
         condition: service_completed_successfully
-      mautrix-registration-init:
+      mautrix-config-permissions:
         condition: service_completed_successfully
       integration:
         condition: service_healthy
