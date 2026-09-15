@@ -9,21 +9,69 @@ import meta_provisioning as mp
 
 
 class MetaProvisioningTests(unittest.TestCase):
-    def test_load_shared_secret_from_private_config(self):
+    def _clear_secret_env(self):
+        for key in ("MAUTRIX_PROVISIONING_SECRET", "MAUTRIX_PROVISIONING_SECRET_PATH", "MAUTRIX_CONFIG_PATH"):
+            os.environ.pop(key, None)
+
+    def test_load_shared_secret_from_isolated_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "config.yaml")
-            with open(path, "w", encoding="utf-8") as handle:
+            secret_path = os.path.join(tmp, "shared_secret")
+            with open(secret_path, "w", encoding="utf-8") as handle:
+                handle.write("isolated-secret-long-enough\n")
+            with patch.dict(os.environ, {"MAUTRIX_PROVISIONING_SECRET_PATH": secret_path}, clear=False):
+                os.environ.pop("MAUTRIX_PROVISIONING_SECRET", None)
+                self.assertEqual(mp.load_shared_secret(), "isolated-secret-long-enough")
+
+    def test_env_secret_overrides_isolated_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_path = os.path.join(tmp, "shared_secret")
+            with open(secret_path, "w", encoding="utf-8") as handle:
+                handle.write("isolated-secret-long-enough")
+            with patch.dict(os.environ, {
+                "MAUTRIX_PROVISIONING_SECRET_PATH": secret_path,
+                "MAUTRIX_PROVISIONING_SECRET": "explicit-secret-long-enough",
+            }, clear=False):
+                self.assertEqual(mp.load_shared_secret(), "explicit-secret-long-enough")
+
+    def test_load_shared_secret_falls_back_to_private_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_secret_path = os.path.join(tmp, "missing-secret")
+            config_path = os.path.join(tmp, "config.yaml")
+            with open(config_path, "w", encoding="utf-8") as handle:
                 yaml.safe_dump({"provisioning": {"shared_secret": "a-very-long-private-secret"}}, handle)
-            with patch.dict(os.environ, {"MAUTRIX_CONFIG_PATH": path}, clear=False):
+            with patch.dict(os.environ, {
+                "MAUTRIX_PROVISIONING_SECRET_PATH": missing_secret_path,
+                "MAUTRIX_CONFIG_PATH": config_path,
+            }, clear=False):
                 os.environ.pop("MAUTRIX_PROVISIONING_SECRET", None)
                 self.assertEqual(mp.load_shared_secret(), "a-very-long-private-secret")
 
-    def test_uninitialized_secret_is_rejected(self):
+    def test_invalid_isolated_secret_fails_closed_without_config_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret_path = os.path.join(tmp, "shared_secret")
+            config_path = os.path.join(tmp, "config.yaml")
+            with open(secret_path, "w", encoding="utf-8") as handle:
+                handle.write("short")
+            with open(config_path, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"provisioning": {"shared_secret": "valid-config-secret-long-enough"}}, handle)
+            with patch.dict(os.environ, {
+                "MAUTRIX_PROVISIONING_SECRET_PATH": secret_path,
+                "MAUTRIX_CONFIG_PATH": config_path,
+            }, clear=False):
+                os.environ.pop("MAUTRIX_PROVISIONING_SECRET", None)
+                with self.assertRaises(mp.ProvisioningError):
+                    mp.load_shared_secret()
+
+    def test_uninitialized_config_secret_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.yaml")
+            missing_secret_path = os.path.join(tmp, "missing-secret")
             with open(path, "w", encoding="utf-8") as handle:
                 yaml.safe_dump({"provisioning": {"shared_secret": "generate"}}, handle)
-            with patch.dict(os.environ, {"MAUTRIX_CONFIG_PATH": path}, clear=False):
+            with patch.dict(os.environ, {
+                "MAUTRIX_PROVISIONING_SECRET_PATH": missing_secret_path,
+                "MAUTRIX_CONFIG_PATH": path,
+            }, clear=False):
                 os.environ.pop("MAUTRIX_PROVISIONING_SECRET", None)
                 with self.assertRaises(mp.ProvisioningError):
                     mp.load_shared_secret()
