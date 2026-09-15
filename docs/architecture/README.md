@@ -5,6 +5,7 @@ This directory contains active architecture and implementation contracts for the
 For the current single-client product direction, start with:
 
 - `managed-meta-onboarding.md` — customer-facing Meta/Facebook onboarding through the existing NiceGUI `/admin` surface, without Element in the normal workflow.
+- `managed-meta-onboarding-implementation.md` — current `dev` implementation/evidence status and the remaining real-provider acceptance gates.
 - `development-branch-workflow.md` — branch roles and promotion discipline.
 - `production-readiness-ledger.md` — evidence and remaining production gates where applicable.
 
