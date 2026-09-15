@@ -1,8 +1,8 @@
 """Private server-side adapter for mautrix BridgeV2 provisioning.
 
-This module deliberately has no web routes.  It is consumed by the authenticated
-NiceGUI admin surface (and, later, by a trusted local auth helper).  The mautrix
-provisioning shared secret never needs to reach browser JavaScript.
+This module deliberately has no web routes. It is consumed by the authenticated
+NiceGUI admin surface and trusted local auth helper. The mautrix provisioning
+shared secret never needs to reach browser JavaScript.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import yaml
 
 
 DEFAULT_BASE_URL = "http://mautrix-meta:29319/_matrix/provision"
+DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
 
@@ -48,27 +49,43 @@ def _validate_base_url(value: str) -> str:
     return value
 
 
-def load_shared_secret(config_path: str = DEFAULT_CONFIG_PATH) -> str:
-    """Read the generated provisioning secret from mautrix's private config volume.
-
-    An explicit MAUTRIX_PROVISIONING_SECRET is supported for tests/specialized
-    deployments, but the normal stack reuses the already-mounted read-only mautrix
-    data volume instead of introducing a second copy of the secret in Coolify.
-    """
-    env_secret = os.getenv("MAUTRIX_PROVISIONING_SECRET", "").strip()
-    if env_secret:
-        secret = env_secret
-    else:
-        path = Path(os.getenv("MAUTRIX_CONFIG_PATH", config_path))
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            raise ProvisioningError("Could not read the private mautrix provisioning configuration") from exc
-        secret = str((payload.get("provisioning") or {}).get("shared_secret") or "").strip()
-
+def _validate_secret(secret: str) -> str:
+    secret = (secret or "").strip()
     if secret in {"", "generate", "disable"} or len(secret) < 16:
         raise ProvisioningError("Mautrix provisioning is not initialized with a usable shared secret")
     return secret
+
+
+def load_shared_secret(config_path: str = DEFAULT_CONFIG_PATH) -> str:
+    """Load the provisioning secret through the narrowest available boundary.
+
+    Production Compose extracts only ``provisioning.shared_secret`` into a small
+    private handoff volume before mautrix starts. This avoids granting the
+    integration sidecar read access to mautrix's complete runtime config, which
+    mautrix v26.08.1 rewrites to its own UID/GID and mode 0600 on startup.
+
+    Precedence:
+      1. explicit environment value (tests/special deployments),
+      2. isolated secret file (normal production path),
+      3. legacy config.yaml fallback for backwards compatibility only.
+    """
+    env_secret = os.getenv("MAUTRIX_PROVISIONING_SECRET", "").strip()
+    if env_secret:
+        return _validate_secret(env_secret)
+
+    secret_path = Path(os.getenv("MAUTRIX_PROVISIONING_SECRET_PATH", DEFAULT_SECRET_PATH))
+    try:
+        if secret_path.is_file():
+            return _validate_secret(secret_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ProvisioningError("Could not read the private mautrix provisioning secret") from exc
+
+    path = Path(os.getenv("MAUTRIX_CONFIG_PATH", config_path))
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ProvisioningError("Could not read the private mautrix provisioning secret") from exc
+    return _validate_secret(str((payload.get("provisioning") or {}).get("shared_secret") or ""))
 
 
 def default_config() -> ProvisioningConfig:
@@ -84,12 +101,7 @@ def default_config() -> ProvisioningConfig:
 
 
 def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
-    """Return only login-step metadata that is safe to persist/render.
-
-    User responses, cookies, passwords, WebAuthn assertions and auth headers are
-    intentionally never accepted by this function and therefore cannot leak into
-    the integration settings database through the normal onboarding state path.
-    """
+    """Return only login-step metadata that is safe to persist/render."""
     if not isinstance(step, dict):
         return {}
     out: dict[str, Any] = {}
@@ -143,9 +155,6 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
             if isinstance(display.get(key), str)
         }
 
-    # WebAuthn and client_http may contain challenge/request material.  Keep the
-    # type/IDs so the UI can say a capable helper is required, but do not persist
-    # their payloads in the generic settings table.
     return out
 
 
