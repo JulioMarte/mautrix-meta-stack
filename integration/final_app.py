@@ -310,6 +310,13 @@ import sync_integrity_v6  # noqa: E402
 
 sync_integrity_v6.install()
 
+# When Matrix XMA metadata lacks the item URL, make one bounded read-only request to
+# the exact authenticated Facebook thread and extract only an explicit Marketplace
+# item link. Ambiguous pages still fall back to the authoritative thread URL.
+import marketplace_listing_auth_v7  # noqa: E402
+
+marketplace_listing_auth_v7.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
