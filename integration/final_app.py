@@ -296,6 +296,13 @@ import marketplace_rebuild_v4  # noqa: E402
 
 marketplace_rebuild_v4.install()
 
+# Resolve the canonical Marketplace item URL from mautrix-meta XMA data preserved in
+# Matrix. Keep the clickable link beside the listing title and add one private image
+# note as a thumbnail when the bridge preserved the item preview image.
+import marketplace_listing_v5  # noqa: E402
+
+marketplace_listing_v5.install()
+
 ensure_activation_boundary()
 if _start_matrix_sync:
     threading.Thread(target=legacy.matrix_sync_loop, name="matrix-sync", daemon=True).start()
