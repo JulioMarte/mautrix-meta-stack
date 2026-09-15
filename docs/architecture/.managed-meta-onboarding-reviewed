@@ -1,0 +1,2 @@
+Reviewed against main commit 14b59c0e68c4ef17e3e672a86e7e7b69058087c8 on 2026-09-15.
+Validated current assumptions: single-client deployment line; NiceGUI /admin product surface; mautrix-meta v26.08.1; mautrix-meta private on Compose network; no browser-only cookie extraction assumption; archived multi-tenant control-plane not required for this path.
