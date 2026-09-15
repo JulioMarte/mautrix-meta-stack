@@ -1,0 +1,68 @@
+name: Meta onboarding
+
+on:
+  pull_request:
+    paths:
+      - 'integration/meta_provisioning.py'
+      - 'integration/nicegui_app.py'
+      - 'integration/nicegui_legacy.py'
+      - 'integration/test_meta_provisioning.py'
+      - 'docs/architecture/managed-meta-onboarding.md'
+      - '.github/workflows/meta-onboarding.yml'
+  push:
+    branches:
+      - dev
+    paths:
+      - 'integration/meta_provisioning.py'
+      - 'integration/nicegui_app.py'
+      - 'integration/nicegui_legacy.py'
+      - 'integration/test_meta_provisioning.py'
+      - 'docs/architecture/managed-meta-onboarding.md'
+      - '.github/workflows/meta-onboarding.yml'
+
+jobs:
+  onboarding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build integration image
+        run: docker build -t meta-onboarding-test ./integration
+
+      - name: Run provisioning adapter tests
+        run: |
+          docker run --rm \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            meta-onboarding-test python -m unittest test_meta_provisioning.py
+
+      - name: Import full NiceGUI onboarding entrypoint
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-onboarding-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-onboarding-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e MAUTRIX_PROVISIONING_SECRET=provisioning-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-onboarding-test python -c "import nicegui_app; assert callable(nicegui_app.meta_runtime_state)"
+
+      - name: Preserve existing NiceGUI tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-nicegui-regression \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-regression-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e MAUTRIX_PROVISIONING_SECRET=provisioning-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-onboarding-test python -m unittest test_nicegui_app.py
