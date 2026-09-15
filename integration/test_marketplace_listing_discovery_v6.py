@@ -108,7 +108,7 @@ class MarketplaceListingDiscoveryV6Tests(unittest.TestCase):
         }
         with patch.object(enhancements, "_matrix_get", side_effect=[empty, found]) as matrix_get, \
              patch.object(delivery, "history_days", return_value=365), \
-             patch.object(module.time, "monotonic", side_effect=[100.0, 100.0, 161.0, 161.0]):
+             patch.object(module.time, "monotonic", side_effect=[100.0, 161.0, 161.0]):
             self.assertEqual(module.discover_marketplace_listing("!market:matrix.example.com"), {})
             candidate = module.discover_marketplace_listing("!market:matrix.example.com")
         self.assertEqual(matrix_get.call_count, 2)
