@@ -74,7 +74,6 @@ jobs:
       - name: Verify isolated secret and deny full config access
         run: |
           docker compose -f compose.yaml exec -T integration python - <<'PY'
-          import os
           import stat
           from pathlib import Path
           from meta_provisioning import default_config
@@ -110,12 +109,23 @@ jobs:
           print('isolated provisioning secret remains readable after mautrix runtime start')
           PY
 
-      - name: Confirm provisioning port is not host-published
+      - name: Confirm provisioning port has no host binding
         shell: bash
         run: |
           set -euo pipefail
-          published="$(docker compose -f compose.yaml port mautrix-meta 29319 2>/dev/null || true)"
-          test -z "$published"
+          cid="$(docker compose -f compose.yaml ps -q mautrix-meta)"
+          test -n "$cid"
+          docker inspect "$cid" > /tmp/mautrix-meta-inspect.json
+          python - <<'PY'
+          import json
+
+          data = json.load(open('/tmp/mautrix-meta-inspect.json', encoding='utf-8'))[0]
+          bindings = (data.get('HostConfig') or {}).get('PortBindings') or {}
+          ports = (data.get('NetworkSettings') or {}).get('Ports') or {}
+          assert not bindings.get('29319/tcp'), f'29319 has host PortBindings: {bindings.get("29319/tcp")!r}'
+          assert ports.get('29319/tcp') in (None, []), f'29319 has published NetworkSettings binding: {ports.get("29319/tcp")!r}'
+          print('mautrix provisioning port 29319 is container-network-only')
+          PY
 
       - name: Dump stack logs on failure
         if: failure()
