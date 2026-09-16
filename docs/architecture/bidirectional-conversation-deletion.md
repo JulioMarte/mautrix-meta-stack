@@ -24,6 +24,12 @@ A manual Matrix leave, an unverified room, or an unmapped room is a no-op.
 
 Before calling Chatwoot DELETE, the integration persists a `conversation_deletions` operation with `origin=meta`. This tombstone suppresses the Chatwoot deletion callback from being reflected back to Meta.
 
+A temporary Chatwoot failure does **not** block Matrix `/sync` progress and does not lose the deletion. The operation moves to `failed_retryable`, persists a `next_retry_at` deadline, and is retried independently of Matrix with exponential backoff (30 seconds initially, capped at one hour). Reconciliation runs during later sync iterations and during lifecycle bootstrap after a process restart. A Chatwoot `404` during this retry is treated as idempotent success because the remote Meta deletion was already authoritatively confirmed before the retry record was created.
+
+`remote_confirmed` itself is also recoverable. This matters if the integration process dies after persisting the authoritative Meta deletion but before it can call Chatwoot at all. On restart, reconciliation picks up that state immediately; it does not depend on Matrix redelivering the leave event.
+
+After Chatwoot is confirmed gone, changing the operation to `completed` and removing `room_links` happen in one SQLite transaction. If the process dies after the external Chatwoot DELETE but before that transaction commits, the still-persisted `remote_confirmed`/`failed_retryable` operation is retried; the resulting Chatwoot `404` finalizes it idempotently.
+
 ## Chatwoot -> Meta
 
 Stock Chatwoot internally dispatches `conversation.deleted`, but its stock `WebhookListener` does not forward that event to API inbox callbacks. `chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb` adds exactly that missing forwarding method and reuses Chatwoot's existing `deliver_api_inbox_webhooks` path, preserving the channel secret signature, webhook job retry behavior and delivery ID.
@@ -51,6 +57,10 @@ BridgeV2 v0.30.0 routes `com.beeper.delete_chat` to mautrix-meta's `HandleMatrix
 
 The `room_links` row is deliberately retained after Matrix accepts the event. It is deleted only when BridgeV2 subsequently removes the portal and the trusted Matrix leave is observed. This keeps enough state for audit/recovery if the remote delete fails.
 
+The Matrix transaction ID is deterministic for the conversation/room pair. If delivery of the signed Chatwoot callback is retried after an HTTP submission failure, resubmitting the same Matrix transaction remains idempotent at the Matrix client API boundary. Once Matrix has returned an event ID, the lifecycle records `remote_requested` and does not proactively emit additional destructive events; final confirmation comes from the bridge-owned portal deletion.
+
+A trusted bridge confirmation may race the HTTP submit path and arrive while the operation is still `pending`. That direct `pending -> completed` transition is allowed because the bridge-owned portal deletion is stronger evidence than the submit response. The submit path re-reads state before writing `remote_requested`, so a fast confirmation cannot be overwritten by a stale state update.
+
 ## Persistent state
 
 `verified_meta_portals` stores only room IDs and verification timestamps. It exists so a room that is already being deleted does not need to remain queryable in Synapse before its prior Meta provenance can be proven.
@@ -62,9 +72,26 @@ The `room_links` row is deliberately retained after Matrix accepts the event. It
 - origin (`meta` or `chatwoot`);
 - state;
 - Matrix delete event ID when applicable;
-- attempts/error timestamps.
+- attempts and last error;
+- `next_retry_at` for durable Meta -> Chatwoot reconciliation;
+- created/updated timestamps.
 
-Expected states are `pending`, `remote_requested`, `remote_confirmed`, `completed`, and `failed_retryable`.
+Expected states are `pending`, `remote_requested`, `remote_confirmed`, `completed`, and `failed_retryable`. Runtime updates enforce allowed state transitions rather than treating the state string as unconstrained metadata.
+
+The intended transitions are:
+
+```text
+Chatwoot origin:
+pending -> remote_requested -> completed
+pending -> completed            # bridge confirmation wins a fast race
+pending -> failed_retryable -> remote_requested -> completed
+failed_retryable -> completed   # bridge confirmation can arrive after an ambiguous HTTP failure
+
+Meta origin:
+remote_confirmed -> completed
+remote_confirmed -> failed_retryable -> completed
+failed_retryable -> failed_retryable   # another bounded retry failed
+```
 
 ## Chatwoot deployment requirement
 
@@ -86,7 +113,10 @@ After deployment, the existing API inbox callback URL and secret remain unchange
 ## Safety decisions
 
 - No polling of Facebook is added for deletion detection.
-- A Chatwoot 404 is not interpreted as proof that the user intended a Meta deletion.
+- A Chatwoot 404 discovered by normal message processing is not interpreted as proof that the user intended a Meta deletion.
+- A Chatwoot 404 while reconciling an already-authoritatively-confirmed `origin=meta` deletion is idempotent success.
 - The old "recreate deleted Chatwoot conversation" behavior is forcibly disabled by the lifecycle layer.
-- No automatic retry is issued after Matrix already accepted a destructive delete event. Confirmation comes from the bridge-owned portal deletion. Failed HTTP submission remains `failed_retryable` for the signed webhook/job retry path.
+- Chatwoot -> Meta does not automatically emit another destructive Matrix event after Matrix has already returned an event ID; confirmation comes from the bridge-owned portal deletion.
+- Meta -> Chatwoot failures are retried from durable local state because Meta deletion has already been confirmed and retrying the local Chatwoot DELETE cannot create a second remote Meta deletion.
+- Retry reconciliation is serialized inside the integration process so bootstrap and regular Matrix sync cannot concurrently perform the same local cleanup.
 - Deletion is scoped to the current account/inbox and preverified portal mapping.

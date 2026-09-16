@@ -16,8 +16,27 @@ legacy = runtime.legacy
 prod = runtime.prod
 DELETE_EVENT_TYPE = "com.beeper.delete_chat"
 _BOOTSTRAP_LOCK = threading.Lock()
+_RECONCILE_LOCK = threading.RLock()
 _base_ensure_room_link = None
 _base_chatwoot_handler = enhancements.handle_chatwoot_outgoing
+
+META_RETRY_BASE_SECONDS = 30
+META_RETRY_MAX_SECONDS = 3600
+META_RETRY_BATCH_SIZE = 20
+
+_ALLOWED_TRANSITIONS = {
+    "pending": {"remote_requested", "failed_retryable", "completed"},
+    "remote_requested": {"completed"},
+    "remote_confirmed": {"completed", "failed_retryable"},
+    "failed_retryable": {"failed_retryable", "remote_requested", "completed"},
+    "completed": set(),
+}
+
+
+def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    existing = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def ensure_schema() -> None:
@@ -37,12 +56,18 @@ def ensure_schema() -> None:
               matrix_event_id TEXT NOT NULL DEFAULT '',
               attempts INTEGER NOT NULL DEFAULT 0,
               error TEXT NOT NULL DEFAULT '',
+              next_retry_at INTEGER NOT NULL DEFAULT 0,
               created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS conversation_deletions_room
               ON conversation_deletions(room_id);
             """
+        )
+        _ensure_column(conn, "conversation_deletions", "next_retry_at", "INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS conversation_deletions_retry "
+            "ON conversation_deletions(origin, state, next_retry_at)"
         )
 
 
@@ -91,7 +116,18 @@ def _operation(conversation_id: int):
         ).fetchone()
 
 
+def _validate_transition(current_state: str, new_state: str, conversation_id: int) -> None:
+    if new_state not in _ALLOWED_TRANSITIONS:
+        raise ValueError(f"unknown conversation deletion state: {new_state}")
+    if new_state != current_state and new_state not in _ALLOWED_TRANSITIONS.get(current_state, set()):
+        raise RuntimeError(
+            f"invalid conversation deletion transition {current_state}->{new_state} for {conversation_id}"
+        )
+
+
 def _start_operation(conversation_id: int, room_id: str, origin: str, state: str) -> None:
+    if state not in _ALLOWED_TRANSITIONS:
+        raise ValueError(f"unknown conversation deletion state: {state}")
     now = int(time.time())
     with legacy.db() as conn:
         conn.execute(
@@ -102,7 +138,13 @@ def _start_operation(conversation_id: int, room_id: str, origin: str, state: str
 
 
 def _update_operation(conversation_id: int, *, state: str, matrix_event_id: str | None = None,
-                      error: str | None = None, increment_attempts: bool = False) -> None:
+                      error: str | None = None, increment_attempts: bool = False,
+                      next_retry_at: int | None = None) -> None:
+    current = _operation(conversation_id)
+    if not current:
+        raise RuntimeError(f"conversation deletion operation missing: {conversation_id}")
+    _validate_transition(str(current["state"]), state, conversation_id)
+
     fields = ["state=?", "updated_at=?"]
     values: list[object] = [state, int(time.time())]
     if matrix_event_id is not None:
@@ -111,6 +153,9 @@ def _update_operation(conversation_id: int, *, state: str, matrix_event_id: str 
     if error is not None:
         fields.append("error=?")
         values.append(error[:1000])
+    if next_retry_at is not None:
+        fields.append("next_retry_at=?")
+        values.append(int(next_retry_at))
     if increment_attempts:
         fields.append("attempts=attempts+1")
     values.append(conversation_id)
@@ -119,6 +164,24 @@ def _update_operation(conversation_id: int, *, state: str, matrix_event_id: str 
             f"UPDATE conversation_deletions SET {', '.join(fields)} WHERE conversation_id=?",
             tuple(values),
         )
+
+
+def _retry_delay_seconds(attempt_number: int) -> int:
+    exponent = max(0, min(16, int(attempt_number) - 1))
+    return min(META_RETRY_MAX_SECONDS, META_RETRY_BASE_SECONDS * (2 ** exponent))
+
+
+def _mark_retryable(conversation_id: int, exc: Exception) -> None:
+    operation = _operation(conversation_id)
+    attempts = int(operation["attempts"]) if operation else 0
+    retry_at = int(time.time()) + _retry_delay_seconds(attempts + 1)
+    _update_operation(
+        conversation_id,
+        state="failed_retryable",
+        error=str(exc),
+        increment_attempts=True,
+        next_retry_at=retry_at,
+    )
 
 
 def _delete_room_link(room_id: str, conversation_id: int) -> None:
@@ -155,6 +218,78 @@ def _delete_chatwoot_conversation(conversation_id: int) -> None:
         response.raise_for_status()
 
 
+def _finalize_meta_delete(conversation_id: int, room_id: str) -> None:
+    """Atomically mark local completion and remove the mapping after Chatwoot is gone."""
+    now = int(time.time())
+    with legacy.db() as conn:
+        current = conn.execute(
+            "SELECT state FROM conversation_deletions WHERE conversation_id=?", (conversation_id,)
+        ).fetchone()
+        if not current:
+            raise RuntimeError(f"conversation deletion operation missing: {conversation_id}")
+        _validate_transition(str(current["state"]), "completed", conversation_id)
+        conn.execute(
+            "UPDATE conversation_deletions SET state='completed', error='', next_retry_at=0, "
+            "attempts=attempts+1, updated_at=? WHERE conversation_id=?",
+            (now, conversation_id),
+        )
+        conn.execute(
+            "DELETE FROM room_links WHERE room_id=? AND conversation_id=?",
+            (room_id, conversation_id),
+        )
+
+
+def _complete_meta_delete(conversation_id: int, room_id: str) -> None:
+    # External side effect first, then one SQLite transaction. If the process dies
+    # between them, remote_confirmed/failed_retryable remains durable and a retry
+    # will receive Chatwoot 404 and finalize idempotently.
+    _delete_chatwoot_conversation(conversation_id)
+    _finalize_meta_delete(conversation_id, room_id)
+
+
+def reconcile_retryable_meta_deletions(*, limit: int = META_RETRY_BATCH_SIZE,
+                                       now: int | None = None) -> dict:
+    """Recover confirmed Meta deletes independently of Matrix sync token delivery."""
+    if not _RECONCILE_LOCK.acquire(blocking=False):
+        return {"processed": 0, "completed": 0, "failed": 0, "busy": True}
+    try:
+        current_time = int(time.time()) if now is None else int(now)
+        with legacy.db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM conversation_deletions "
+                "WHERE origin='meta' AND (state='remote_confirmed' OR "
+                "(state='failed_retryable' AND next_retry_at<=?)) "
+                "ORDER BY CASE state WHEN 'remote_confirmed' THEN 0 ELSE 1 END, "
+                "next_retry_at ASC, updated_at ASC LIMIT ?",
+                (current_time, max(1, int(limit))),
+            ).fetchall()
+
+        completed = 0
+        failed = 0
+        for row in rows:
+            conversation_id = int(row["conversation_id"])
+            room_id = str(row["room_id"])
+            try:
+                _complete_meta_delete(conversation_id, room_id)
+                completed += 1
+                print(
+                    f"conversation lifecycle: reconciliation completed Meta->Chatwoot delete "
+                    f"room={room_id} conversation={conversation_id}",
+                    flush=True,
+                )
+            except Exception as exc:
+                failed += 1
+                _mark_retryable(conversation_id, exc)
+                print(
+                    f"conversation lifecycle: reconciliation failed Meta->Chatwoot delete "
+                    f"room={room_id} conversation={conversation_id}: {exc}",
+                    flush=True,
+                )
+        return {"processed": len(rows), "completed": completed, "failed": failed}
+    finally:
+        _RECONCILE_LOCK.release()
+
+
 def process_matrix_leave(room_id: str, room: dict) -> dict:
     """Propagate only a preverified, bridge-bot-authored portal leave."""
     link = _link_by_room(room_id)
@@ -170,21 +305,30 @@ def process_matrix_leave(room_id: str, room: dict) -> dict:
     existing = _operation(conversation_id)
     if existing and existing["origin"] == "chatwoot":
         _delete_room_link(room_id, conversation_id)
-        _update_operation(conversation_id, state="completed", error="")
+        _update_operation(conversation_id, state="completed", error="", next_retry_at=0)
         print(
             f"conversation lifecycle: Chatwoot-origin delete confirmed by Meta room={room_id} conversation={conversation_id}",
             flush=True,
         )
         return {"ok": True, "completed": True, "origin": "chatwoot"}
 
-    _start_operation(conversation_id, room_id, "meta", "remote_confirmed")
-    try:
-        _delete_chatwoot_conversation(conversation_id)
-    except Exception as exc:
-        _update_operation(conversation_id, state="failed_retryable", error=str(exc), increment_attempts=True)
-        raise
-    _delete_room_link(room_id, conversation_id)
-    _update_operation(conversation_id, state="completed", error="", increment_attempts=True)
+    with _RECONCILE_LOCK:
+        _start_operation(conversation_id, room_id, "meta", "remote_confirmed")
+        existing = _operation(conversation_id)
+        if existing and existing["origin"] != "meta":
+            raise RuntimeError(
+                f"conversation lifecycle origin conflict conversation={conversation_id} "
+                f"origin={existing['origin']}"
+            )
+        if existing and existing["state"] == "completed":
+            _delete_room_link(room_id, conversation_id)
+            return {"ok": True, "completed": True, "origin": "meta", "duplicate": True}
+        try:
+            _complete_meta_delete(conversation_id, room_id)
+        except Exception as exc:
+            _mark_retryable(conversation_id, exc)
+            raise
+
     print(
         f"conversation lifecycle: Meta delete propagated to Chatwoot room={room_id} conversation={conversation_id}",
         flush=True,
@@ -248,11 +392,28 @@ def process_chatwoot_delete(payload: dict) -> dict:
     try:
         event_id = _send_matrix_delete(room_id, conversation_id)
     except Exception as exc:
-        _update_operation(conversation_id, state="failed_retryable", error=str(exc), increment_attempts=True)
+        existing = _operation(conversation_id)
+        if existing and existing["state"] == "completed":
+            return {"ok": True, "completed": True, "origin": "chatwoot", "confirmed_during_submit": True}
+        _update_operation(
+            conversation_id,
+            state="failed_retryable",
+            error=str(exc),
+            increment_attempts=True,
+            next_retry_at=0,
+        )
         raise
+
+    existing = _operation(conversation_id)
+    if existing and existing["state"] == "completed":
+        return {"ok": True, "completed": True, "origin": "chatwoot", "confirmed_during_submit": True}
     _update_operation(
-        conversation_id, state="remote_requested", matrix_event_id=event_id,
-        error="", increment_attempts=True,
+        conversation_id,
+        state="remote_requested",
+        matrix_event_id=event_id,
+        error="",
+        increment_attempts=True,
+        next_retry_at=0,
     )
     print(
         f"conversation lifecycle: Chatwoot delete requested on Meta room={room_id} conversation={conversation_id} event={event_id}",
@@ -268,6 +429,11 @@ def handle_chatwoot_event(payload: dict) -> dict:
 
 
 def lifecycle_sync_once() -> None:
+    try:
+        reconcile_retryable_meta_deletions()
+    except Exception as exc:
+        print(f"conversation lifecycle: retry reconciliation failed: {exc}", flush=True)
+
     since = legacy.get_setting("matrix_next_batch")
     params = {"timeout": 25000}
     if since:
@@ -337,6 +503,10 @@ def _bootstrap_existing_links() -> None:
                 verify_and_remember_portal(room_id)
             except Exception as exc:
                 print(f"conversation lifecycle: bootstrap verification failed room={room_id}: {exc}", flush=True)
+        try:
+            reconcile_retryable_meta_deletions()
+        except Exception as exc:
+            print(f"conversation lifecycle: bootstrap retry reconciliation failed: {exc}", flush=True)
     finally:
         _BOOTSTRAP_LOCK.release()
 

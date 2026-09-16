@@ -117,7 +117,9 @@ class ConversationLifecycleTests(unittest.TestCase):
             conn.execute("DELETE FROM room_links")
             conn.execute("DELETE FROM verified_meta_portals")
             conn.execute("DELETE FROM conversation_deletions")
+        self.legacy.settings["matrix_next_batch"] = "s1"
         self.enhancements.handle_chatwoot_outgoing.reset_mock()
+        self.enhancements.enhanced_live_matrix_event.reset_mock()
 
     def seed(self, room="!room:matrix.example.com", conversation=77, verified=True):
         with self.legacy.db() as conn:
@@ -140,6 +142,11 @@ class ConversationLifecycleTests(unittest.TestCase):
                 }]
             }
         }
+
+    def test_schema_contains_durable_retry_deadline(self):
+        with self.legacy.db() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_deletions)")}
+        self.assertIn("next_retry_at", columns)
 
     def test_chatwoot_delete_emits_native_event_and_retains_mapping_until_confirmation(self):
         room = self.seed()
@@ -169,6 +176,16 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.assertIsNone(self.module._link_by_room(room))
         self.assertEqual(self.module._operation(77)["state"], "completed")
 
+    def test_fast_bridge_confirmation_can_complete_chatwoot_pending_state(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "chatwoot", "pending")
+        with patch.object(self.module.requests, "delete") as delete:
+            result = self.module.process_matrix_leave(room, self.trusted_leave())
+        delete.assert_not_called()
+        self.assertEqual(result["origin"], "chatwoot")
+        self.assertEqual(self.module._operation(77)["state"], "completed")
+        self.assertIsNone(self.module._link_by_room(room))
+
     def test_meta_delete_removes_chatwoot_and_callback_is_loop_suppressed(self):
         room = self.seed()
         delete = Mock(return_value=FakeResponse(status=204))
@@ -182,6 +199,94 @@ class ConversationLifecycleTests(unittest.TestCase):
             "account": {"id": 1}, "inbox": {"id": 2},
         })
         self.assertEqual(callback["reason"], "meta_delete_loop_suppressed")
+
+    def test_meta_delete_failure_is_persisted_and_retry_completes_after_sync_token_advances(self):
+        room = self.seed()
+        sync_payload = {
+            "next_batch": "s2",
+            "rooms": {"leave": {room: self.trusted_leave()}},
+        }
+        get = Mock(return_value=FakeResponse(payload=sync_payload))
+        failing_delete = Mock(return_value=FakeResponse(status=503))
+
+        with patch.object(self.module.requests, "get", get), patch.object(
+            self.module.requests, "delete", failing_delete
+        ):
+            self.module.lifecycle_sync_once()
+
+        self.assertEqual(self.legacy.get_setting("matrix_next_batch"), "s2")
+        operation = self.module._operation(77)
+        self.assertEqual(operation["origin"], "meta")
+        self.assertEqual(operation["state"], "failed_retryable")
+        self.assertEqual(operation["attempts"], 1)
+        self.assertGreater(operation["next_retry_at"], 0)
+        self.assertIsNotNone(self.module._link_by_room(room))
+
+        success_delete = Mock(return_value=FakeResponse(status=204))
+        with patch.object(self.module.requests, "delete", success_delete):
+            result = self.module.reconcile_retryable_meta_deletions(
+                now=int(operation["next_retry_at"])
+            )
+
+        self.assertEqual(result, {"processed": 1, "completed": 1, "failed": 0})
+        self.assertIsNone(self.module._link_by_room(room))
+        completed = self.module._operation(77)
+        self.assertEqual(completed["state"], "completed")
+        self.assertEqual(completed["attempts"], 2)
+        self.assertEqual(completed["next_retry_at"], 0)
+
+    def test_remote_confirmed_survives_restart_before_chatwoot_http_attempt(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "meta", "remote_confirmed")
+        with patch.object(self.module.requests, "delete", Mock(return_value=FakeResponse(status=404))):
+            result = self.module.reconcile_retryable_meta_deletions(now=0)
+        self.assertEqual(result, {"processed": 1, "completed": 1, "failed": 0})
+        self.assertEqual(self.module._operation(77)["state"], "completed")
+        self.assertIsNone(self.module._link_by_room(room))
+
+    def test_meta_retry_failure_uses_exponential_backoff_and_keeps_mapping(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "meta", "remote_confirmed")
+        self.module._update_operation(
+            77,
+            state="failed_retryable",
+            error="first failure",
+            increment_attempts=True,
+            next_retry_at=100,
+        )
+        with patch.object(self.module.time, "time", return_value=100), patch.object(
+            self.module.requests, "delete", Mock(return_value=FakeResponse(status=503))
+        ):
+            result = self.module.reconcile_retryable_meta_deletions(now=100)
+
+        self.assertEqual(result, {"processed": 1, "completed": 0, "failed": 1})
+        operation = self.module._operation(77)
+        self.assertEqual(operation["state"], "failed_retryable")
+        self.assertEqual(operation["attempts"], 2)
+        self.assertEqual(operation["next_retry_at"], 160)
+        self.assertIsNotNone(self.module._link_by_room(room))
+
+    def test_retry_treats_chatwoot_404_as_idempotent_success(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "meta", "remote_confirmed")
+        self.module._update_operation(
+            77,
+            state="failed_retryable",
+            error="timeout",
+            increment_attempts=True,
+            next_retry_at=1,
+        )
+        with patch.object(self.module.requests, "delete", Mock(return_value=FakeResponse(status=404))):
+            result = self.module.reconcile_retryable_meta_deletions(now=1)
+        self.assertEqual(result["completed"], 1)
+        self.assertIsNone(self.module._link_by_room(room))
+        self.assertEqual(self.module._operation(77)["state"], "completed")
+
+    def test_invalid_state_transition_is_rejected(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "chatwoot", "remote_requested")
+        with self.assertRaisesRegex(RuntimeError, "invalid conversation deletion transition"):
+            self.module._update_operation(77, state="failed_retryable")
 
     def test_untrusted_or_unverified_leave_never_deletes_chatwoot(self):
         room = self.seed(verified=False)
