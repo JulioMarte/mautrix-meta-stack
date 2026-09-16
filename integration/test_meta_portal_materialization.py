@@ -53,8 +53,8 @@ class MetaPortalMaterializationTests(unittest.TestCase):
         self.legacy.set_setting("import_history_on_join", "1")
 
     @staticmethod
-    def portal_state(*, space=False, include_member=True):
-        events = [
+    def portal_state(*, space=False):
+        return [
             {
                 "type": "m.room.create",
                 "sender": "@metabot:matrix.example.com",
@@ -71,29 +71,20 @@ class MetaPortalMaterializationTests(unittest.TestCase):
                 },
             },
         ]
-        if include_member:
-            events.append(
-                {
-                    "type": "m.room.member",
-                    "state_key": "@meta_123:matrix.example.com",
-                    "sender": "@metabot:matrix.example.com",
-                    "content": {"membership": "join", "displayname": "Buyer"},
-                }
-            )
-        return events
 
-    def test_verified_room_without_history_is_materialized_in_chatwoot(self):
+    def test_verified_room_without_importable_history_stays_unlinked(self):
         room_id = "!marketplace:matrix.example.com"
         state = self.portal_state()
         with patch.object(self.module, "user_memberships", return_value={room_id: "join"}), \
              patch.object(self.module, "room_admin_state", return_value=state), \
              patch.object(self.enhancements, "import_recent_history", return_value=0), \
-             patch.object(self.module, "_link_exists", side_effect=[False, False, True]), \
+             patch.object(self.module, "_link_exists", side_effect=[False, False]), \
              patch.object(self.enhancements, "enhanced_ensure_room_link") as ensure:
             result = self.module.reconcile_meta_portals()
-        ensure.assert_called_once_with(room_id, "@meta_123:matrix.example.com")
-        self.assertEqual(result["materialized"], 1)
-        self.assertEqual(result["linked"], 1)
+        ensure.assert_not_called()
+        self.assertEqual(result["materialized"], 0)
+        self.assertEqual(result["linked"], 0)
+        self.assertEqual(result["empty_unlinked"], 1)
         self.assertEqual(result["history_imported"], 0)
 
     def test_marketplace_space_is_never_materialized_as_conversation(self):
@@ -107,14 +98,17 @@ class MetaPortalMaterializationTests(unittest.TestCase):
         history.assert_not_called()
         ensure.assert_not_called()
 
-    def test_trusted_bridge_creator_is_safe_fallback_when_member_state_is_missing(self):
-        sender = self.module._portal_contact_sender_from_state(self.portal_state(include_member=False))
-        self.assertEqual(sender, "@meta_123:matrix.example.com")
-
-    def test_untrusted_creator_cannot_be_used_for_chatwoot_identity(self):
-        state = self.portal_state(include_member=False)
-        state[1]["content"]["creator"] = "@evil:matrix.example.com"
-        self.assertEqual(self.module._portal_contact_sender_from_state(state), "")
+    def test_imported_history_remains_the_authority_for_creating_a_link(self):
+        room_id = "!history:matrix.example.com"
+        state = self.portal_state()
+        with patch.object(self.module, "user_memberships", return_value={room_id: "join"}), \
+             patch.object(self.module, "room_admin_state", return_value=state), \
+             patch.object(self.enhancements, "import_recent_history", return_value=3), \
+             patch.object(self.module, "_link_exists", side_effect=[False, True]):
+            result = self.module.reconcile_meta_portals()
+        self.assertEqual(result["history_imported"], 3)
+        self.assertEqual(result["linked"], 1)
+        self.assertEqual(result["empty_unlinked"], 0)
 
 
 if __name__ == "__main__":
