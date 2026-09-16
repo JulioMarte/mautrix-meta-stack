@@ -74,7 +74,11 @@ class HistorySafetyV9Tests(unittest.TestCase):
     def setUp(self):
         self.legacy.settings = {"history_import_days": "30"}
         self.delivery.MAX_HISTORY_DAYS = 3650
-        self.enhancements.save_operations_settings.reset_mock()
+        self.module._base_save_operations_settings.reset_mock()
+        self.module._base_operations_state.reset_mock()
+        self.module._base_operations_state.return_value = {"history_limit": 30, "history_days": 30}
+        self.enhancements.save_operations_settings = self.module._base_save_operations_settings
+        self.enhancements.operations_state = self.module._base_operations_state
         self.reconcile.reconcile_meta_portals.reset_mock()
         ImmediateThread.calls.clear()
 
