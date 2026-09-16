@@ -35,6 +35,16 @@ jobs:
       - name: Test deployed runtime transform guard
         run: python3 -m unittest mautrix-meta-runtime/test_thread_backfill_refresh.py
 
+      - name: Verify deployment build resource bounds
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('mautrix-meta-runtime/Dockerfile').read_text()
+          assert 'GOMAXPROCS=1' in text, text
+          assert 'GOFLAGS="-p=1"' in text, text
+          assert 'GOMEMLIMIT=768MiB' in text, text
+          PY
+
       - name: Build deployed v26.08.1 mautrix runtime
         run: docker build -f mautrix-meta-runtime/Dockerfile -t mautrix-meta-runtime-test .
 

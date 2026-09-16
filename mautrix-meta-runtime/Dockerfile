@@ -2,6 +2,14 @@ FROM golang:1-alpine3.24 AS builder
 
 ARG MAUTRIX_META_UPSTREAM_SHA=001f276beca5b90dead1bbc1351e1036e3f966a7
 
+# Coolify deployment hosts can be substantially smaller than GitHub-hosted
+# runners. Keep the patched source build deterministic while bounding compiler
+# parallelism and Go heap growth so a deployment cannot be killed mid-build by
+# host memory pressure with only an opaque `docker exec` exit 255.
+ENV GOMAXPROCS=1 \
+    GOFLAGS="-p=1" \
+    GOMEMLIMIT=768MiB
+
 RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev python3
 
 WORKDIR /src
