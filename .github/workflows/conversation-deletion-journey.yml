@@ -75,7 +75,7 @@ jobs:
             -e POSTGRES_DB=chatwoot \
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD=postgres \
-            postgres:16-alpine
+            pgvector/pgvector:pg16
           docker run -d --name chatwoot-deletion-redis \
             --network chatwoot-deletion-contract \
             redis:7-alpine
