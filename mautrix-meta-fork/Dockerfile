@@ -17,7 +17,6 @@ COPY mautrix-meta-fork/apply_provisioning_bootstrap.py /patch/apply_provisioning
 COPY mautrix-meta-fork/apply_provisioning_bootstrap_fixups.py /patch/apply_provisioning_bootstrap_fixups.py
 COPY mautrix-meta-fork/apply_matrix_ingestion_metadata.py /patch/apply_matrix_ingestion_metadata.py
 COPY mautrix-meta-fork/apply_matrix_ingestor_membership.py /patch/apply_matrix_ingestor_membership.py
-COPY mautrix-meta-fork/apply_thread_backfill_refresh.py /patch/apply_thread_backfill_refresh.py
 RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_fixups.py /src/mautrix-meta \
     && python3 /patch/apply_phase3_transport_tests.py /src/mautrix-meta \
@@ -26,7 +25,6 @@ RUN python3 /patch/apply_patch.py /src/mautrix-meta \
     && python3 /patch/apply_provisioning_bootstrap_fixups.py /src/mautrix-meta \
     && python3 /patch/apply_matrix_ingestion_metadata.py /src/mautrix-meta \
     && python3 /patch/apply_matrix_ingestor_membership.py /src/mautrix-meta \
-    && python3 /patch/apply_thread_backfill_refresh.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
     && gofmt -w \
         pkg/connector/client.go \
@@ -42,7 +40,6 @@ RUN python3 /patch/apply_patch.py /src/mautrix-meta \
         pkg/connector/userinfo.go \
         pkg/connector/chatinfo.go \
         pkg/connector/handlemeta.go \
-        pkg/connector/threadbackfill.go \
         pkg/connector/proxy_context_test.go \
         pkg/msgconv/mediadl/contextkey.go \
         pkg/msgconv/mediadl/download.go \
