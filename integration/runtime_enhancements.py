@@ -1,9 +1,9 @@
 """Production runtime enhancements for Meta -> Matrix -> Chatwoot.
 
 Loaded by final_app before Matrix sync starts. It auto-joins trusted Meta portals,
-imports recent inbound history, syncs contact identity, repairs deleted Chatwoot
-conversation mappings, and exposes an operator page plus a signed API-inbox
-callback endpoint.
+imports recent inbound history, syncs contact identity, exposes an operator page,
+and provides a signed API-inbox callback endpoint. Conversation deletion lifecycle
+is owned by conversation_lifecycle_v10; the old recreate-on-404 behavior is disabled.
 """
 from __future__ import annotations
 
@@ -52,12 +52,14 @@ def setting_int(key: str, default: int, minimum: int = 0, maximum: int = 1000) -
 
 
 def save_operations_settings(*, auto_join: bool, import_history: bool, history_limit: int,
-                             sync_profiles: bool, repair_deleted: bool) -> None:
+                             sync_profiles: bool, repair_deleted: bool = False) -> None:
     legacy.set_setting("auto_join_meta_portals", "1" if auto_join else "0")
     legacy.set_setting("import_history_on_join", "1" if import_history else "0")
     legacy.set_setting("history_import_limit", str(max(0, min(1000, int(history_limit)))))
     legacy.set_setting("sync_contact_profiles", "1" if sync_profiles else "0")
-    legacy.set_setting("repair_deleted_conversations", "1" if repair_deleted else "0")
+    # Bidirectional deletion owns this lifecycle now. Preserve the parameter for
+    # callers on the old function signature, but never re-enable recreate-on-404.
+    legacy.set_setting("repair_deleted_conversations", "0")
 
 
 def operations_state() -> dict:
@@ -66,7 +68,7 @@ def operations_state() -> dict:
         "import_history": setting_bool("import_history_on_join", True),
         "history_limit": setting_int("history_import_limit", DEFAULT_HISTORY_LIMIT),
         "sync_profiles": setting_bool("sync_contact_profiles", True),
-        "repair_deleted": setting_bool("repair_deleted_conversations", True),
+        "repair_deleted": False,
         "callback_verified": legacy.get_setting("api_inbox_callback_verified_at"),
         "delivery_verified": legacy.get_setting("api_inbox_delivery_verified_at"),
         "callback_secret_saved": bool(legacy.get_setting("chatwoot_api_inbox_signing_secret")),
@@ -277,7 +279,7 @@ def import_recent_history(room_id: str) -> int:
     if limit <= 0:
         return 0
     response = _matrix_get(
-        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages", params={"dir": "b", "limit": limit}
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages", params={"dir": "b", "limit": limit)
     )
     imported = 0
     for event in reversed((response.json() or {}).get("chunk") or []):
@@ -481,16 +483,18 @@ def operations_page(request: Request):
             ui.label("Historical outbound messages are not replayed, preventing accidental duplicate sends to Meta.").classes("text-xs text-slate-500")
 
         with ui.card().classes("w-full p-5"):
-            ui.label("Contact identity & recovery").classes("text-lg font-semibold")
+            ui.label("Contact identity & conversation lifecycle").classes("text-lg font-semibold")
             sync_profiles = ui.switch("Sync Meta display name and avatar from Matrix", value=state["sync_profiles"])
-            repair_deleted = ui.switch("Recreate the Chatwoot conversation if an agent deleted the linked conversation", value=state["repair_deleted"])
+            ui.label(
+                "Conversation deletion is synchronized bidirectionally. The previous recreate-on-404 behavior is disabled so an intentional deletion cannot be silently undone."
+            ).classes("text-xs text-slate-500 mt-2")
 
         async def save_settings():
             try:
                 save_operations_settings(
                     auto_join=bool(auto_join.value), import_history=bool(import_history.value),
                     history_limit=int(history_limit.value or 0), sync_profiles=bool(sync_profiles.value),
-                    repair_deleted=bool(repair_deleted.value),
+                    repair_deleted=False,
                 )
                 ui.notify("Sync & delivery settings saved", type="positive")
             except Exception as exc:
