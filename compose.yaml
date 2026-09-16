@@ -369,7 +369,9 @@ services:
     stop_grace_period: 15s
 
   mautrix-meta:
-    image: ${MAUTRIX_META_IMAGE:-dock.mau.dev/mautrix/meta:v26.08.1}
+    build:
+      context: .
+      dockerfile: mautrix-meta-runtime/Dockerfile
     restart: unless-stopped
     depends_on:
       synapse:
