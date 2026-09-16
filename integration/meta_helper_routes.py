@@ -1,9 +1,4 @@
-"""HTTP boundary used by the trusted desktop Meta authentication helper.
-
-This module is imported by the real ``nicegui_app.py`` process used by Compose.
-Install the native admin-v2 Meta navigation here as a startup invariant so the
-sidebar does not depend on an optional wrapper entrypoint being used.
-"""
+"""HTTP boundary used by the trusted desktop Meta authentication helper."""
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -11,15 +6,8 @@ from typing import Any, Callable
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-import meta_admin_patch
 from meta_helper_handoff import HandoffError, registry
 from meta_provisioning import ProvisioningError
-
-
-# Compose historically starts /app/nicegui_app.py directly. Keep navigation
-# installation on that effective import path. install() is idempotent: it only
-# replaces admin_v2._admin_chrome with the native NiceGUI implementation.
-meta_admin_patch.install()
 
 
 MAX_BODY_BYTES = 32768
