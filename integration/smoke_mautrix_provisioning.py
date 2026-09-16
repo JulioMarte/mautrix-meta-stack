@@ -1,9 +1,9 @@
 """Smoke the exact pinned mautrix provisioning API from the integration container.
 
-This deliberately stops before submitting Meta cookies. Starting and cancelling the
-facebook flow exercises the real BridgeV2 API, generated provisioning secret,
-Matrix admin permissions and exact response contract without needing real Facebook
-credentials or making a login attempt against Meta.
+This deliberately stops before submitting real Meta credentials. Starting and
+cancelling login flows exercises the real BridgeV2 API, generated provisioning
+secret, Matrix admin permissions and exact response contract without making a
+real account login attempt against Meta.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ def main() -> None:
 
     flows = client.flows()
     flow_ids = {str(flow.get("id") or "") for flow in flows}
+    print("available Meta login flows:", sorted(flow_ids), flush=True)
     assert "facebook" in flow_ids, f"facebook flow missing: {sorted(flow_ids)}"
     assert "messenger" in flow_ids, f"messenger flow missing: {sorted(flow_ids)}"
 
@@ -48,6 +49,21 @@ def main() -> None:
     assert "xs" in required_ids, f"xs missing from required fields: {sorted(required_ids)}"
 
     client.cancel(str(sanitized["login_id"]))
+
+    # v26.08 introduced/updated Messenger mobile login modes upstream. If this
+    # exact pinned runtime exposes either mode, exercise only the first step and
+    # cancel it. Never submit credentials in CI. The printed type gives us direct
+    # evidence of whether the deployed build can offer a helper-free UI path.
+    for optional_flow in ("messenger-lite", "messenger-lite-android"):
+        if optional_flow not in flow_ids:
+            print(f"optional login flow not exposed: {optional_flow}", flush=True)
+            continue
+        optional_step = safe_step(client.start(optional_flow))
+        print(f"{optional_flow} first step: {optional_step.get('type')!r}", flush=True)
+        assert optional_step.get("login_id"), f"{optional_flow} login process id missing"
+        assert optional_step.get("step_id"), f"{optional_flow} step id missing"
+        assert optional_step.get("type"), f"{optional_flow} returned no step type"
+        client.cancel(str(optional_step["login_id"]))
 
     post_cancel = client.whoami()
     assert isinstance(post_cancel.get("logins", []), list), "whoami.logins changed shape after cancel"
