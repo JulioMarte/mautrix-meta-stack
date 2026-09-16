@@ -95,7 +95,9 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest test_runtime_enhancements.py
+            meta-chatwoot-integration python -m unittest \
+              test_runtime_enhancements.py \
+              test_api_inbox_hmac_token.py
 
       - name: Run conversation lifecycle tests
         run: |
