@@ -8,9 +8,13 @@ on:
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
+      - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_v10.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
+      - 'chatwoot-extension/**'
+      - 'docs/architecture/bidirectional-conversation-deletion.md'
       - 'mautrix-meta-runtime/**'
       - 'mautrix-meta-fork/**'
       - '.github/workflows/meta-thread-discovery.yml'
@@ -23,9 +27,13 @@ on:
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
+      - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_v10.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
+      - 'chatwoot-extension/**'
+      - 'docs/architecture/bidirectional-conversation-deletion.md'
       - 'mautrix-meta-runtime/**'
       - 'mautrix-meta-fork/**'
       - '.github/workflows/meta-thread-discovery.yml'
@@ -90,6 +98,22 @@ jobs:
       - name: Test bounded history safety and incremental resync
         run: docker run --rm meta-chatwoot-integration python -m unittest test_history_safety_v9.py
 
+      - name: Test bidirectional conversation lifecycle
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_conversation_lifecycle_v10.py
+
+      - name: Validate Chatwoot deletion extension contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          ruby = Path('chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb').read_text()
+          dockerfile = Path('chatwoot-extension/Dockerfile').read_text()
+          assert 'def conversation_deleted(event)' in ruby
+          assert 'deliver_api_inbox_webhooks(payload, inbox)' in ruby
+          assert "event: __method__.to_s" in ruby
+          assert 'CHATWOOT_BASE_IMAGE' in dockerfile
+          assert ':latest' not in dockerfile
+          PY
+
       - name: Verify diagnostic module imports in production environment
         run: |
           docker run --rm \
@@ -104,4 +128,4 @@ jobs:
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
             -e INTEGRATION_META_DEBUG=false \
-            meta-chatwoot-integration python -c "import meta_debug_observability; assert callable(meta_debug_observability.collect_once); assert callable(meta_debug_observability.install)"
+            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install)"
