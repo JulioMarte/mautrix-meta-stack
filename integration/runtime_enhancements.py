@@ -358,13 +358,12 @@ def verify_api_inbox_callback(expected_url: str) -> str:
     if actual != expected:
         raise RuntimeError(f"API inbox callback is {actual or 'not configured'}; expected {expected}")
     secret = str(data.get("hmac_token") or data.get("secret") or "").strip()
-    if secret:
-        previous = legacy.get_setting("chatwoot_api_inbox_signing_secret")
-        legacy.set_setting("chatwoot_api_inbox_signing_secret", secret)
-        if previous != secret:
-            legacy.set_setting("api_inbox_delivery_verified_at", "")
-    elif not legacy.get_setting("chatwoot_api_inbox_signing_secret"):
+    if not secret:
         raise RuntimeError("Chatwoot did not expose the API inbox HMAC token to this admin token")
+    previous = legacy.get_setting("chatwoot_api_inbox_signing_secret")
+    legacy.set_setting("chatwoot_api_inbox_signing_secret", secret)
+    if previous != secret:
+        legacy.set_setting("api_inbox_delivery_verified_at", "")
     checked = now_utc()
     legacy.set_setting("api_inbox_callback_verified_at", checked)
     return f"PASS — API inbox callback + signing secret verified; {checked}"
