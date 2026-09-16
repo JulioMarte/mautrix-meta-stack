@@ -32,9 +32,32 @@ class RuntimeThreadBackfillRefreshPatchTests(unittest.TestCase):
         self.assertIn("m.threadBackfillStarted.Store(false)", patched)
         self.assertNotIn("already completed, skipping", patched)
 
+    def test_fetch_more_threads_gets_safe_discovery_telemetry(self):
+        source = '''\ttbl, err := resp.Parse(ctx)\n\tif err != nil {\n\t\treturn nil, nil, fmt.Errorf("failed to parse response: %w", err)\n\t}\n\tc.PostHandlePublishResponse(tbl)\n\n\treturn keyStore, tbl, nil\n'''
+        patched = patcher.patch_messagix_client(source)
+        self.assertIn("META_THREAD_DIAG fetch_more_threads_response", patched)
+        self.assertIn('Int64("sync_group_requested", syncGroup)', patched)
+        self.assertIn('Int("threads_inserted", len(tbl.LSDeleteThenInsertThread))', patched)
+        self.assertIn('Any("returned_sync_groups", threadSyncGroups)', patched)
+        self.assertIn('Any("returned_folders", threadFolders)', patched)
+        self.assertIn('Int("parent_thread_key_count", len(parentThreadKeys))', patched)
+        # The telemetry may count opaque parent keys internally, but must not emit values
+        # or user-facing thread metadata.
+        self.assertNotIn('Int64("thread_key"', patched)
+        self.assertNotIn('Str("thread_name"', patched)
+        self.assertNotIn('Str("snippet"', patched)
+        self.assertNotIn('Any("raw_payload"', patched)
+
+    def test_pagination_scope_is_explicitly_observable(self):
+        upstream = '''\t\t// Fetch next batch of threads, TODO: other SyncGroups?\n\t\tkeyStore, tbl, err := m.Client.FetchMoreThreads(ctx, 1) // SyncGroup 1\n'''
+        self.assertIn("FetchMoreThreads(ctx, 1)", upstream)
+        self.assertIn("TODO: other SyncGroups?", upstream)
+
     def test_patch_fails_closed_if_upstream_fragment_changes(self):
         with self.assertRaises(RuntimeError):
             patcher.patch_threadbackfill("func changedUpstream() {}")
+        with self.assertRaises(RuntimeError):
+            patcher.patch_messagix_client("func changedUpstream() {}")
 
 
 if __name__ == "__main__":
