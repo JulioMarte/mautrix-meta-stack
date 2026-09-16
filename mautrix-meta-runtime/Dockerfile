@@ -34,7 +34,9 @@ ENV UID=1337 \
 RUN apk add --no-cache ffmpeg su-exec ca-certificates olm bash jq yq-go curl
 
 COPY --from=builder /src/mautrix-meta/mautrix-meta /usr/bin/mautrix-meta
-COPY --from=builder /src/mautrix-meta/docker-run.sh /docker-run.sh
+COPY --from=builder /src/mautrix-meta/docker-run.sh /docker-run-upstream.sh
+COPY mautrix-meta-runtime/safe-docker-run.sh /docker-run.sh
+RUN chmod 0755 /docker-run.sh /docker-run-upstream.sh
 VOLUME /data
 
 CMD ["/docker-run.sh"]

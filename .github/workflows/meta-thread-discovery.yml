@@ -7,8 +7,8 @@ on:
       - 'integration/meta_portal_reconcile.py'
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
-      - 'integration/stale_portal_materialization_v8.py'
-      - 'integration/test_stale_portal_materialization_v8.py'
+      - 'integration/history_safety_v9.py'
+      - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
       - 'mautrix-meta-runtime/**'
@@ -22,8 +22,8 @@ on:
       - 'integration/meta_portal_reconcile.py'
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
-      - 'integration/stale_portal_materialization_v8.py'
-      - 'integration/test_stale_portal_materialization_v8.py'
+      - 'integration/history_safety_v9.py'
+      - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
       - 'mautrix-meta-runtime/**'
@@ -47,6 +47,19 @@ jobs:
           assert 'GOMAXPROCS=1' in text, text
           assert 'GOFLAGS="-p=1"' in text, text
           assert 'GOMEMLIMIT=768MiB' in text, text
+          PY
+
+      - name: Verify bounded Meta thread rediscovery policy
+        run: |
+          sh -n mautrix-meta-runtime/safe-docker-run.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('mautrix-meta-runtime/safe-docker-run.sh').read_text()
+          assert 'batch_count=2' in text, text
+          assert 'batch_count=5' in text, text
+          assert 'batch_delay=20s' in text, text
+          assert 'batch_delay=10s' in text, text
+          assert 'batch_count=-1' not in text, text
           PY
 
       - name: Build deployed v26.08.1 mautrix runtime
@@ -74,8 +87,8 @@ jobs:
       - name: Test Chatwoot portal materialization
         run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_materialization.py
 
-      - name: Test stale portal anchor materialization
-        run: docker run --rm meta-chatwoot-integration python -m unittest test_stale_portal_materialization_v8.py
+      - name: Test bounded history safety and incremental resync
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_history_safety_v9.py
 
       - name: Verify diagnostic module imports in production environment
         run: |
