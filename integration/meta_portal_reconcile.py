@@ -277,22 +277,25 @@ def reconcile_meta_portals() -> dict:
                         continue
                     verified_rooms.add(room_id)
 
+                before = _link_exists(room_id)
                 imported = enhancements.import_recent_history(room_id)
                 result["history_imported"] += imported
                 if imported:
                     print(f"Meta portal history imported room={room_id} count={imported}", flush=True)
 
-                if not _link_exists(room_id):
+                linked = _link_exists(room_id)
+                if not linked and not before and imported == 0:
                     sender = _portal_contact_sender_from_state(state)
                     if sender:
                         enhancements.enhanced_ensure_room_link(room_id, sender)
                         result["materialized"] += 1
+                        linked = _link_exists(room_id)
                         print(f"Meta portal materialized in Chatwoot room={room_id} sender={sender}", flush=True)
                     else:
                         result["missing_contact_identity"] += 1
                         print(f"Meta portal has no authoritative remote contact identity room={room_id}", flush=True)
 
-                if _link_exists(room_id):
+                if linked:
                     result["linked"] += 1
             except Exception as exc:
                 result["errors"].append(f"{room_id}: reconcile failed: {exc}")
