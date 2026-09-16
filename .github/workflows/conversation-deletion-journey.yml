@@ -88,6 +88,25 @@ jobs:
           echo 'Postgres did not become ready' >&2
           exit 1
 
+      - name: Prepare real Chatwoot database
+        run: |
+          docker run --rm \
+            --network chatwoot-deletion-contract \
+            -e RAILS_ENV=production \
+            -e NODE_ENV=production \
+            -e INSTALLATION_ENV=docker \
+            -e FRONTEND_URL=http://chatwoot.invalid \
+            -e SECRET_KEY_BASE=ci-secret-key-base-012345678901234567890123456789012345678901234567890123456789 \
+            -e POSTGRES_HOST=chatwoot-deletion-postgres \
+            -e POSTGRES_PORT=5432 \
+            -e POSTGRES_DATABASE=chatwoot \
+            -e POSTGRES_USERNAME=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e REDIS_URL=redis://chatwoot-deletion-redis:6379 \
+            -e ENABLE_ACCOUNT_SIGNUP=false \
+            chatwoot-meta-deletion:contract \
+            bundle exec rails db:chatwoot_prepare
+
       - name: Boot real Chatwoot Rails with extension and validate callback contract
         run: |
           set -eu
