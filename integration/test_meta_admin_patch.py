@@ -42,15 +42,30 @@ class MetaAdminPatchTests(unittest.TestCase):
         self.assertIn('RedirectResponse("/admin/basic"', redirect_source)
         self.assertIn("/admin/meta", {item[3] for item in patch_module.NAV_ITEMS})
 
-    def test_meta_page_is_registered_by_production_entrypoint(self):
+    def test_meta_page_is_registered_and_uses_admin_v2_chrome(self):
         self.assertTrue(callable(nicegui_app.meta_onboarding_page))
-        self.assertEqual(nicegui_app.meta_onboarding_page.__name__, "meta_onboarding_page")
+        source = inspect.getsource(nicegui_app.meta_onboarding_page)
+        self.assertIn('_admin_v2._admin_chrome("meta")', source)
+        self.assertNotIn("_legacy_ui.page_shell", source)
 
     def test_visibility_no_longer_depends_on_legacy_admin_path_javascript(self):
         source = inspect.getsource(patch_module.admin_chrome)
         self.assertNotIn("window.location.pathname", source)
         self.assertNotIn("add_head_html", source)
         self.assertIn("ui.navigate.to", source)
+
+    def test_helper_free_mobile_login_is_preferred_when_available(self):
+        options = {
+            "facebook": "Facebook web",
+            "messenger": "Messenger web",
+            "messenger-lite": "Messenger iOS",
+            "messenger-lite-android": "Messenger Android",
+        }
+        self.assertEqual(nicegui_app._preferred_flow(options), "messenger-lite-android")
+        self.assertEqual(
+            nicegui_app._preferred_flow({"facebook": "Facebook", "messenger-lite": "Messenger iOS"}),
+            "messenger-lite",
+        )
 
 
 if __name__ == "__main__":
