@@ -1,9 +1,10 @@
 # Build with the exact Chatwoot image deployed in production.
 # conversation.deleted is required; Chatwoot v4.15.0 is the oldest release
-# explicitly covered by CI in this repository.
-# Example:
-# docker build --build-arg CHATWOOT_BASE_IMAGE=chatwoot/chatwoot:v4.15.0 .
-ARG CHATWOOT_BASE_IMAGE
+# explicitly covered by CI in this repository. The default is intentionally
+# pinned so an omitted build arg is reproducible instead of producing an
+# invalid FROM warning; deployments may override it with another compatible
+# pinned image.
+ARG CHATWOOT_BASE_IMAGE=chatwoot/chatwoot:v4.15.0
 FROM ${CHATWOOT_BASE_IMAGE}
 
 # Fail the image build instead of silently shipping a deletion extension on a
