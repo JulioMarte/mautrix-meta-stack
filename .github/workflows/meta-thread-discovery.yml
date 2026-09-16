@@ -33,5 +33,8 @@ jobs:
       - name: Build integration sidecar
         run: docker build -t meta-chatwoot-integration ./integration
 
-      - name: Test portal reconciliation and Chatwoot materialization
-        run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_reconcile.py test_meta_portal_materialization.py
+      - name: Test authoritative portal reconciliation
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_reconcile.py
+
+      - name: Test Chatwoot portal materialization
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_materialization.py
