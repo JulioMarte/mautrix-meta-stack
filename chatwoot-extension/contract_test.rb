@@ -13,12 +13,16 @@ assert(WebhookListener.ancestors.include?(MetaConversationDeleteWebhook),
        'WebhookListener is not patched with MetaConversationDeleteWebhook')
 assert(MetaConversationDeleteWebhookJob < ApplicationJob,
        'MetaConversationDeleteWebhookJob is not an ActiveJob')
+assert(Channel::Api.column_names.include?('webhook_url'),
+       'Chatwoot Channel::Api no longer exposes webhook_url')
+assert(Channel::Api.column_names.include?('hmac_token'),
+       'Chatwoot Channel::Api no longer exposes hmac_token')
 
-fake_channel = OpenStruct.new(
+real_channel = Channel::Api.new(
   webhook_url: 'http://integration:8080/webhooks/chatwoot/inbox',
-  secret: 'contract-secret'
+  hmac_token: 'contract-secret'
 )
-fake_inbox = OpenStruct.new(id: 2, channel_type: 'Channel::Api', channel: fake_channel)
+fake_inbox = OpenStruct.new(id: 2, channel_type: 'Channel::Api', channel: real_channel)
 
 inbox_singleton = Inbox.singleton_class
 job_singleton = MetaConversationDeleteWebhookJob.singleton_class
@@ -50,8 +54,8 @@ end
 
 assert(captured_job, 'conversation_deleted did not enqueue the signed job')
 url, payload, secret = captured_job
-assert(url == fake_channel.webhook_url, 'wrong callback URL')
-assert(secret == fake_channel.secret, 'wrong callback secret')
+assert(url == real_channel.webhook_url, 'wrong callback URL')
+assert(secret == real_channel.hmac_token, 'wrong callback HMAC token')
 assert(payload[:event] == 'conversation_deleted', 'wrong event name')
 assert(payload[:conversation_id] == 77 && payload[:id] == 77, 'wrong conversation id')
 assert(payload.dig(:account, :id) == 1 && payload.dig(:inbox, :id) == 2, 'wrong scope payload')
@@ -83,4 +87,4 @@ assert(JSON.parse(body)['event'] == 'conversation_deleted', 'serialized payload 
 assert(timestamp.to_i.positive?, 'timestamp header missing')
 assert(signature == expected, 'HMAC signature does not match timestamp + raw body')
 
-puts 'PASS: Chatwoot conversation deletion extension contract is loaded and HMAC signed'
+puts 'PASS: Chatwoot conversation deletion extension contract is loaded and HMAC signed with Channel::Api.hmac_token'
