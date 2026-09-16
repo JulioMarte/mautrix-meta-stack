@@ -16,6 +16,7 @@ from nicegui_legacy import *  # noqa: F401,F403 - compatibility surface
 from nicegui import ui
 
 import admin_v2 as _admin_v2
+import meta_admin_patch as _meta_admin_patch
 from meta_helper_routes import create_pairing, register_helper_routes
 from meta_provisioning import (
     MautrixProvisioningClient,
@@ -23,6 +24,13 @@ from meta_provisioning import (
     connection_summary,
     safe_step,
 )
+
+
+# Compose starts this module directly, so install the native admin-v2 sidebar
+# here rather than relying on the Docker image CMD wrapper. admin_v2 is already
+# fully imported at this point, avoiding the circular import seen when the patch
+# was installed from a helper module.
+_meta_admin_patch.install()
 
 
 META_STEP_KEY = "meta_onboarding_step"
@@ -290,7 +298,12 @@ def meta_onboarding_page():
                             opts = {str(o.get("id")): str(o.get("name") or o.get("id")) for o in options if o.get("id") is not None}
                             inputs[field_id] = ui.select(opts, label=_field_label(field)).props("outlined").classes("w-full")
                         else:
-                            secret = str(field.get("type") or "").lower() in {"password", "secret"} or "password" in field_id.lower()
+                            field_type = str(field.get("type") or "").lower()
+                            lowered_id = field_id.lower()
+                            secret = (
+                                field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
+                                or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
+                            )
                             inputs[field_id] = ui.input(
                                 _field_label(field), password=secret, password_toggle_button=secret
                             ).props("outlined autocomplete=off").classes("w-full")
