@@ -50,20 +50,26 @@ def main() -> None:
 
     client.cancel(str(sanitized["login_id"]))
 
-    # v26.08 introduced/updated Messenger mobile login modes upstream. If this
-    # exact pinned runtime exposes either mode, exercise only the first step and
-    # cancel it. Never submit credentials in CI. The printed type gives us direct
-    # evidence of whether the deployed build can offer a helper-free UI path.
-    for optional_flow in ("messenger-lite", "messenger-lite-android"):
-        if optional_flow not in flow_ids:
-            print(f"optional login flow not exposed: {optional_flow}", flush=True)
-            continue
-        optional_step = safe_step(client.start(optional_flow))
-        print(f"{optional_flow} first step: {optional_step.get('type')!r}", flush=True)
-        assert optional_step.get("login_id"), f"{optional_flow} login process id missing"
-        assert optional_step.get("step_id"), f"{optional_flow} step id missing"
-        assert optional_step.get("type"), f"{optional_flow} returned no step type"
-        client.cancel(str(optional_step["login_id"]))
+    # The exact pinned runtime is expected to expose the two mobile Messenger
+    # modes introduced/improved in v26.08. They must begin with user_input so our
+    # authenticated server-rendered form can drive them without browser cookie
+    # extraction. Print only field metadata, never values or credentials.
+    for mobile_flow in ("messenger-lite", "messenger-lite-android"):
+        assert mobile_flow in flow_ids, f"{mobile_flow} flow missing: {sorted(flow_ids)}"
+        mobile_step = safe_step(client.start(mobile_flow))
+        assert mobile_step.get("type") == "user_input", f"{mobile_flow} is not UI-compatible: {mobile_step!r}"
+        assert mobile_step.get("login_id"), f"{mobile_flow} login process id missing"
+        assert mobile_step.get("step_id"), f"{mobile_flow} step id missing"
+        input_fields = (mobile_step.get("user_input") or {}).get("fields") or []
+        field_schema = [
+            {"id": str(field.get("id") or ""), "type": str(field.get("type") or "")}
+            for field in input_fields if isinstance(field, dict)
+        ]
+        print(f"{mobile_flow} user-input schema: {field_schema!r}", flush=True)
+        assert field_schema, f"{mobile_flow} returned no user-input fields"
+        assert any(field["type"] in {"username", "email", "phone_number"} for field in field_schema), field_schema
+        assert any(field["type"] == "password" for field in field_schema), field_schema
+        client.cancel(str(mobile_step["login_id"]))
 
     post_cancel = client.whoami()
     assert isinstance(post_cancel.get("logins", []), list), "whoami.logins changed shape after cancel"
