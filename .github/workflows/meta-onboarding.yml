@@ -7,6 +7,7 @@ on:
       - 'integration/meta_provisioning.py'
       - 'integration/meta_cookie_auth.py'
       - 'integration/meta_cookie_page.py'
+      - 'integration/meta_legacy_redirect.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
       - 'integration/meta_admin_patch.py'
@@ -37,6 +38,7 @@ on:
       - 'integration/meta_provisioning.py'
       - 'integration/meta_cookie_auth.py'
       - 'integration/meta_cookie_page.py'
+      - 'integration/meta_legacy_redirect.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
       - 'integration/meta_admin_patch.py'
@@ -111,7 +113,7 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-onboarding-test python -c "import runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_cookie_page; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(meta_cookie_page.meta_cookie_page)"
+            meta-onboarding-test python -c "import runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_cookie_page, meta_legacy_redirect; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(meta_cookie_page.meta_cookie_page); assert callable(meta_legacy_redirect.install)"
 
       - name: Preserve existing NiceGUI tests
         run: |
