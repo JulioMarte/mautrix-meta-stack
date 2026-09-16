@@ -37,7 +37,10 @@ begin
   end
 
   event = OpenStruct.new(data: { conversation_data: { id: 77, account_id: 1, inbox_id: 2 } })
-  WebhookListener.new.conversation_deleted(event)
+  # Chatwoot intentionally makes WebhookListener.new private. Use send only in
+  # this smoke so normal initialization still executes without changing the
+  # production class visibility or bypassing its constructor.
+  WebhookListener.send(:new).conversation_deleted(event)
 ensure
   inbox_singleton.alias_method :find_by, :__meta_delete_original_find_by
   inbox_singleton.remove_method :__meta_delete_original_find_by
