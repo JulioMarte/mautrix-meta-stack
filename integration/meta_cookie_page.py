@@ -29,7 +29,7 @@ def meta_cookie_page():
         with ui.row().classes("items-center justify-between w-full"):
             with ui.column().classes("gap-0"):
                 ui.label("Facebook Messenger").classes("text-2xl font-semibold")
-                ui.label("Conecta Facebook usando una sesión ya autenticada en tu navegador.").classes("text-sm text-slate-500")
+                ui.label("Conecta Facebook usando la sesión que ya funciona en tu navegador.").classes("text-sm text-slate-500")
             ui.button("Actualizar", icon="refresh", on_click=lambda: ui.navigate.to("/admin/meta-cookie")).props("flat no-caps")
 
         with ui.card().classes("w-full p-6"):
@@ -68,26 +68,67 @@ def meta_cookie_page():
             if runtime.get("logins"):
                 ui.button("Desconectar cuenta", icon="link_off", on_click=disconnect_all).props("outline color=negative").classes("mt-3")
 
-        with ui.card().classes("w-full p-6"):
-            ui.label("Conectar con cookies del navegador").classes("text-xl font-semibold")
+        with ui.card().classes("w-full p-6 border border-blue-100"):
+            ui.label("Cómo conectarlo — 4 pasos").classes("text-xl font-semibold")
             ui.label(
-                "Esta es la ruta simple y estable: Facebook hace el login normal en tu navegador; nuestro panel solo recibe la sesión ya autenticada. "
-                "Así, si Facebook pide passkey, código, aprobación en otro dispositivo o CAPTCHA, lo resuelves directamente en Facebook."
+                "No necesitas Element, instalar nada ni escribir tu contraseña en este panel. Inicia sesión directamente en Facebook y copia una petición ya autenticada."
+            ).classes("text-slate-600 mb-2")
+
+            with ui.column().classes("gap-4 mt-2"):
+                with ui.row().classes("items-start gap-3"):
+                    ui.badge("1").props("rounded color=primary")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Abre Facebook e inicia sesión normalmente").classes("font-semibold")
+                        ui.label(
+                            "Usa una ventana privada/incógnito si quieres una sesión limpia. Completa en Facebook cualquier passkey, código, aprobación, CAPTCHA o checkpoint."
+                        ).classes("text-sm text-slate-600")
+
+                with ui.row().classes("items-start gap-3"):
+                    ui.badge("2").props("rounded color=primary")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Abre las herramientas del navegador").classes("font-semibold")
+                        ui.label(
+                            "Chrome/Edge: F12 o Ctrl+Shift+I en Windows/Linux; Cmd+Option+I en macOS. Luego entra en la pestaña Network / Red."
+                        ).classes("text-sm text-slate-600")
+
+                with ui.row().classes("items-start gap-3"):
+                    ui.badge("3").props("rounded color=primary")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Copia una petición autenticada de Facebook").classes("font-semibold")
+                        ui.label(
+                            "En Network selecciona Fetch/XHR, recarga Facebook o abre un chat, busca una petición a facebook.com (por ejemplo graphql), haz clic derecho y elige Copy → Copy as cURL (POSIX)."
+                        ).classes("text-sm text-slate-600")
+                        ui.label(
+                            "No hace falta buscar ni copiar cada cookie por separado: el cURL ya contiene el Cookie header que necesitamos."
+                        ).classes("text-xs text-blue-700")
+
+                with ui.row().classes("items-start gap-3"):
+                    ui.badge("4").props("rounded color=primary")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Pega aquí y conecta").classes("font-semibold")
+                        ui.label(
+                            "Pega el cURL completo en el cuadro inferior y pulsa Conectar Facebook. Nosotros extraemos solo datr, c_user, sb y xs."
+                        ).classes("text-sm text-slate-600")
+
+            ui.link("Abrir Facebook Messenger en una pestaña nueva", "https://www.facebook.com/messages/", new_tab=True).classes("text-blue-700 font-medium mt-4")
+
+            with ui.expansion("¿Y si ya tengo las cookies?", icon="cookie").classes("w-full mt-3"):
+                ui.label(
+                    "También puedes pegar directamente un Cookie header, un objeto JSON de cookies o un arreglo JSON exportado por una extensión del navegador. El método recomendado sigue siendo Copy as cURL porque suele ser más fácil y evita errores manuales."
+                ).classes("text-sm text-slate-600 p-2")
+
+        with ui.card().classes("w-full p-6"):
+            ui.label("Pega aquí la sesión del navegador").classes("text-xl font-semibold")
+            ui.label(
+                "El panel no ejecuta el cURL. Solo lee el encabezado Cookie, valida las cuatro cookies necesarias y las entrega al provisioning API privado de mautrix-meta."
             ).classes("text-slate-600")
-
-            with ui.column().classes("gap-2 mt-4"):
-                ui.label("1. Abre Facebook en una ventana privada e inicia sesión normalmente.").classes("text-sm")
-                ui.label("2. Abre DevTools → Network, filtra por XHR/fetch y abre una petición de Facebook (por ejemplo graphql).").classes("text-sm")
-                ui.label("3. Haz Copy as cURL (POSIX) y pega el resultado abajo. También aceptamos un JSON de cookies.").classes("text-sm")
-
-            ui.link("Abrir Facebook en una pestaña nueva", "https://www.facebook.com/messages/", new_tab=True).classes("text-blue-700 font-medium mt-3")
 
             cookie_text = ui.textarea(
                 "Copy as cURL (POSIX), JSON de cookies o Cookie header",
                 placeholder="curl 'https://www.facebook.com/...' -H 'cookie: datr=...; c_user=...; sb=...; xs=...'",
             ).props("outlined autogrow autocomplete=off spellcheck=false").classes("w-full mt-4 font-mono text-sm")
             ui.label(
-                "El contenido pegado puede incluir cookies de sesión sensibles. Se usa únicamente para este intento, no se guarda en la configuración ni se escribe en logs."
+                "Importante: esto contiene una sesión sensible. Se usa únicamente para este intento, no se guarda en la configuración ni se escribe en logs, y el campo se limpia al terminar."
             ).classes("text-xs text-amber-700 mt-2")
 
             result_label = ui.label("").classes("text-sm mt-3")
@@ -121,7 +162,6 @@ def meta_cookie_page():
                     result_label.text = f"No se pudo conectar: {exc}"
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 finally:
-                    # Do not leave the session blob sitting in the UI after the request.
                     cookie_text.value = ""
                     cookie_text.update()
                     raw = ""
