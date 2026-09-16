@@ -1,0 +1,117 @@
+name: Conversation deletion journey
+
+on:
+  pull_request:
+    paths:
+      - 'integration/**'
+      - 'chatwoot-extension/**'
+      - '.github/workflows/conversation-deletion-journey.yml'
+      - 'docs/architecture/bidirectional-conversation-deletion.md'
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - 'integration/**'
+      - 'chatwoot-extension/**'
+      - '.github/workflows/conversation-deletion-journey.yml'
+      - 'docs/architecture/bidirectional-conversation-deletion.md'
+
+jobs:
+  deletion-journey:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CHATWOOT_TEST_IMAGE: chatwoot/chatwoot:v4.15.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build integration image
+        run: docker build -t meta-chatwoot-integration:deletion-ci ./integration
+
+      - name: Run lifecycle unit and HTTP journey tests in production image
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-conversation-deletion-ci \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-conversation-deletion-ci \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration:deletion-ci python -m unittest \
+              test_conversation_lifecycle_v10.py \
+              test_conversation_lifecycle_callback_v10.py \
+              test_conversation_lifecycle_http_journey.py
+
+      - name: Prove old Chatwoot v4.7.0 is rejected by compatibility guard
+        run: |
+          set -eu
+          if docker build \
+            --build-arg CHATWOOT_BASE_IMAGE=chatwoot/chatwoot:v4.7.0 \
+            -t chatwoot-meta-deletion:must-fail \
+            ./chatwoot-extension; then
+            echo 'Chatwoot v4.7.0 unexpectedly satisfied the deletion contract' >&2
+            exit 1
+          fi
+          echo 'Expected incompatibility confirmed: Chatwoot v4.7.0 has no conversation.deleted contract.'
+
+      - name: Build extension on pinned compatible Chatwoot
+        run: |
+          docker build \
+            --build-arg CHATWOOT_BASE_IMAGE="$CHATWOOT_TEST_IMAGE" \
+            -t chatwoot-meta-deletion:contract \
+            ./chatwoot-extension
+
+      - name: Start Chatwoot contract dependencies
+        run: |
+          set -eu
+          docker network create chatwoot-deletion-contract
+          docker run -d --name chatwoot-deletion-postgres \
+            --network chatwoot-deletion-contract \
+            -e POSTGRES_DB=chatwoot \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            postgres:16-alpine
+          docker run -d --name chatwoot-deletion-redis \
+            --network chatwoot-deletion-contract \
+            redis:7-alpine
+          for i in $(seq 1 60); do
+            if docker exec chatwoot-deletion-postgres pg_isready -U postgres -d chatwoot >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'Postgres did not become ready' >&2
+          exit 1
+
+      - name: Boot real Chatwoot Rails with extension and validate callback contract
+        run: |
+          set -eu
+          docker run --rm \
+            --network chatwoot-deletion-contract \
+            -v "$PWD/chatwoot-extension/test_contract.rb:/tmp/test_contract.rb:ro" \
+            -e RAILS_ENV=production \
+            -e NODE_ENV=production \
+            -e INSTALLATION_ENV=docker \
+            -e FRONTEND_URL=http://chatwoot.invalid \
+            -e SECRET_KEY_BASE=ci-secret-key-base-012345678901234567890123456789012345678901234567890123456789 \
+            -e POSTGRES_HOST=chatwoot-deletion-postgres \
+            -e POSTGRES_PORT=5432 \
+            -e POSTGRES_DATABASE=chatwoot \
+            -e POSTGRES_USERNAME=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e REDIS_URL=redis://chatwoot-deletion-redis:6379 \
+            -e ENABLE_ACCOUNT_SIGNUP=false \
+            -e RAILS_LOG_TO_STDOUT=true \
+            chatwoot-meta-deletion:contract \
+            bundle exec rails runner /tmp/test_contract.rb
+
+      - name: Cleanup contract containers
+        if: always()
+        run: |
+          docker rm -f chatwoot-deletion-postgres chatwoot-deletion-redis >/dev/null 2>&1 || true
+          docker network rm chatwoot-deletion-contract >/dev/null 2>&1 || true
