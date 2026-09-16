@@ -1,0 +1,37 @@
+name: Meta thread discovery
+
+on:
+  pull_request:
+    paths:
+      - 'integration/meta_portal_reconcile.py'
+      - 'integration/test_meta_portal_reconcile.py'
+      - 'integration/test_meta_portal_materialization.py'
+      - 'mautrix-meta-fork/**'
+      - '.github/workflows/meta-thread-discovery.yml'
+  push:
+    branches:
+      - dev
+    paths:
+      - 'integration/meta_portal_reconcile.py'
+      - 'integration/test_meta_portal_reconcile.py'
+      - 'integration/test_meta_portal_materialization.py'
+      - 'mautrix-meta-fork/**'
+      - '.github/workflows/meta-thread-discovery.yml'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test fork transform guard
+        run: python3 -m unittest mautrix-meta-fork/test_thread_backfill_refresh.py
+
+      - name: Build patched mautrix-meta fork
+        run: docker build -f mautrix-meta-fork/Dockerfile -t mautrix-meta-thread-discovery-test .
+
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+
+      - name: Test portal reconciliation and Chatwoot materialization
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_reconcile.py test_meta_portal_materialization.py
