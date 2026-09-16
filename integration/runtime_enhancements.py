@@ -279,7 +279,7 @@ def import_recent_history(room_id: str) -> int:
     if limit <= 0:
         return 0
     response = _matrix_get(
-        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages", params={"dir": "b", "limit": limit)
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages", params={"dir": "b", "limit": limit}
     )
     imported = 0
     for event in reversed((response.json() or {}).get("chunk") or []):
