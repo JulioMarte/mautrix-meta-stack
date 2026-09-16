@@ -243,8 +243,7 @@ def reconcile_meta_portals() -> dict:
                 continue
             result["invited"] += 1
             try:
-                state = room_admin_state(room_id)
-                verified, reason = verified_meta_state(state, allow_pending_invite=True)
+                verified, reason = verified_meta_portal(room_id, allow_pending_invite=True)
                 if not verified:
                     result["ignored"] += 1
                     print(f"pending Matrix invite not a verified Meta portal room={room_id} reason={reason}", flush=True)
