@@ -1,9 +1,9 @@
 """Smoke the exact pinned mautrix provisioning API from the integration container.
 
-This deliberately stops before submitting Meta cookies. Starting and cancelling the
-facebook flow exercises the real BridgeV2 API, generated provisioning secret,
-Matrix admin permissions and exact response contract without needing real Facebook
-credentials or making a login attempt against Meta.
+This deliberately stops before submitting real Meta credentials. Starting and
+cancelling login flows exercises the real BridgeV2 API, generated provisioning
+secret, Matrix admin permissions and exact response contract without making a
+real account login attempt against Meta.
 """
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ def main() -> None:
 
     flows = client.flows()
     flow_ids = {str(flow.get("id") or "") for flow in flows}
+    print("available Meta login flows:", sorted(flow_ids), flush=True)
     assert "facebook" in flow_ids, f"facebook flow missing: {sorted(flow_ids)}"
     assert "messenger" in flow_ids, f"messenger flow missing: {sorted(flow_ids)}"
 
@@ -48,6 +49,27 @@ def main() -> None:
     assert "xs" in required_ids, f"xs missing from required fields: {sorted(required_ids)}"
 
     client.cancel(str(sanitized["login_id"]))
+
+    # The exact pinned runtime is expected to expose the two mobile Messenger
+    # modes introduced/improved in v26.08. They must begin with user_input so our
+    # authenticated server-rendered form can drive them without browser cookie
+    # extraction. Print only field metadata, never values or credentials.
+    for mobile_flow in ("messenger-lite", "messenger-lite-android"):
+        assert mobile_flow in flow_ids, f"{mobile_flow} flow missing: {sorted(flow_ids)}"
+        mobile_step = safe_step(client.start(mobile_flow))
+        assert mobile_step.get("type") == "user_input", f"{mobile_flow} is not UI-compatible: {mobile_step!r}"
+        assert mobile_step.get("login_id"), f"{mobile_flow} login process id missing"
+        assert mobile_step.get("step_id"), f"{mobile_flow} step id missing"
+        input_fields = (mobile_step.get("user_input") or {}).get("fields") or []
+        field_schema = [
+            {"id": str(field.get("id") or ""), "type": str(field.get("type") or "")}
+            for field in input_fields if isinstance(field, dict)
+        ]
+        print(f"{mobile_flow} user-input schema: {field_schema!r}", flush=True)
+        assert field_schema, f"{mobile_flow} returned no user-input fields"
+        assert any(field["type"] in {"username", "email", "phone_number"} for field in field_schema), field_schema
+        assert any(field["type"] == "password" for field in field_schema), field_schema
+        client.cancel(str(mobile_step["login_id"]))
 
     post_cancel = client.whoami()
     assert isinstance(post_cancel.get("logins", []), list), "whoami.logins changed shape after cancel"

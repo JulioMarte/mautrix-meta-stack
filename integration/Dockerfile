@@ -22,5 +22,6 @@ COPY . /app
 
 EXPOSE 8080
 # NiceGUI runs on its bundled Uvicorn server with one process; access logs are disabled
-# because the Chatwoot webhook path contains a deployment secret.
-CMD ["python", "/app/nicegui_app.py"]
+# because the Chatwoot webhook path contains a deployment secret. runtime_entrypoint
+# installs the native admin-v2 Facebook navigation after all existing routes load.
+CMD ["python", "/app/runtime_entrypoint.py"]
