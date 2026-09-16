@@ -88,7 +88,7 @@ class MetaPortalMaterializationTests(unittest.TestCase):
         with patch.object(self.module, "user_memberships", return_value={room_id: "join"}), \
              patch.object(self.module, "room_admin_state", return_value=state), \
              patch.object(self.enhancements, "import_recent_history", return_value=0), \
-             patch.object(self.module, "_link_exists", side_effect=[False, True]), \
+             patch.object(self.module, "_link_exists", side_effect=[False, False, True]), \
              patch.object(self.enhancements, "enhanced_ensure_room_link") as ensure:
             result = self.module.reconcile_meta_portals()
         ensure.assert_called_once_with(room_id, "@meta_123:matrix.example.com")
