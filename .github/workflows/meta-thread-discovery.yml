@@ -9,7 +9,9 @@ on:
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
       - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/conversation_lifecycle_callback_v10.py'
       - 'integration/test_conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_callback_v10.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
@@ -28,7 +30,9 @@ on:
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
       - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/conversation_lifecycle_callback_v10.py'
       - 'integration/test_conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_callback_v10.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
@@ -101,6 +105,9 @@ jobs:
       - name: Test bidirectional conversation lifecycle
         run: docker run --rm meta-chatwoot-integration python -m unittest test_conversation_lifecycle_v10.py
 
+      - name: Test signed production lifecycle callback wiring
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_conversation_lifecycle_callback_v10.py
+
       - name: Validate Chatwoot deletion extension contract
         run: |
           python3 - <<'PY'
@@ -128,4 +135,4 @@ jobs:
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
             -e INTEGRATION_META_DEBUG=false \
-            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install)"
+            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; import conversation_lifecycle_callback_v10; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install); assert callable(conversation_lifecycle_callback_v10.install)"
