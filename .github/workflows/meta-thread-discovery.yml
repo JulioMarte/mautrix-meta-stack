@@ -7,6 +7,8 @@ on:
       - 'integration/meta_portal_reconcile.py'
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
+      - 'integration/stale_portal_materialization_v8.py'
+      - 'integration/test_stale_portal_materialization_v8.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
       - 'mautrix-meta-runtime/**'
@@ -20,6 +22,8 @@ on:
       - 'integration/meta_portal_reconcile.py'
       - 'integration/meta_debug_observability.py'
       - 'integration/runtime_entrypoint.py'
+      - 'integration/stale_portal_materialization_v8.py'
+      - 'integration/test_stale_portal_materialization_v8.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
       - 'mautrix-meta-runtime/**'
@@ -69,6 +73,9 @@ jobs:
 
       - name: Test Chatwoot portal materialization
         run: docker run --rm meta-chatwoot-integration python -m unittest test_meta_portal_materialization.py
+
+      - name: Test stale portal anchor materialization
+        run: docker run --rm meta-chatwoot-integration python -m unittest test_stale_portal_materialization_v8.py
 
       - name: Verify diagnostic module imports in production environment
         run: |
