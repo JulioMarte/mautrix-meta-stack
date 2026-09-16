@@ -290,6 +290,16 @@ def main() -> None:
     admin_token = admin_login()
     as_token, bot = appservice_identity()
 
+    # The lifecycle intentionally treats the first /sync response as cursor
+    # initialization. Do not create destructive test rooms until the live runtime
+    # has established that cursor, otherwise a fast CI runner could generate the
+    # leave inside the initialization window and create a false negative.
+    wait_until(
+        lambda: legacy.get_setting("matrix_next_batch"),
+        "integration Matrix sync cursor was not initialized",
+        timeout=40.0,
+    )
+
     server = ThreadingHTTPServer(("127.0.0.1", 8091), DeleteRecorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
