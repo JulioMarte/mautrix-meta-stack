@@ -12,8 +12,11 @@ from __future__ import annotations
 import threading
 from urllib.parse import quote
 
-import autojoin_verify
+# final_app installs autojoin verification while it initializes. Import it first so
+# direct unit-test imports of this module don't observe a half-initialized
+# autojoin_verify module.
 import final_app as runtime
+import autojoin_verify
 import meta_portal_reconcile as reconcile
 import runtime_enhancements as enhancements
 
