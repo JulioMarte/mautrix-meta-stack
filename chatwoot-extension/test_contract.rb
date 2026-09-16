@@ -5,6 +5,10 @@ require 'ostruct'
 abort 'conversation.deleted event missing from Chatwoot' unless defined?(Events::Types::CONVERSATION_DELETED)
 abort 'initializer module was not prepended' unless WebhookListener < MetaConversationDeleteWebhook
 
+dispatcher_listeners = Rails.configuration.dispatcher.async_dispatcher.listeners
+abort 'WebhookListener is not wired into Chatwoot async dispatcher' unless dispatcher_listeners.any? { |listener| listener.is_a?(WebhookListener) }
+
+listener = WebhookListener.instance
 channel = OpenStruct.new(
   webhook_url: 'https://integration.example.test/callback/test',
   secret: 'contract-secret'
@@ -41,7 +45,7 @@ begin
     }
   )
 
-  WebhookListener.new.conversation_deleted(event)
+  listener.conversation_deleted(event)
 
   abort "expected exactly one API inbox delivery, got #{recorded.length}" unless recorded.length == 1
   args, kwargs = recorded.first
@@ -58,7 +62,7 @@ begin
 
   recorded.clear
   inbox.channel_type = 'Channel::WebWidget'
-  WebhookListener.new.conversation_deleted(event)
+  listener.conversation_deleted(event)
   abort 'non-API inbox deletion must not be forwarded' unless recorded.empty?
 
   recorded.clear
@@ -66,7 +70,7 @@ begin
   missing_scope_event = OpenStruct.new(
     data: { conversation_data: { id: 77, account_id: 99, inbox_id: 2 } }
   )
-  WebhookListener.new.conversation_deleted(missing_scope_event)
+  listener.conversation_deleted(missing_scope_event)
   abort 'missing scoped inbox must not be forwarded' unless recorded.empty?
 
   puts 'Chatwoot conversation deletion extension contract: OK'
