@@ -12,6 +12,7 @@ on:
       - 'integration/nicegui_legacy.py'
       - 'integration/Dockerfile'
       - 'integration/test_meta_admin_patch.py'
+      - 'integration/test_meta_bridgev2_input_compat.py'
       - 'integration/test_meta_provisioning.py'
       - 'integration/test_meta_provisioning_http.py'
       - 'integration/test_meta_helper_handoff.py'
@@ -36,6 +37,7 @@ on:
       - 'integration/nicegui_legacy.py'
       - 'integration/Dockerfile'
       - 'integration/test_meta_admin_patch.py'
+      - 'integration/test_meta_bridgev2_input_compat.py'
       - 'integration/test_meta_provisioning.py'
       - 'integration/test_meta_provisioning_http.py'
       - 'integration/test_meta_helper_handoff.py'
@@ -56,7 +58,7 @@ jobs:
       - name: Build integration image
         run: docker build -t meta-onboarding-test ./integration
 
-      - name: Run provisioning, helper, and native admin navigation tests
+      - name: Run provisioning, helper, BridgeV2 input, and native admin navigation tests
         run: |
           docker run --rm \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
@@ -74,6 +76,7 @@ jobs:
               test_meta_provisioning_http.py \
               test_meta_helper_handoff.py \
               test_meta_helper_routes.py \
+              test_meta_bridgev2_input_compat.py \
               test_meta_admin_patch.py
 
       - name: Import actual production NiceGUI entrypoint
