@@ -26,7 +26,9 @@ Before calling Chatwoot DELETE, the integration persists a `conversation_deletio
 
 A temporary Chatwoot failure does **not** block Matrix `/sync` progress and does not lose the deletion. The operation moves to `failed_retryable`, persists a `next_retry_at` deadline, and is retried independently of Matrix with exponential backoff (30 seconds initially, capped at one hour). Reconciliation runs during later sync iterations and during lifecycle bootstrap after a process restart. A Chatwoot `404` during this retry is treated as idempotent success because the remote Meta deletion was already authoritatively confirmed before the retry record was created.
 
-The mapping is removed only after Chatwoot returns success or idempotent `404`. If Chatwoot keeps failing, `room_links` is retained so operators still have the original relationship while the durable operation remains retryable.
+`remote_confirmed` itself is also recoverable. This matters if the integration process dies after persisting the authoritative Meta deletion but before it can call Chatwoot at all. On restart, reconciliation picks up that state immediately; it does not depend on Matrix redelivering the leave event.
+
+After Chatwoot is confirmed gone, changing the operation to `completed` and removing `room_links` happen in one SQLite transaction. If the process dies after the external Chatwoot DELETE but before that transaction commits, the still-persisted `remote_confirmed`/`failed_retryable` operation is retried; the resulting Chatwoot `404` finalizes it idempotently.
 
 ## Chatwoot -> Meta
 
@@ -57,6 +59,8 @@ The `room_links` row is deliberately retained after Matrix accepts the event. It
 
 The Matrix transaction ID is deterministic for the conversation/room pair. If delivery of the signed Chatwoot callback is retried after an HTTP submission failure, resubmitting the same Matrix transaction remains idempotent at the Matrix client API boundary. Once Matrix has returned an event ID, the lifecycle records `remote_requested` and does not proactively emit additional destructive events; final confirmation comes from the bridge-owned portal deletion.
 
+A trusted bridge confirmation may race the HTTP submit path and arrive while the operation is still `pending`. That direct `pending -> completed` transition is allowed because the bridge-owned portal deletion is stronger evidence than the submit response. The submit path re-reads state before writing `remote_requested`, so a fast confirmation cannot be overwritten by a stale state update.
+
 ## Persistent state
 
 `verified_meta_portals` stores only room IDs and verification timestamps. It exists so a room that is already being deleted does not need to remain queryable in Synapse before its prior Meta provenance can be proven.
@@ -79,6 +83,7 @@ The intended transitions are:
 ```text
 Chatwoot origin:
 pending -> remote_requested -> completed
+pending -> completed            # bridge confirmation wins a fast race
 pending -> failed_retryable -> remote_requested -> completed
 failed_retryable -> completed   # bridge confirmation can arrive after an ambiguous HTTP failure
 
@@ -113,4 +118,5 @@ After deployment, the existing API inbox callback URL and secret remain unchange
 - The old "recreate deleted Chatwoot conversation" behavior is forcibly disabled by the lifecycle layer.
 - Chatwoot -> Meta does not automatically emit another destructive Matrix event after Matrix has already returned an event ID; confirmation comes from the bridge-owned portal deletion.
 - Meta -> Chatwoot failures are retried from durable local state because Meta deletion has already been confirmed and retrying the local Chatwoot DELETE cannot create a second remote Meta deletion.
+- Retry reconciliation is serialized inside the integration process so bootstrap and regular Matrix sync cannot concurrently perform the same local cleanup.
 - Deletion is scoped to the current account/inbox and preverified portal mapping.
