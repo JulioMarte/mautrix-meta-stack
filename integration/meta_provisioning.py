@@ -101,7 +101,12 @@ def default_config() -> ProvisioningConfig:
 
 
 def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
-    """Return only login-step metadata that is safe to persist/render."""
+    """Return only login-step metadata that is safe to persist/render.
+
+    BridgeV2 input metadata has changed shape over time. Normalize select options
+    to ``{id, name}`` objects for the UI and map OTP/token input types to the
+    existing password renderer so those values are never shown in clear text.
+    """
     if not isinstance(step, dict):
         return {}
     out: dict[str, Any] = {}
@@ -139,19 +144,21 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
                 for key in ("id", "name", "description", "type", "required", "pattern")
                 if isinstance(item.get(key), (str, bool))
             }
+            if str(safe.get("type") or "").lower() in {"2fa_code", "token", "secret"}:
+                safe["type"] = "password"
             if isinstance(item.get("options"), list):
-                normalized_options: list[str | dict[str, str]] = []
+                normalized_options: list[dict[str, str]] = []
                 for option in item["options"]:
                     if isinstance(option, str):
-                        normalized_options.append(option)
+                        normalized_options.append({"id": option, "name": option})
                     elif isinstance(option, dict):
-                        normalized = {
-                            key: option[key]
-                            for key in ("id", "name")
-                            if isinstance(option.get(key), str)
-                        }
-                        if normalized:
-                            normalized_options.append(normalized)
+                        option_id = option.get("id")
+                        option_name = option.get("name")
+                        if isinstance(option_id, str):
+                            normalized_options.append({
+                                "id": option_id,
+                                "name": option_name if isinstance(option_name, str) else option_id,
+                            })
                 safe["options"] = normalized_options
             fields.append(safe)
         out["user_input"] = {"fields": fields}
