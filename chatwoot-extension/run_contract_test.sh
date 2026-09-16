@@ -3,6 +3,7 @@ set -eu
 
 IMAGE="${CHATWOOT_EXTENSION_IMAGE:-mautrix-meta-chatwoot-delete-contract:v4.7.0}"
 BASE_IMAGE="${CHATWOOT_BASE_IMAGE:-chatwoot/chatwoot:v4.7.0}"
+POSTGRES_IMAGE="${CHATWOOT_POSTGRES_IMAGE:-pgvector/pgvector:0.8.6-pg16}"
 NETWORK="chatwoot-delete-contract-${GITHUB_RUN_ID:-local}-$$"
 POSTGRES="cw-delete-postgres-$$"
 REDIS="cw-delete-redis-$$"
@@ -24,7 +25,7 @@ docker run -d --name "$POSTGRES" --network "$NETWORK" \
   -e POSTGRES_DB=chatwoot \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=contract-password \
-  postgres:16-alpine >/dev/null
+  "$POSTGRES_IMAGE" >/dev/null
 
 docker run -d --name "$REDIS" --network "$NETWORK" redis:7-alpine >/dev/null
 
@@ -39,6 +40,9 @@ done
 
 COMMON_ENV="-e RAILS_ENV=production -e NODE_ENV=production -e INSTALLATION_ENV=docker -e SECRET_KEY_BASE=contract-secret-key-base-not-for-production -e FRONTEND_URL=http://localhost -e POSTGRES_HOST=$POSTGRES -e POSTGRES_DATABASE=chatwoot -e POSTGRES_USERNAME=postgres -e POSTGRES_PASSWORD=contract-password -e REDIS_URL=redis://$REDIS:6379"
 
+# Chatwoot v4.7.0 schema enables pgvector. Use a PostgreSQL 16 image with the
+# extension installed so this smoke boots the same Rails application rather than
+# bypassing database initialization.
 # shellcheck disable=SC2086
 docker run --rm --network "$NETWORK" $COMMON_ENV "$IMAGE" \
   bundle exec rails db:chatwoot_prepare
