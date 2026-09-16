@@ -1,13 +1,16 @@
 FROM golang:1-alpine3.24 AS builder
 
-ARG MAUTRIX_META_UPSTREAM_SHA=ed37c9e6ce47e83dc75b9abea7b636302715b9bc
+ARG MAUTRIX_META_UPSTREAM_TAG=v0.2608.1
+ARG MAUTRIX_META_UPSTREAM_SHA=001f276beca5b90dead1bbc1351e1036e3f966a7
 
 RUN apk add --no-cache git ca-certificates build-base su-exec olm-dev python3
 
 WORKDIR /src
 RUN git clone --filter=blob:none https://github.com/mautrix/meta.git mautrix-meta \
     && git -C mautrix-meta checkout --detach "$MAUTRIX_META_UPSTREAM_SHA" \
-    && test "$(git -C mautrix-meta rev-parse HEAD)" = "$MAUTRIX_META_UPSTREAM_SHA"
+    && test "$(git -C mautrix-meta rev-parse HEAD)" = "$MAUTRIX_META_UPSTREAM_SHA" \
+    && test "$(git -C mautrix-meta describe --tags --exact-match HEAD)" = "$MAUTRIX_META_UPSTREAM_TAG" \
+    && grep -Fq 'maunium.net/go/mautrix v0.30.0' mautrix-meta/go.mod
 
 COPY mautrix-meta-fork/apply_thread_backfill_refresh.py /patch/apply_thread_backfill_refresh.py
 RUN python3 /patch/apply_thread_backfill_refresh.py /src/mautrix-meta \
