@@ -32,12 +32,7 @@ class FakeClient:
 
 class MetaCookieAuthTests(unittest.TestCase):
     def test_accepts_copy_as_curl_cookie_header(self):
-        raw = (
-            "curl 'https://www.facebook.com/api/graphql/' \\\n"
-            "  -H 'accept: */*' \\\n"
-            "  -H 'cookie: locale=en_US; datr=datr-value; c_user=123456789; sb=sb-value; "
-            "xs=11:secret:2:1234567890:-1:-1; wd=1920x1080'"
-        )
+        raw = "curl 'https://www.facebook.com/api/graphql/' -H 'accept: */*' -H 'cookie: locale=en_US; datr=datr-value; c_user=123456789; sb=sb-value; xs=11:secret:2:1234567890:-1:-1; wd=1920x1080'"
         self.assertEqual(parse_facebook_cookie_input(raw), VALID)
 
     def test_accepts_json_object(self):
