@@ -1,13 +1,4 @@
-"""Bidirectional Meta <-> Chatwoot conversation lifecycle synchronization.
-
-The destructive path is fail-closed:
-- Matrix room leaves only delete Chatwoot when the room was previously verified as a
-  Meta portal and the integration account was removed by the configured bridge bot.
-- Chatwoot deletes only reach Meta when account, inbox, conversation mapping and
-  verified portal registry all match.
-- Chatwoot-origin mappings are retained until BridgeV2 confirms the remote delete by
-  removing the Matrix portal, so failed deletes remain recoverable/auditable.
-"""
+"""Fail-closed bidirectional Meta <-> Chatwoot conversation deletion."""
 from __future__ import annotations
 
 import hashlib
@@ -23,10 +14,10 @@ import runtime_enhancements as enhancements
 
 legacy = runtime.legacy
 prod = runtime.prod
-
 DELETE_EVENT_TYPE = "com.beeper.delete_chat"
 _BOOTSTRAP_LOCK = threading.Lock()
 _base_ensure_room_link = None
+_base_chatwoot_handler = enhancements.handle_chatwoot_outgoing
 
 
 def ensure_schema() -> None:
@@ -60,17 +51,16 @@ def remember_verified_portal(room_id: str) -> None:
     with legacy.db() as conn:
         conn.execute(
             "INSERT INTO verified_meta_portals(room_id, verified_at, last_seen_at) VALUES(?, ?, ?) "
-            "ON CONFLICT(room_id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+            "ON CONFLICT(room_id) DO UPDATE SET last_seen_at=excluded.last_seen_at",
             (room_id, now, now),
         )
 
 
 def portal_was_verified(room_id: str) -> bool:
     with legacy.db() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM verified_meta_portals WHERE room_id = ?", (room_id,)
-        ).fetchone()
-    return row is not None
+        return conn.execute(
+            "SELECT 1 FROM verified_meta_portals WHERE room_id=?", (room_id,)
+        ).fetchone() is not None
 
 
 def verify_and_remember_portal(room_id: str) -> bool:
@@ -84,20 +74,20 @@ def verify_and_remember_portal(room_id: str) -> bool:
 
 def _link_by_room(room_id: str):
     with legacy.db() as conn:
-        return conn.execute("SELECT * FROM room_links WHERE room_id = ?", (room_id,)).fetchone()
+        return conn.execute("SELECT * FROM room_links WHERE room_id=?", (room_id,)).fetchone()
 
 
 def _link_by_conversation(conversation_id: int):
     with legacy.db() as conn:
         return conn.execute(
-            "SELECT * FROM room_links WHERE conversation_id = ?", (conversation_id,)
+            "SELECT * FROM room_links WHERE conversation_id=?", (conversation_id,)
         ).fetchone()
 
 
 def _operation(conversation_id: int):
     with legacy.db() as conn:
         return conn.execute(
-            "SELECT * FROM conversation_deletions WHERE conversation_id = ?", (conversation_id,)
+            "SELECT * FROM conversation_deletions WHERE conversation_id=?", (conversation_id,)
         ).fetchone()
 
 
@@ -106,27 +96,27 @@ def _start_operation(conversation_id: int, room_id: str, origin: str, state: str
     with legacy.db() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO conversation_deletions"
-            "(conversation_id, room_id, origin, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+            "(conversation_id,room_id,origin,state,created_at,updated_at) VALUES(?,?,?,?,?,?)",
             (conversation_id, room_id, origin, state, now, now),
         )
 
 
 def _update_operation(conversation_id: int, *, state: str, matrix_event_id: str | None = None,
                       error: str | None = None, increment_attempts: bool = False) -> None:
-    assignments = ["state = ?", "updated_at = ?"]
+    fields = ["state=?", "updated_at=?"]
     values: list[object] = [state, int(time.time())]
     if matrix_event_id is not None:
-        assignments.append("matrix_event_id = ?")
+        fields.append("matrix_event_id=?")
         values.append(matrix_event_id)
     if error is not None:
-        assignments.append("error = ?")
+        fields.append("error=?")
         values.append(error[:1000])
     if increment_attempts:
-        assignments.append("attempts = attempts + 1")
+        fields.append("attempts=attempts+1")
     values.append(conversation_id)
     with legacy.db() as conn:
         conn.execute(
-            f"UPDATE conversation_deletions SET {', '.join(assignments)} WHERE conversation_id = ?",
+            f"UPDATE conversation_deletions SET {', '.join(fields)} WHERE conversation_id=?",
             tuple(values),
         )
 
@@ -134,7 +124,7 @@ def _update_operation(conversation_id: int, *, state: str, matrix_event_id: str 
 def _delete_room_link(room_id: str, conversation_id: int) -> None:
     with legacy.db() as conn:
         conn.execute(
-            "DELETE FROM room_links WHERE room_id = ? AND conversation_id = ?",
+            "DELETE FROM room_links WHERE room_id=? AND conversation_id=?",
             (room_id, conversation_id),
         )
 
@@ -146,32 +136,27 @@ def _trusted_bridge_leave(room: dict) -> bool:
     events = []
     for key in ("state", "timeline"):
         events.extend(((room.get(key) or {}).get("events") or []))
-    for event in events:
-        if event.get("type") != "m.room.member":
-            continue
-        if event.get("state_key") != legacy.MATRIX_ADMIN_MXID:
-            continue
-        if (event.get("content") or {}).get("membership") != "leave":
-            continue
-        if event.get("sender") == expected_bot:
-            return True
-    return False
+    return any(
+        event.get("type") == "m.room.member"
+        and event.get("state_key") == legacy.MATRIX_ADMIN_MXID
+        and (event.get("content") or {}).get("membership") == "leave"
+        and event.get("sender") == expected_bot
+        for event in events
+    )
 
 
 def _delete_chatwoot_conversation(conversation_id: int) -> None:
     account_id = int(legacy.get_setting("chatwoot_account_id"))
     response = requests.delete(
         legacy.chatwoot_url(f"/api/v1/accounts/{account_id}/conversations/{conversation_id}"),
-        headers=legacy.chatwoot_headers(),
-        timeout=20,
+        headers=legacy.chatwoot_headers(), timeout=20,
     )
-    if response.status_code == 404:
-        return
-    response.raise_for_status()
+    if response.status_code != 404:
+        response.raise_for_status()
 
 
 def process_matrix_leave(room_id: str, room: dict) -> dict:
-    """Propagate a BridgeV2-confirmed remote Meta deletion into Chatwoot."""
+    """Propagate only a preverified, bridge-bot-authored portal leave."""
     link = _link_by_room(room_id)
     if not link:
         return {"ok": True, "ignored": True, "reason": "unmapped_room"}
@@ -208,45 +193,40 @@ def process_matrix_leave(room_id: str, room: dict) -> dict:
 
 
 def _configured_scope(payload: dict) -> tuple[bool, str]:
-    configured_account = str(legacy.get_setting("chatwoot_account_id"))
-    configured_inbox = str(legacy.get_setting("chatwoot_inbox_id"))
     account = payload.get("account") or {}
     inbox = payload.get("inbox") or {}
     account_id = str(account.get("id") or payload.get("account_id") or "")
     inbox_id = str(inbox.get("id") or payload.get("inbox_id") or "")
-    if account_id != configured_account:
+    if account_id != str(legacy.get_setting("chatwoot_account_id")):
         return False, "outside_configured_chatwoot_account"
-    if inbox_id != configured_inbox:
+    if inbox_id != str(legacy.get_setting("chatwoot_inbox_id")):
         return False, "outside_configured_chatwoot_inbox"
     return True, ""
 
 
 def _send_matrix_delete(room_id: str, conversation_id: int) -> str:
-    txn_seed = f"cw-delete:{conversation_id}:{room_id}".encode()
-    txn_id = "cwdel-" + hashlib.sha256(txn_seed).hexdigest()[:24]
+    txn = "cwdel-" + hashlib.sha256(f"{conversation_id}:{room_id}".encode()).hexdigest()[:24]
     response = requests.put(
         f"{legacy.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/send/"
-        f"{DELETE_EVENT_TYPE}/{txn_id}",
+        f"{DELETE_EVENT_TYPE}/{txn}",
         headers=legacy.matrix_headers(),
         json={"delete_for_everyone": False, "from_message_request": False},
         timeout=20,
     )
     response.raise_for_status()
-    data = response.json() if response.content else {}
-    event_id = str(data.get("event_id") or "")
+    event_id = str((response.json() if response.content else {}).get("event_id") or "")
     if not event_id:
         raise RuntimeError("Matrix accepted no event_id for delete request")
     return event_id
 
 
 def process_chatwoot_delete(payload: dict) -> dict:
-    """Propagate an authenticated Chatwoot delete into Meta through BridgeV2."""
+    """Translate a signed Chatwoot deletion into BridgeV2's native delete event."""
     in_scope, reason = _configured_scope(payload)
     if not in_scope:
         return {"ok": True, "ignored": True, "reason": reason}
-    raw_id = payload.get("conversation_id") or payload.get("id")
     try:
-        conversation_id = int(raw_id)
+        conversation_id = int(payload.get("conversation_id") or payload.get("id"))
     except (TypeError, ValueError):
         return {"ok": True, "ignored": True, "reason": "missing_conversation_id"}
 
@@ -271,11 +251,8 @@ def process_chatwoot_delete(payload: dict) -> dict:
         _update_operation(conversation_id, state="failed_retryable", error=str(exc), increment_attempts=True)
         raise
     _update_operation(
-        conversation_id,
-        state="remote_requested",
-        matrix_event_id=event_id,
-        error="",
-        increment_attempts=True,
+        conversation_id, state="remote_requested", matrix_event_id=event_id,
+        error="", increment_attempts=True,
     )
     print(
         f"conversation lifecycle: Chatwoot delete requested on Meta room={room_id} conversation={conversation_id} event={event_id}",
@@ -287,11 +264,10 @@ def process_chatwoot_delete(payload: dict) -> dict:
 def handle_chatwoot_event(payload: dict) -> dict:
     if payload.get("event") == "conversation_deleted":
         return process_chatwoot_delete(payload)
-    return enhancements.handle_chatwoot_outgoing(payload)
+    return _base_chatwoot_handler(payload)
 
 
 def lifecycle_sync_once() -> None:
-    """Existing authoritative /sync path plus fail-closed portal deletion handling."""
     since = legacy.get_setting("matrix_next_batch")
     params = {"timeout": 25000}
     if since:
@@ -368,19 +344,12 @@ def _bootstrap_existing_links() -> None:
 def install() -> None:
     global _base_ensure_room_link
     ensure_schema()
-
-    # Conversation deletion is now authoritative; never recreate a deleted Chatwoot
-    # conversation merely because a later Matrix event references the old room.
     legacy.set_setting("repair_deleted_conversations", "0")
     enhancements.repair_deleted_conversation = lambda room_id: False
 
     _base_ensure_room_link = prod.ensure_room_link
     prod.ensure_room_link = verified_ensure_room_link
     legacy.ensure_room_link = verified_ensure_room_link
-
-    # The signed API-inbox route performs a global lookup of this function at request
-    # time, so replacing it here extends the existing callback without adding a second
-    # unauthenticated endpoint.
     enhancements.handle_chatwoot_outgoing = handle_chatwoot_event
     legacy.sync_once = lifecycle_sync_once
 
