@@ -20,11 +20,14 @@ class MetaAdminPatchTests(unittest.TestCase):
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
-        global admin_v2, patch_module, entrypoint, nicegui_app
+        global admin_v2, patch_module, nicegui_app
+
+        # Import exactly the module Compose executes in production. This must be
+        # sufficient to install the Facebook sidebar; no wrapper import is allowed
+        # to make this assertion pass accidentally.
         nicegui_app = importlib.import_module("nicegui_app")
         admin_v2 = importlib.import_module("admin_v2")
         patch_module = importlib.import_module("meta_admin_patch")
-        entrypoint = importlib.import_module("runtime_entrypoint")
 
     @classmethod
     def tearDownClass(cls):
@@ -33,7 +36,7 @@ class MetaAdminPatchTests(unittest.TestCase):
     def test_meta_is_first_class_admin_navigation_item(self):
         self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), patch_module.NAV_ITEMS)
 
-    def test_runtime_entrypoint_installs_native_admin_chrome(self):
+    def test_direct_nicegui_app_startup_installs_native_admin_chrome(self):
         self.assertIs(admin_v2._admin_chrome, patch_module.admin_chrome)
 
     def test_admin_root_redirect_and_meta_navigation_do_not_conflict(self):
