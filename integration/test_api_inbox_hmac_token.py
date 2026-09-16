@@ -68,6 +68,17 @@ class ApiInboxHmacTokenTests(unittest.TestCase):
                 )
         self.assertEqual(legacy.get_setting("api_inbox_callback_verified_at"), "")
 
+    def test_runtime_settings_cannot_reenable_recreate_deleted_conversations(self):
+        module.save_operations_settings(
+            auto_join=True,
+            import_history=True,
+            history_limit=100,
+            sync_profiles=True,
+            repair_deleted=True,
+        )
+        self.assertEqual(legacy.get_setting("repair_deleted_conversations"), "0")
+        self.assertFalse(module.operations_state()["repair_deleted"])
+
 
 if __name__ == "__main__":
     unittest.main()
