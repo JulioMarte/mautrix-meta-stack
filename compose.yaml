@@ -353,7 +353,7 @@ services:
           exit 64
         fi
         export MATRIX_ADMIN_MXID="@$${admin_localpart}:$${MATRIX_SERVER_NAME}"
-        exec python /app/nicegui_app.py
+        exec python /app/runtime_entrypoint.py
     volumes:
       - integration-data-v1:/data
       - mautrix-meta-data-v2:/mautrix:ro

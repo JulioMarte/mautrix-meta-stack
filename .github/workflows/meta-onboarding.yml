@@ -3,6 +3,7 @@ name: Meta onboarding
 on:
   pull_request:
     paths:
+      - 'compose.yaml'
       - 'integration/meta_provisioning.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
@@ -27,7 +28,9 @@ on:
     branches:
       - dev
       - 'feature/**'
+      - 'fix/**'
     paths:
+      - 'compose.yaml'
       - 'integration/meta_provisioning.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
@@ -54,6 +57,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Assert Compose uses the managed onboarding runtime entrypoint
+        run: |
+          grep -Fq 'exec python /app/runtime_entrypoint.py' compose.yaml
+          if grep -Fq 'exec python /app/nicegui_app.py' compose.yaml; then
+            echo 'compose.yaml bypasses runtime_entrypoint.py and disables the native Meta admin navigation' >&2
+            exit 1
+          fi
 
       - name: Build integration image
         run: docker build -t meta-onboarding-test ./integration
