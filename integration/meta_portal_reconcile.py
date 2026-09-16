@@ -79,14 +79,7 @@ def _trusted_pending_invite_from_state(state: list[dict]) -> tuple[bool, str]:
 
 
 def _trusted_bridge_state_from_state(state: list[dict]) -> tuple[bool, str]:
-    """Verify durable portal metadata by the authenticated Matrix event sender.
-
-    The previous implementation trusted the user-controlled ``content.bridgebot``
-    field. That was both weaker security-wise and incompatible with live mautrix-meta
-    rooms where the current bridge-info payload may not exactly match the local bot
-    MXID. Matrix's event ``sender`` is authoritative: ordinary room members cannot
-    forge an event as the appservice bot or an exclusive appservice ghost.
-    """
+    """Verify durable portal metadata by the authenticated Matrix event sender."""
     saw_bridge_state = False
     last_reason = "no_bridge_state"
     for event in state:
@@ -103,18 +96,54 @@ def _trusted_bridge_state_from_state(state: list[dict]) -> tuple[bool, str]:
     return False, "no_bridge_state"
 
 
-def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) -> tuple[bool, str]:
-    """Verify bridge provenance from authoritative Synapse room state."""
-    trust = autojoin_verify.appservice_trust()
-    if not trust.bot_mxid:
-        return False, "registration_has_no_appservice_sender"
+def _room_is_space(state: list[dict]) -> bool:
+    """Do not create a Chatwoot conversation for the Marketplace folder space."""
+    for event in state:
+        if event.get("type") != "m.room.create":
+            continue
+        return str((event.get("content") or {}).get("type") or "") == "m.space"
+    return False
 
-    try:
-        state = room_admin_state(room_id)
-    except requests.HTTPError as exc:
-        status = getattr(exc.response, "status_code", "unknown")
-        return False, f"room_state_http_{status}"
 
+def _exclusive_ghost(mxid: str) -> bool:
+    if not mxid or mxid == legacy.MATRIX_ADMIN_MXID:
+        return False
+    trusted, reason = autojoin_verify.trusted_meta_inviter(mxid)
+    return trusted and reason == "exclusive_appservice_user_namespace"
+
+
+def _portal_contact_sender_from_state(state: list[dict]) -> str:
+    """Resolve a bridge-controlled remote contact identity without trusting user content.
+
+    Membership state is preferred because its state_key is authoritative. Older rooms
+    may lack the expected ghost membership snapshot, so a trusted bridge-info event's
+    creator is accepted only when that creator still matches an exclusive appservice
+    user namespace.
+    """
+    for event in state:
+        if event.get("type") != "m.room.member":
+            continue
+        membership = str((event.get("content") or {}).get("membership") or "")
+        if membership not in {"join", "invite"}:
+            continue
+        mxid = str(event.get("state_key") or "")
+        if _exclusive_ghost(mxid):
+            return mxid
+
+    for event in state:
+        if event.get("type") not in {"m.bridge", "uk.half-shot.bridge"}:
+            continue
+        sender = str(event.get("sender") or "")
+        trusted, _ = autojoin_verify.trusted_meta_inviter(sender)
+        if not trusted:
+            continue
+        creator = str((event.get("content") or {}).get("creator") or "")
+        if _exclusive_ghost(creator):
+            return creator
+    return ""
+
+
+def verified_meta_state(state: list[dict], *, allow_pending_invite: bool = False) -> tuple[bool, str]:
     if allow_pending_invite:
         verified, reason = _trusted_pending_invite_from_state(state)
         if verified:
@@ -130,15 +159,22 @@ def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) ->
     return False, bridge_reason
 
 
-def runtime_is_bridge_portal(room_id: str) -> bool:
-    """Use the same authoritative provenance rule for live Matrix events.
+def verified_meta_portal(room_id: str, *, allow_pending_invite: bool = False) -> tuple[bool, str]:
+    """Verify bridge provenance from authoritative Synapse room state."""
+    trust = autojoin_verify.appservice_trust()
+    if not trust.bot_mxid:
+        return False, "registration_has_no_appservice_sender"
 
-    ``prod.matrix_event_to_chatwoot`` calls ``prod.is_bridge_portal`` before creating
-    or updating Chatwoot. Keeping a second, content-based verifier there caused valid
-    Marketplace messages to be silently dropped even after reconciliation had joined
-    the room. Patch the live path to this single verifier and cache only successful
-    proofs.
-    """
+    try:
+        state = room_admin_state(room_id)
+    except requests.HTTPError as exc:
+        status = getattr(exc.response, "status_code", "unknown")
+        return False, f"room_state_http_{status}"
+    return verified_meta_state(state, allow_pending_invite=allow_pending_invite)
+
+
+def runtime_is_bridge_portal(room_id: str) -> bool:
+    """Use the same authoritative provenance rule for live Matrix events."""
     portal_cache = getattr(prod, "_portal_cache", None)
     if isinstance(portal_cache, set) and room_id in portal_cache:
         return True
@@ -182,7 +218,10 @@ def _empty_result(*, already_running: bool = False) -> dict:
         "joined": 0,
         "verified_portals": 0,
         "linked": 0,
+        "materialized": 0,
         "history_imported": 0,
+        "spaces_skipped": 0,
+        "missing_contact_identity": 0,
         "ignored": 0,
         "errors": [],
     }
@@ -204,7 +243,8 @@ def reconcile_meta_portals() -> dict:
                 continue
             result["invited"] += 1
             try:
-                verified, reason = verified_meta_portal(room_id, allow_pending_invite=True)
+                state = room_admin_state(room_id)
+                verified, reason = verified_meta_state(state, allow_pending_invite=True)
                 if not verified:
                     result["ignored"] += 1
                     print(f"pending Matrix invite not a verified Meta portal room={room_id} reason={reason}", flush=True)
@@ -227,20 +267,33 @@ def reconcile_meta_portals() -> dict:
             if membership != "join":
                 continue
             try:
+                state = room_admin_state(room_id)
+                if _room_is_space(state):
+                    result["spaces_skipped"] += 1
+                    continue
                 if room_id not in verified_rooms:
-                    verified, reason = verified_meta_portal(room_id)
+                    verified, reason = verified_meta_state(state)
                     if not verified:
                         continue
                     verified_rooms.add(room_id)
-                before = _link_exists(room_id)
+
                 imported = enhancements.import_recent_history(room_id)
                 result["history_imported"] += imported
                 if imported:
                     print(f"Meta portal history imported room={room_id} count={imported}", flush=True)
+
+                if not _link_exists(room_id):
+                    sender = _portal_contact_sender_from_state(state)
+                    if sender:
+                        enhancements.enhanced_ensure_room_link(room_id, sender)
+                        result["materialized"] += 1
+                        print(f"Meta portal materialized in Chatwoot room={room_id} sender={sender}", flush=True)
+                    else:
+                        result["missing_contact_identity"] += 1
+                        print(f"Meta portal has no authoritative remote contact identity room={room_id}", flush=True)
+
                 if _link_exists(room_id):
                     result["linked"] += 1
-                elif not before and imported == 0:
-                    pass
             except Exception as exc:
                 result["errors"].append(f"{room_id}: reconcile failed: {exc}")
 
@@ -250,7 +303,10 @@ def reconcile_meta_portals() -> dict:
         legacy.set_setting("meta_invite_reconcile_joined", str(result["joined"]))
         legacy.set_setting("meta_portal_reconcile_verified", str(result["verified_portals"]))
         legacy.set_setting("meta_portal_reconcile_linked", str(result["linked"]))
+        legacy.set_setting("meta_portal_reconcile_materialized", str(result["materialized"]))
         legacy.set_setting("meta_portal_reconcile_history", str(result["history_imported"]))
+        legacy.set_setting("meta_portal_reconcile_spaces", str(result["spaces_skipped"]))
+        legacy.set_setting("meta_portal_reconcile_missing_contact", str(result["missing_contact_identity"]))
         legacy.set_setting("meta_portal_reconcile_error", " | ".join(result["errors"])[:2000])
         return result
     finally:
@@ -272,9 +328,6 @@ def install(admin_module=None, *, start_background: bool = True) -> None:
     """Install mandatory auto-join semantics and authoritative reconciliation."""
     legacy.set_setting("auto_join_meta_portals", "1")
 
-    # One provenance verifier must govern both reconciliation and the live Matrix
-    # event path. This prevents a joined room from passing reconciliation and then
-    # being silently rejected by prod.matrix_event_to_chatwoot.
     prod.is_bridge_portal = runtime_is_bridge_portal
 
     original_save = enhancements.save_operations_settings
