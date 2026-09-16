@@ -1,11 +1,11 @@
 name: Conversation deletion E2E
 
+# The primary Validate stack workflow runs this same destructive journey on
+# every PR/push that matters. Keep this workflow as an explicit diagnostic tool
+# so maintainers can reproduce the deletion path without paying the Docker/build
+# cost twice on normal CI runs.
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [dev]
-  push:
-    branches: [feature/conversation-deletion-e2e-ci]
 
 jobs:
   deletion-journey:
