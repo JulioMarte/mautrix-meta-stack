@@ -13,7 +13,7 @@ import admin_v2
 
 NAV_ITEMS = [
     ("basic", "Basic setup", "tune", "/admin/basic"),
-    ("meta", "Facebook Messenger", "forum", "/admin/meta"),
+    ("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"),
     ("advanced", "Advanced", "settings", "/admin/advanced"),
     ("status", "Status & tests", "monitor_heart", "/admin/status"),
 ]
