@@ -97,50 +97,12 @@ def _trusted_bridge_state_from_state(state: list[dict]) -> tuple[bool, str]:
 
 
 def _room_is_space(state: list[dict]) -> bool:
-    """Do not create a Chatwoot conversation for the Marketplace folder space."""
+    """Do not treat the Marketplace folder space as a customer conversation."""
     for event in state:
         if event.get("type") != "m.room.create":
             continue
         return str((event.get("content") or {}).get("type") or "") == "m.space"
     return False
-
-
-def _exclusive_ghost(mxid: str) -> bool:
-    if not mxid or mxid == legacy.MATRIX_ADMIN_MXID:
-        return False
-    trusted, reason = autojoin_verify.trusted_meta_inviter(mxid)
-    return trusted and reason == "exclusive_appservice_user_namespace"
-
-
-def _portal_contact_sender_from_state(state: list[dict]) -> str:
-    """Resolve a bridge-controlled remote contact identity without trusting user content.
-
-    Membership state is preferred because its state_key is authoritative. Older rooms
-    may lack the expected ghost membership snapshot, so a trusted bridge-info event's
-    creator is accepted only when that creator still matches an exclusive appservice
-    user namespace.
-    """
-    for event in state:
-        if event.get("type") != "m.room.member":
-            continue
-        membership = str((event.get("content") or {}).get("membership") or "")
-        if membership not in {"join", "invite"}:
-            continue
-        mxid = str(event.get("state_key") or "")
-        if _exclusive_ghost(mxid):
-            return mxid
-
-    for event in state:
-        if event.get("type") not in {"m.bridge", "uk.half-shot.bridge"}:
-            continue
-        sender = str(event.get("sender") or "")
-        trusted, _ = autojoin_verify.trusted_meta_inviter(sender)
-        if not trusted:
-            continue
-        creator = str((event.get("content") or {}).get("creator") or "")
-        if _exclusive_ghost(creator):
-            return creator
-    return ""
 
 
 def verified_meta_state(state: list[dict], *, allow_pending_invite: bool = False) -> tuple[bool, str]:
@@ -221,14 +183,19 @@ def _empty_result(*, already_running: bool = False) -> dict:
         "materialized": 0,
         "history_imported": 0,
         "spaces_skipped": 0,
-        "missing_contact_identity": 0,
+        "empty_unlinked": 0,
         "ignored": 0,
         "errors": [],
     }
 
 
 def reconcile_meta_portals() -> dict:
-    """Repair invited and already-joined Meta portals from authoritative membership state."""
+    """Repair invited and already-joined Meta portals from authoritative membership state.
+
+    Chatwoot linking remains message-driven, matching the last known-good pre-admin-
+    cookie behavior. A verified Matrix portal with no importable customer message is
+    deliberately left unlinked instead of creating an empty Chatwoot conversation.
+    """
     if not _RECONCILE_LOCK.acquire(blocking=False):
         return _empty_result(already_running=True)
     try:
@@ -282,20 +249,14 @@ def reconcile_meta_portals() -> dict:
                 if imported:
                     print(f"Meta portal history imported room={room_id} count={imported}", flush=True)
 
-                linked = _link_exists(room_id)
-                if not linked and not before and imported == 0:
-                    sender = _portal_contact_sender_from_state(state)
-                    if sender:
-                        enhancements.enhanced_ensure_room_link(room_id, sender)
-                        result["materialized"] += 1
-                        linked = _link_exists(room_id)
-                        print(f"Meta portal materialized in Chatwoot room={room_id} sender={sender}", flush=True)
-                    else:
-                        result["missing_contact_identity"] += 1
-                        print(f"Meta portal has no authoritative remote contact identity room={room_id}", flush=True)
-
-                if linked:
+                if _link_exists(room_id):
                     result["linked"] += 1
+                elif not before and imported == 0:
+                    result["empty_unlinked"] += 1
+                    print(
+                        f"Meta portal has no importable customer history; leaving Chatwoot unlinked room={room_id}",
+                        flush=True,
+                    )
             except Exception as exc:
                 result["errors"].append(f"{room_id}: reconcile failed: {exc}")
 
@@ -305,10 +266,10 @@ def reconcile_meta_portals() -> dict:
         legacy.set_setting("meta_invite_reconcile_joined", str(result["joined"]))
         legacy.set_setting("meta_portal_reconcile_verified", str(result["verified_portals"]))
         legacy.set_setting("meta_portal_reconcile_linked", str(result["linked"]))
-        legacy.set_setting("meta_portal_reconcile_materialized", str(result["materialized"]))
+        legacy.set_setting("meta_portal_reconcile_materialized", "0")
         legacy.set_setting("meta_portal_reconcile_history", str(result["history_imported"]))
         legacy.set_setting("meta_portal_reconcile_spaces", str(result["spaces_skipped"]))
-        legacy.set_setting("meta_portal_reconcile_missing_contact", str(result["missing_contact_identity"]))
+        legacy.set_setting("meta_portal_reconcile_empty_unlinked", str(result["empty_unlinked"]))
         legacy.set_setting("meta_portal_reconcile_error", " | ".join(result["errors"])[:2000])
         return result
     finally:

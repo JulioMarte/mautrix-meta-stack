@@ -1,40 +1,56 @@
-# Meta thread discovery and Chatwoot materialization
+# Meta thread discovery and Chatwoot linking
 
 ## Problem
 
-The product contract is stricter than the default behavior of either upstream component: after a Facebook account is connected, existing Messenger/Marketplace conversations should become visible in Chatwoot without requiring a new inbound message and without requiring an operator to open Element.
+The product contract has two separate requirements after a Facebook account is connected:
 
-Two independent state machines can prevent that result.
+1. mautrix-meta must rediscover the Messenger/Marketplace thread set reliably;
+2. Chatwoot must receive actual customer-message history for each usable portal without creating misleading empty conversations.
 
-1. mautrix-meta persists `UserLoginMetadata.BackfillCompleted`. Upstream `StartThreadBackfill` skips all thread pagination when that flag is already true. A restored/reused login can therefore connect successfully and process the current messages page while never re-walking older thread pages in that process.
-2. The integration reconciler historically created a Chatwoot room mapping only as a side effect of importing an inbound Matrix message. A verified portal with no recent inbound text remained absent from Chatwoot even though the Matrix room already existed.
+These requirements must not be conflated. Thread discovery belongs to mautrix-meta. Chatwoot conversation creation belongs to the Matrix ingestion layer and should remain driven by an importable customer message.
 
-## Product behavior on dev
+## Historical baseline
 
-The fork now treats thread discovery as a process-level reconciliation operation. The persisted upstream completion marker is retained, but it no longer suppresses discovery forever. On the first successful Meta socket connection in each bridge process, `StartThreadBackfill` is allowed to paginate again. An atomic guard prevents duplicate concurrent runs. If pagination fails, the guard is released so a later reconnect can retry. Successful pagination still runs at most once per process.
+The last known-good pre-admin-cookie baseline is commit `8d8197a6dfe74b6dd2f27b1f62dffecf384b0715`. That baseline already had the authoritative portal reconciler and history import path, but it did **not** create a Chatwoot conversation merely because a verified Matrix portal existed. A room became linked when `import_recent_history()` or a live Matrix message successfully delivered a customer message.
 
-This intentionally trades additional Meta reads after a bridge restart for correctness. With `thread_backfill.batch_count: -1`, a process restart can walk the full thread history again; `batch_delay` remains the rate-limit control. Operators should monitor large accounts because the cost scales with the number of thread pages.
+PR #59 introduced browser-cookie onboarding in the admin UI. It changed onboarding/provisioning/UI code; it did not replace the Matrix history ingestion algorithm. Therefore the cookie-login button itself is not evidence of a message-sync regression.
 
-The integration reconciler now distinguishes chat portals from Matrix spaces. A verified `m.space` (including the Marketplace folder space) is never materialized as a Chatwoot conversation. For a verified joined chat portal, recent history is imported first. If no inbound event creates a mapping, the reconciler resolves a remote contact from authoritative Matrix membership state using only exclusive mautrix appservice ghost identities and creates the Chatwoot contact/conversation mapping directly. A trusted bridge-info `creator` is used only as a fallback and only when it also matches the exclusive appservice namespace.
+## Thread rediscovery on dev
 
-## Security boundaries
+The fork keeps the useful thread-refresh correction introduced later. mautrix-meta persists `UserLoginMetadata.BackfillCompleted`, and upstream can otherwise skip thread pagination forever after that flag is set. On the first successful Meta socket connection in each bridge process, `StartThreadBackfill` is allowed to paginate again. An atomic guard prevents duplicate concurrent runs, and failure releases the guard so a reconnect may retry.
 
-No room is materialized merely because it has a familiar name or user-controlled `bridgebot` field. Portal provenance still requires trusted bridge state/invites from the installed mautrix appservice. Contact identity must match an exclusive appservice user namespace. The integration admin account, bridge bot, arbitrary local users, and Marketplace spaces are rejected as Chatwoot contact identities.
+This is intentionally independent from Chatwoot linking. Rediscovery may create or recover Matrix portals, but it does not authorize empty Chatwoot conversations.
+
+## Chatwoot linking semantics
+
+The reconciler first verifies portal provenance from authoritative Synapse state and skips `m.space` rooms such as the Marketplace folder space. For each verified joined chat portal it calls `import_recent_history()`.
+
+If that import creates a room link, the portal is counted as linked. If no importable customer message exists and no link is created, the room remains unlinked and the reconciler records `empty_unlinked`. It must **not** synthesize a Chatwoot contact/conversation solely from ghost membership or bridge metadata.
+
+This restores the pre-cookie baseline behavior and avoids the failure mode observed in September 2026 where direct portal materialization produced visible Chatwoot conversations with no messages even though Matrix reconciliation itself was healthy.
+
+## Why a clean-state retest matters
+
+`processed_events` is persistent integration state used for idempotency. Reusing an integration volume across repeated destructive Chatwoot/Matrix tests can make historical events appear already consumed even when the operator has deleted or recreated downstream state. Likewise mautrix-meta persists login/backfill metadata in its own volume.
+
+For a regression comparison against the historical baseline, a clean-state test should remove the disposable test volumes for Synapse, mautrix-meta, integration data and Chatwoot together. A partial reset is not equivalent to a new installation because those state machines can then disagree about what has already been delivered.
+
+This clean-state recommendation is for diagnosis and acceptance testing, not a substitute for code correctness.
 
 ## Observability
 
-The periodic reconciliation result now records:
+The periodic reconciliation result records:
 
 - `meta_portal_reconcile_verified`
 - `meta_portal_reconcile_linked`
-- `meta_portal_reconcile_materialized`
+- `meta_portal_reconcile_materialized` (kept as a compatibility metric and expected to remain `0`)
 - `meta_portal_reconcile_history`
 - `meta_portal_reconcile_spaces`
-- `meta_portal_reconcile_missing_contact`
+- `meta_portal_reconcile_empty_unlinked`
 - `meta_portal_reconcile_error`
 
-Bridge logs distinguish normal first-run backfill from a process-start refresh of a previously completed backfill.
+Bridge logs distinguish normal first-run backfill from a process-start refresh of a previously completed backfill. The integration logs explicitly report verified portals that are left unlinked because they have no importable customer history.
 
 ## Acceptance criteria
 
-A deployment is acceptable when a connected Facebook account can restart with `BackfillCompleted=true`, logs one process-level thread refresh, creates Matrix portals for the rediscovered threads, auto-joins verified portals, skips the Marketplace space, and creates Chatwoot conversations for verified chat portals even when their recent Matrix history contains no inbound text event.
+A deployment is acceptable when a fresh Facebook connection can rediscover the expected thread set, create Matrix portals, auto-join verified portals, skip the Marketplace space, import available customer-message history into Chatwoot, and avoid creating an empty Chatwoot conversation for a portal whose Matrix history yields no importable customer message.
