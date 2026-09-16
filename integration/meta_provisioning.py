@@ -140,10 +140,19 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
                 if isinstance(item.get(key), (str, bool))
             }
             if isinstance(item.get("options"), list):
-                safe["options"] = [
-                    {k: opt[k] for k in ("id", "name") if isinstance(opt.get(k), str)}
-                    for opt in item["options"] if isinstance(opt, dict)
-                ]
+                normalized_options: list[str | dict[str, str]] = []
+                for option in item["options"]:
+                    if isinstance(option, str):
+                        normalized_options.append(option)
+                    elif isinstance(option, dict):
+                        normalized = {
+                            key: option[key]
+                            for key in ("id", "name")
+                            if isinstance(option.get(key), str)
+                        }
+                        if normalized:
+                            normalized_options.append(normalized)
+                safe["options"] = normalized_options
             fields.append(safe)
         out["user_input"] = {"fields": fields}
 
