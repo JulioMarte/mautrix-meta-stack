@@ -1,8 +1,8 @@
 """Production NiceGUI entrypoint.
 
 Import the complete existing app first so all routes/runtime guards are installed,
-then patch the shared admin-v2 chrome so managed Meta onboarding appears in the
-same sidebar users actually see at /admin/basic.
+then patch the shared admin-v2 chrome and register the cookie-first Meta onboarding
+page used by the real deployment path.
 """
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import nicegui_app
 import meta_admin_patch
 
 meta_admin_patch.install()
+
+# Register after the chrome patch so the page uses the same native admin shell.
+import meta_cookie_page  # noqa: E402,F401
 
 
 if __name__ in {"__main__", "__mp_main__"}:
