@@ -21,8 +21,11 @@ class MetaConversationDeleteWebhookJob < ApplicationJob
     end
 
     data = payload.with_indifferent_access
-    unless data.dig(:inbox, :id).to_i == inbox.id && data.dig(:account, :id).to_i == inbox.account_id
-      Rails.logger.error("conversation.deleted callback suppressed: API inbox #{inbox_id} scope changed")
+    payload_inbox_id = data.dig(:inbox, :id)
+    payload_account_id = data.dig(:account, :id)
+    if payload_inbox_id.blank? || payload_account_id.blank? ||
+       payload_inbox_id.to_i != inbox.id || payload_account_id.to_i != inbox.account_id
+      Rails.logger.error("conversation.deleted callback suppressed: API inbox #{inbox_id} scope changed or missing")
       return
     end
 
