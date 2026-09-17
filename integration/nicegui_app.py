@@ -18,6 +18,7 @@ from nicegui import ui
 import admin_v2 as _admin_v2
 import meta_admin_patch as _meta_admin_patch
 from meta_helper_routes import create_pairing, register_helper_routes
+from meta_login_recovery import is_missing_login_process
 from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
@@ -99,6 +100,14 @@ def _load_meta_step() -> tuple[dict[str, Any], bool]:
     return step, expired
 
 
+def _recover_missing_login_process(exc: Exception) -> bool:
+    """Drop a persisted step when mautrix has lost its temporary login process."""
+    if not is_missing_login_process(exc):
+        return False
+    _clear_meta_step()
+    return True
+
+
 def meta_runtime_state() -> dict[str, Any]:
     """Fetch a product-facing Meta connection state without exposing secrets."""
     try:
@@ -134,11 +143,16 @@ def _field_label(field: dict[str, Any]) -> str:
     return str(field.get("name") or field.get("id") or "Dato")
 
 
-def _preferred_flow(flow_options: dict[str, str]) -> str | None:
+def _ordered_flow_options(flow_options: dict[str, str]) -> dict[str, str]:
+    """Keep recommended login methods first without preselecting an action."""
+    ordered: dict[str, str] = {}
     for flow_id in FLOW_PREFERENCE:
         if flow_id in flow_options:
-            return flow_id
-    return next(iter(flow_options), None)
+            ordered[flow_id] = flow_options[flow_id]
+    for flow_id, label in flow_options.items():
+        if flow_id not in ordered:
+            ordered[flow_id] = label
+    return ordered
 
 
 register_helper_routes(_legacy_ui.app, _prov_client, _store_meta_step)
@@ -187,7 +201,7 @@ def meta_onboarding_page():
             ui.label("Conectar o reconectar Facebook").classes("text-xl font-semibold")
             ui.label(
                 "El panel consulta directamente los métodos que ofrece la versión de mautrix-meta desplegada. "
-                "Los métodos Messenger Android/iOS no requieren copiar cookies ni abrir Element."
+                "Selecciona un método y la conexión comenzará automáticamente."
             ).classes("text-slate-600")
 
             flow_options: dict[str, str] = {}
@@ -203,18 +217,11 @@ def meta_onboarding_page():
             except Exception as exc:
                 ui.label(f"No se pudieron cargar los métodos de acceso: {exc}").classes("text-red-700 mt-2")
 
-            preferred = _preferred_flow(flow_options)
-            flow_select = ui.select(flow_options, value=preferred, label="Método de conexión").props("outlined").classes("w-full mt-3")
-
-            if any(flow_id.startswith("messenger-lite") for flow_id in flow_options):
-                ui.label(
-                    "Recomendado: Messenger Android. Tus datos de acceso se envían por HTTPS al backend y de ahí, por la red privada, "
-                    "al provisioning API de mautrix; el panel no los guarda en su configuración."
-                ).classes("text-sm text-blue-700 mt-2")
-
-            async def start_login():
+            async def start_login(event):
+                selected = str(event.value or "").strip()
+                if not selected:
+                    return
                 try:
-                    selected = str(flow_select.value or "")
                     step = await asyncio.to_thread(_prov_client().start, selected)
                     _store_meta_step(step)
                     ui.navigate.to("/admin/meta")
@@ -230,12 +237,27 @@ def meta_onboarding_page():
                 except Exception as exc:
                     ui.notify(f"No se pudo desconectar: {exc}", type="negative", close_button=True)
 
-            with ui.row().classes("gap-3 mt-3"):
-                connect_button = ui.button("Iniciar conexión", icon="login", on_click=start_login)
-                if not flow_options:
-                    connect_button.disable()
-                if runtime.get("logins"):
-                    ui.button("Desconectar", icon="link_off", on_click=disconnect_all).props("outline color=negative")
+            if saved_step:
+                ui.label(
+                    "Ya hay un intento de conexión en curso. Complétalo o cancélalo abajo antes de elegir otro método."
+                ).classes("text-sm text-amber-700 mt-3")
+            elif flow_options:
+                ui.select(
+                    _ordered_flow_options(flow_options),
+                    value=None,
+                    label="Método de conexión",
+                    on_change=start_login,
+                ).props("outlined").classes("w-full mt-3")
+                if any(flow_id.startswith("messenger-lite") for flow_id in flow_options):
+                    ui.label(
+                        "Recomendado: Messenger Android. Al seleccionarlo, el acceso comienza de inmediato; "
+                        "tus credenciales se envían por HTTPS al backend y de ahí, por la red privada, al provisioning API de mautrix."
+                    ).classes("text-sm text-blue-700 mt-2")
+            else:
+                ui.label("No hay métodos de conexión disponibles en este momento.").classes("text-sm text-slate-500 mt-3")
+
+            if runtime.get("logins"):
+                ui.button("Desconectar", icon="link_off", on_click=disconnect_all).props("outline color=negative").classes("mt-3")
 
         if saved_step:
             step_type = str(saved_step.get("type") or "")
@@ -325,6 +347,14 @@ def meta_onboarding_page():
                         except Exception as exc:
                             for key in values:
                                 values[key] = ""
+                            if _recover_missing_login_process(exc):
+                                ui.notify(
+                                    "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
+                                    type="warning",
+                                    close_button=True,
+                                )
+                                ui.navigate.to("/admin/meta")
+                                return
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Continuar", icon="arrow_forward", on_click=submit_input).classes("mt-3")
@@ -347,6 +377,14 @@ def meta_onboarding_page():
                             _store_meta_step(step)
                             ui.navigate.to("/admin/meta")
                         except Exception as exc:
+                            if _recover_missing_login_process(exc):
+                                ui.notify(
+                                    "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
+                                    type="warning",
+                                    close_button=True,
+                                )
+                                ui.navigate.to("/admin/meta")
+                                return
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Ya completé este paso", on_click=continue_wait, icon="check").classes("mt-3")
