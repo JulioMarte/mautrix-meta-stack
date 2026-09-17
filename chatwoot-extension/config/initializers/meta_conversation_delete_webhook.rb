@@ -4,7 +4,11 @@
 # not expose it through API-inbox webhooks. The stock API-inbox delivery path in
 # that release is also unsigned, while our destructive integration callback is
 # intentionally HMAC-only. This initializer therefore forwards only deletion
-# events through a dedicated signed job using the API inbox hmac_token.
+# events through a dedicated signed job.
+#
+# The HMAC token is intentionally NOT passed to ActiveJob. The worker resolves
+# the current Channel::Api.hmac_token at execution time so secrets are not
+# serialized into Redis and token rotation between enqueue/delivery is safe.
 module MetaConversationDeleteWebhook
   def conversation_deleted(event)
     data = event.data[:conversation_data]&.with_indifferent_access
@@ -16,14 +20,6 @@ module MetaConversationDeleteWebhook
     channel = inbox.channel
     return if channel.blank? || channel.webhook_url.blank?
 
-    secret = channel.hmac_token.to_s
-    if secret.blank?
-      Rails.logger.error(
-        "conversation.deleted callback suppressed: API inbox #{inbox.id} has no HMAC token"
-      )
-      return
-    end
-
     payload = {
       event: __method__.to_s,
       id: data[:id],
@@ -32,7 +28,7 @@ module MetaConversationDeleteWebhook
       inbox: { id: data[:inbox_id] }
     }
 
-    MetaConversationDeleteWebhookJob.perform_later(channel.webhook_url, payload, secret)
+    MetaConversationDeleteWebhookJob.perform_later(inbox.id, payload)
   end
 end
 

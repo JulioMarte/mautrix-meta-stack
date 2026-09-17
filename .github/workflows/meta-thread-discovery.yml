@@ -9,9 +9,13 @@ on:
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
       - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/conversation_lifecycle_hardening_v11.py'
       - 'integration/conversation_lifecycle_callback_v10.py'
+      - 'integration/chatwoot_target_guard_v11.py'
       - 'integration/test_conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_adversarial_v11.py'
       - 'integration/test_conversation_lifecycle_callback_v10.py'
+      - 'integration/test_chatwoot_target_guard_v11.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
@@ -30,9 +34,13 @@ on:
       - 'integration/runtime_entrypoint.py'
       - 'integration/history_safety_v9.py'
       - 'integration/conversation_lifecycle_v10.py'
+      - 'integration/conversation_lifecycle_hardening_v11.py'
       - 'integration/conversation_lifecycle_callback_v10.py'
+      - 'integration/chatwoot_target_guard_v11.py'
       - 'integration/test_conversation_lifecycle_v10.py'
+      - 'integration/test_conversation_lifecycle_adversarial_v11.py'
       - 'integration/test_conversation_lifecycle_callback_v10.py'
+      - 'integration/test_chatwoot_target_guard_v11.py'
       - 'integration/test_history_safety_v9.py'
       - 'integration/test_meta_portal_reconcile.py'
       - 'integration/test_meta_portal_materialization.py'
@@ -116,9 +124,14 @@ jobs:
           job = Path('chatwoot-extension/app/jobs/meta_conversation_delete_webhook_job.rb').read_text()
           dockerfile = Path('chatwoot-extension/Dockerfile').read_text()
           assert 'def conversation_deleted(event)' in ruby
-          assert 'channel.hmac_token' in ruby
-          assert 'MetaConversationDeleteWebhookJob.perform_later(channel.webhook_url, payload, secret)' in ruby
+          assert 'MetaConversationDeleteWebhookJob.perform_later(inbox.id, payload)' in ruby
+          assert 'channel.hmac_token' not in ruby
+          assert 'secret =' not in ruby
           assert "event: __method__.to_s" in ruby
+          assert 'def perform(inbox_id, payload)' in job
+          assert 'Inbox.find_by(id: inbox_id)' in job
+          assert 'channel.hmac_token' in job
+          assert 'channel.webhook_url' in job
           assert "X-Chatwoot-Timestamp" in job
           assert "X-Chatwoot-Signature" in job
           assert "OpenSSL::HMAC.hexdigest('SHA256'" in job
@@ -140,4 +153,4 @@ jobs:
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
             -e INTEGRATION_META_DEBUG=false \
-            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; import conversation_lifecycle_callback_v10; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install); assert callable(conversation_lifecycle_callback_v10.install)"
+            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; import conversation_lifecycle_hardening_v11; import conversation_lifecycle_callback_v10; import chatwoot_target_guard_v11; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install); assert callable(conversation_lifecycle_hardening_v11.install); assert callable(conversation_lifecycle_callback_v10.install); assert callable(chatwoot_target_guard_v11.install)"
