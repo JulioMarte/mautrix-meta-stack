@@ -1,0 +1,152 @@
+"""Adversarial hardening for Chatwoot target changes.
+
+Deletion operations and webhook signing credentials are scoped to one Chatwoot
+base/account/inbox target. Reusing them after an operator switches targets can
+misclassify a new conversation that happens to reuse an old numeric ID or trust a
+callback signed by the old target.
+
+Target changes are serialized with every destructive conversation operation using
+the lifecycle reconciliation RLock. This prevents an in-flight operation from
+reading an old mapping and then issuing a destructive request against a newly
+configured Chatwoot target.
+"""
+from __future__ import annotations
+
+import sys
+
+import conversation_lifecycle_v10 as lifecycle
+import final_app as runtime
+
+legacy = runtime.legacy
+_base_runtime_reset = None
+_base_runtime_save_view = None
+_base_admin_save = None
+_base_process_chatwoot_delete = None
+_base_process_matrix_leave = None
+
+
+def _target() -> tuple[str, str, str]:
+    return (
+        legacy.get_setting("chatwoot_base_url").strip().rstrip("/"),
+        legacy.get_setting("chatwoot_account_id").strip(),
+        legacy.get_setting("chatwoot_inbox_id").strip(),
+    )
+
+
+def _table_exists(conn, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def clear_target_scoped_deletion_state() -> dict:
+    deleted_operations = 0
+    with legacy.db() as conn:
+        if _table_exists(conn, "conversation_deletions"):
+            deleted_operations = int(
+                conn.execute("SELECT COUNT(*) AS n FROM conversation_deletions").fetchone()["n"]
+            )
+            conn.execute("DELETE FROM conversation_deletions")
+
+    # These secrets authenticate callbacks from a specific Chatwoot target.
+    # Keeping either one across a target switch would allow stale credentials to
+    # remain trusted until an operator manually re-verifies the new target.
+    for key in (
+        "chatwoot_api_inbox_signing_secret",
+        "api_inbox_callback_verified_at",
+        "api_inbox_delivery_verified_at",
+        "chatwoot_webhook_signing_secret",
+        "webhook_registration_verified_at",
+        "webhook_delivery_verified_at",
+    ):
+        legacy.set_setting(key, "")
+
+    return {"deleted_operations": deleted_operations}
+
+
+def _target_changed(old_target, new_target) -> bool:
+    return tuple(old_target or ()) != tuple(new_target or ()) and any(new_target or ())
+
+
+def _runtime_reset_with_deletion_state(old_target, new_target):
+    with lifecycle._RECONCILE_LOCK:
+        result = _base_runtime_reset(old_target, new_target)
+        if _target_changed(old_target, new_target):
+            cleared = clear_target_scoped_deletion_state()
+            print(
+                "conversation lifecycle: Chatwoot target changed; cleared destructive state "
+                f"operations={cleared['deleted_operations']}",
+                flush=True,
+            )
+        return result
+
+
+def _runtime_save_view_serialized(*args, **kwargs):
+    # final_app's legacy Flask save handler mutates settings before it calls the
+    # target-reset helper. Lock the whole request handler, not only the reset,
+    # otherwise an in-flight delete could observe half-switched target settings.
+    with lifecycle._RECONCILE_LOCK:
+        return _base_runtime_save_view(*args, **kwargs)
+
+
+def _admin_save_with_deletion_state(*args, **kwargs):
+    # NiceGUI save_configuration performs the actual target mutation. Hold the
+    # same lock across mutation + cleanup so no destructive operation can execute
+    # against a partially changed destination.
+    with lifecycle._RECONCILE_LOCK:
+        old_target = _target()
+        result = _base_admin_save(*args, **kwargs)
+        new_target = _target()
+        if _target_changed(old_target, new_target):
+            cleared = clear_target_scoped_deletion_state()
+            print(
+                "conversation lifecycle: NiceGUI Chatwoot target changed; cleared destructive state "
+                f"operations={cleared['deleted_operations']}",
+                flush=True,
+            )
+        return result
+
+
+def _serialized_chatwoot_delete(payload: dict) -> dict:
+    with lifecycle._RECONCILE_LOCK:
+        return _base_process_chatwoot_delete(payload)
+
+
+def _serialized_matrix_leave(room_id: str, room: dict) -> dict:
+    with lifecycle._RECONCILE_LOCK:
+        return _base_process_matrix_leave(room_id, room)
+
+
+def install() -> None:
+    global _base_runtime_reset, _base_runtime_save_view, _base_admin_save
+    global _base_process_chatwoot_delete, _base_process_matrix_leave
+
+    if not getattr(lifecycle, "_conversation_lifecycle_serialized_v11", False):
+        _base_process_chatwoot_delete = lifecycle.process_chatwoot_delete
+        _base_process_matrix_leave = lifecycle.process_matrix_leave
+        lifecycle.process_chatwoot_delete = _serialized_chatwoot_delete
+        lifecycle.process_matrix_leave = _serialized_matrix_leave
+        lifecycle._conversation_lifecycle_serialized_v11 = True
+
+    if hasattr(runtime, "_reset_chatwoot_target_state") and not getattr(
+        runtime, "_conversation_lifecycle_target_reset_v11", False
+    ):
+        _base_runtime_reset = runtime._reset_chatwoot_target_state
+        runtime._reset_chatwoot_target_state = _runtime_reset_with_deletion_state
+        runtime._conversation_lifecycle_target_reset_v11 = True
+
+    application = getattr(runtime, "application", None)
+    if application is not None and "save_settings" in application.view_functions and not getattr(
+        runtime, "_conversation_lifecycle_save_view_v11", False
+    ):
+        _base_runtime_save_view = application.view_functions["save_settings"]
+        application.view_functions["save_settings"] = _runtime_save_view_serialized
+        runtime._conversation_lifecycle_save_view_v11 = True
+
+    admin_ui = sys.modules.get("nicegui_legacy")
+    if admin_ui is not None and hasattr(admin_ui, "save_configuration") and not getattr(
+        admin_ui, "_conversation_lifecycle_target_reset_v11", False
+    ):
+        _base_admin_save = admin_ui.save_configuration
+        admin_ui.save_configuration = _admin_save_with_deletion_state
+        admin_ui._conversation_lifecycle_target_reset_v11 = True
