@@ -169,7 +169,6 @@ def update_chatwoot_contact_profile(account_id: int, contact_id: int, sender: st
                 json={"name": identity["name"]}, headers={"Content-Type": "application/json"},
             )
     except Exception as exc:
-        # Metadata is useful but must never stop a customer message.
         print(f"chatwoot contact profile sync failed contact={contact_id}: {exc}", flush=True)
 
 
@@ -287,8 +286,6 @@ def import_recent_history(room_id: str) -> int:
             continue
         before = legacy.event_seen(event.get("event_id", ""))
         try:
-            # Bypass only the activation timestamp. prod still filters bridge/admin senders,
-            # portal provenance, message types and duplicate Matrix event IDs.
             prod.matrix_event_to_chatwoot(room_id, event)
         except Exception as exc:
             print(f"history import failed room={room_id} event={event.get('event_id')}: {exc}", flush=True)
