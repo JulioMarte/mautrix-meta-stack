@@ -125,7 +125,8 @@ jobs:
           dockerfile = Path('chatwoot-extension/Dockerfile').read_text()
           assert 'def conversation_deleted(event)' in ruby
           assert 'MetaConversationDeleteWebhookJob.perform_later(inbox.id, payload)' in ruby
-          assert 'hmac_token' not in ruby
+          assert 'channel.hmac_token' not in ruby
+          assert 'secret =' not in ruby
           assert "event: __method__.to_s" in ruby
           assert 'def perform(inbox_id, payload)' in job
           assert 'Inbox.find_by(id: inbox_id)' in job
