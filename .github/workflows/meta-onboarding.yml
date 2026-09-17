@@ -72,23 +72,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assert Compose uses the managed onboarding runtime entrypoint
+      - name: Assert Compose uses cookie-first production onboarding with managed fallback
         run: |
           grep -Fq 'exec python /app/runtime_entrypoint.py' compose.yaml
           if grep -Fq 'exec python /app/nicegui_app.py' compose.yaml; then
-            echo 'compose.yaml bypasses runtime_entrypoint.py and disables the native Meta admin navigation' >&2
+            echo 'compose.yaml bypasses runtime_entrypoint.py and disables production route registration' >&2
             exit 1
           fi
-          grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta")' integration/meta_admin_patch.py
-          if grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")' integration/meta_admin_patch.py; then
-            echo 'manual cookie onboarding was restored as the supported admin path' >&2
-            exit 1
-          fi
+          grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")' integration/meta_admin_patch.py
+          grep -Fq 'import meta_cookie_page' integration/runtime_entrypoint.py
+          grep -Fq '@ui.page("/admin/meta")' integration/nicegui_app.py
+          grep -Fq '@ui.page("/admin/meta-cookie")' integration/meta_cookie_page.py
 
       - name: Build integration image
         run: docker build -t meta-onboarding-test ./integration
 
-      - name: Run managed onboarding, helper security and end-to-end journey tests
+      - name: Run cookie onboarding, managed fallback, helper security and end-to-end journey tests
         run: |
           docker run --rm \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
@@ -125,7 +124,7 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-onboarding-test python -c "import inspect, runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_legacy_redirect; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(nicegui_app.meta_onboarding_page); assert callable(meta_legacy_redirect.install); src=inspect.getsource(runtime_entrypoint); assert 'import meta_cookie_page' not in src"
+            meta-onboarding-test python -c "import inspect, runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_cookie_page; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(nicegui_app.meta_onboarding_page); assert callable(meta_cookie_page.meta_cookie_page); src=inspect.getsource(runtime_entrypoint); assert 'import meta_cookie_page' in src"
 
       - name: Preserve existing NiceGUI tests
         run: |
