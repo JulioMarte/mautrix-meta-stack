@@ -14,6 +14,11 @@ class MetaConversationDeleteWebhookJob < ApplicationJob
   queue_as :medium
 
   def perform(inbox_id, payload)
+    unless payload.respond_to?(:with_indifferent_access)
+      Rails.logger.error("conversation.deleted callback suppressed: malformed payload for API inbox #{inbox_id}")
+      return
+    end
+
     inbox = Inbox.find_by(id: inbox_id)
     if inbox.blank? || inbox.channel_type != 'Channel::Api'
       Rails.logger.warn("conversation.deleted callback suppressed: API inbox #{inbox_id} no longer exists")
