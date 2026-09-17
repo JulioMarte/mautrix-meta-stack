@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import requests
+import yaml
 
 
 class FakeResponse:
@@ -18,6 +19,7 @@ class FakeResponse:
         if self.status_code >= 400:
             response = requests.Response()
             response.status_code = self.status_code
+            response.url = "http://chatwoot.example.com/adversarial"
             raise requests.HTTPError(response=response)
 
     def json(self):
@@ -38,6 +40,19 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
+        os.environ["MAUTRIX_REGISTRATION_PATH"] = os.path.join(cls.tmp.name, "registration.yaml")
+        with open(os.environ["MAUTRIX_REGISTRATION_PATH"], "w", encoding="utf-8") as fh:
+            yaml.safe_dump({
+                "id": "meta",
+                "sender_localpart": "metabot",
+                "namespaces": {
+                    "users": [
+                        {"regex": r"^@meta_[0-9]+:matrix\.example\.com$", "exclusive": True},
+                    ],
+                    "aliases": [],
+                    "rooms": [],
+                },
+            }, fh, sort_keys=False)
 
         global final, legacy, lifecycle, hardening
         final = importlib.import_module("final_app")
@@ -46,6 +61,8 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
         hardening = importlib.import_module("conversation_lifecycle_hardening_v11")
         lifecycle.ensure_schema()
         hardening.install()
+        if legacy.bridge_bot_mxid() != "@metabot:matrix.example.com":
+            raise AssertionError(f"unexpected bridge bot mxid: {legacy.bridge_bot_mxid()!r}")
 
     @classmethod
     def tearDownClass(cls):
@@ -79,7 +96,7 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
                 "events": [{
                     "type": "m.room.member",
                     "state_key": legacy.MATRIX_ADMIN_MXID,
-                    "sender": legacy.bridge_bot_mxid(),
+                    "sender": "@metabot:matrix.example.com",
                     "content": {"membership": "leave"},
                 }]
             }
@@ -121,7 +138,8 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
             attempted_urls.append(url)
             raise requests.Timeout("response lost after homeserver accepted request")
 
-        with patch.object(lifecycle.requests, "put", side_effect=timeout_after_accept):
+        with patch.object(legacy, "matrix_headers", return_value={"Authorization": "Bearer test"}), \
+             patch.object(lifecycle.requests, "put", side_effect=timeout_after_accept):
             with self.assertRaises(requests.Timeout):
                 lifecycle.process_chatwoot_delete(self.delete_payload())
 
@@ -133,7 +151,8 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
             attempted_urls.append(url)
             return FakeResponse(payload={"event_id": "$same-delete-event"})
 
-        with patch.object(lifecycle.requests, "put", side_effect=idempotent_retry):
+        with patch.object(legacy, "matrix_headers", return_value={"Authorization": "Bearer test"}), \
+             patch.object(lifecycle.requests, "put", side_effect=idempotent_retry):
             result = lifecycle.process_chatwoot_delete(self.delete_payload())
 
         self.assertTrue(result["remote_requested"])
