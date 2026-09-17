@@ -115,34 +115,40 @@ jobs:
               *) echo "integration PID 1 is not runtime_entrypoint.py" >&2; exit 1 ;;
             esac
             grep -Fq '\''("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")'\'' /app/meta_admin_patch.py
+            grep -Fq '\''("meta_test", "Facebook login (prueba)", "science", "/admin/meta")'\'' /app/meta_admin_patch.py
             grep -Fq '\''import meta_cookie_page'\'' /app/runtime_entrypoint.py
-            grep -Fq '\''@ui.page("/admin/meta")'\'' /app/nicegui_app.py
             grep -Fq '\''@ui.page("/admin/meta-cookie")'\'' /app/meta_cookie_page.py
+            grep -Fq '\''Copy as cURL'\'' /app/meta_cookie_page.py
+            grep -Fq '\''Network / Red'\'' /app/meta_cookie_page.py
+            grep -Fq '\''@ui.page("/admin/meta")'\'' /app/nicegui_app.py
             grep -Fq '\''create_pairing(saved_step)'\'' /app/nicegui_app.py
+            ! grep -Fq '\''Copy as cURL'\'' /app/nicegui_app.py
           '
           docker compose -f compose.yaml exec -T integration python - <<'PY'
           import urllib.error
           import urllib.request
 
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          opener = urllib.request.build_opener(NoRedirect)
+
           def fetch(path):
               request = urllib.request.Request(f'http://127.0.0.1:8080{path}')
-              opener = urllib.request.build_opener(urllib.request.HTTPHandler())
               try:
                   response = opener.open(request, timeout=5)
               except urllib.error.HTTPError as exc:
                   response = exc
-              return response.status, response.headers, response.read().decode('utf-8', 'replace')
+              return response.status, response.headers
 
-          cookie_status, _, cookie_body = fetch('/admin/meta-cookie')
+          cookie_status, cookie_headers = fetch('/admin/meta-cookie')
+          managed_status, managed_headers = fetch('/admin/meta')
           assert cookie_status == 200, f'/admin/meta-cookie returned {cookie_status}'
-          assert 'Copy as cURL' in cookie_body
-          assert 'Network / Red' in cookie_body
-
-          managed_status, _, managed_body = fetch('/admin/meta')
           assert managed_status == 200, f'/admin/meta returned {managed_status}'
-          assert 'Copy as cURL' not in managed_body
-          assert 'Network / Red' not in managed_body
-          print('running integration process serves cookie-first primary onboarding and managed fallback')
+          assert cookie_headers.get('Location') not in {'/admin/meta', '/admin/meta/'}, cookie_headers.get('Location')
+          assert managed_headers.get('Location') not in {'/admin/meta-cookie', '/admin/meta-cookie/'}, managed_headers.get('Location')
+          print('running production process registers both protected Meta routes with cookie-first as primary')
           PY
 
       - name: Confirm isolated secret survives mautrix runtime rewrite
