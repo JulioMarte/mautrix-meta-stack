@@ -1,6 +1,7 @@
 import importlib
 import inspect
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -67,6 +68,14 @@ class MetaAdminPatchTests(unittest.TestCase):
         source = inspect.getsource(runtime_entrypoint)
         self.assertIn("import meta_cookie_page", source)
         self.assertNotIn("meta_legacy_redirect.install()", source)
+
+    def test_runtime_db_context_closes_sqlite_connection(self):
+        legacy = managed_page._legacy_ui.legacy
+        with legacy.db() as conn:
+            self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
+            held = conn
+        with self.assertRaises(sqlite3.ProgrammingError):
+            held.execute("SELECT 1")
 
 
 if __name__ == "__main__":
