@@ -15,6 +15,13 @@ import conversation_lifecycle_hardening_v11
 import conversation_lifecycle_callback_v10
 import chatwoot_target_guard_v11
 import meta_debug_observability
+from db_connection_safety import install as install_db_connection_safety
+
+# sqlite3.Connection's native context manager commits/rolls back but does not
+# close the handle. Most of the legacy integration uses ``with legacy.db()`` and
+# expects that scope to release resources, so enforce that behavior centrally in
+# the production runtime before normal request/background work begins.
+install_db_connection_safety(nicegui_app._legacy_ui.legacy)
 
 meta_admin_patch.install()
 history_safety_v9.install()
