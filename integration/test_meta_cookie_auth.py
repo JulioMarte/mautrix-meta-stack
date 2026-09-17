@@ -15,6 +15,7 @@ class FakeClient:
     def __init__(self, fields=None):
         self.submitted = None
         self.fields = fields
+        self.cancelled = []
 
     def start(self, flow_id):
         if flow_id != "facebook":
@@ -32,6 +33,9 @@ class FakeClient:
     def submit_cookies_trusted(self, login_id, step_id, cookies, *, txn_id=""):
         self.submitted = (login_id, step_id, dict(cookies), txn_id)
         return {"type": "complete", "instructions": "Logged in"}
+
+    def cancel(self, login_id):
+        self.cancelled.append(login_id)
 
 
 class MetaCookieAuthTests(unittest.TestCase):
@@ -62,6 +66,7 @@ class MetaCookieAuthTests(unittest.TestCase):
             client.submitted,
             ("login-1", "fi.mau.meta.cookies", VALID, "txn-1"),
         )
+        self.assertEqual(client.cancelled, [])
 
     def test_cookie_login_follows_live_three_cookie_bridge_schema(self):
         fields = [
@@ -86,6 +91,7 @@ class MetaCookieAuthTests(unittest.TestCase):
                 "txn-1",
             ),
         )
+        self.assertEqual(client.cancelled, [])
 
     def test_cookie_login_drops_supported_cookie_not_requested_by_bridge(self):
         fields = [
@@ -97,14 +103,32 @@ class MetaCookieAuthTests(unittest.TestCase):
         raw = "Cookie: datr=datr-value; c_user=123456789; sb=sb-value; xs=11:secret:2:1234567890:-1:-1"
         login_with_browser_cookies(client, raw)
         self.assertNotIn("sb", client.submitted[2])
+        self.assertEqual(client.cancelled, [])
 
-    def test_cookie_login_rejects_unknown_bridge_cookie_field(self):
+    def test_cookie_login_rejects_unknown_bridge_cookie_field_and_cancels_login(self):
         client = FakeClient([{"id": "future_cookie", "required": True}])
         with self.assertRaisesRegex(CookieInputError, "future_cookie"):
             login_with_browser_cookies(
                 client,
                 "Cookie: datr=datr-value; c_user=123456789; sb=sb-value; xs=11:secret:2:1234567890:-1:-1",
             )
+        self.assertEqual(client.cancelled, ["login-1"])
+        self.assertIsNone(client.submitted)
+
+    def test_cookie_login_missing_live_required_cookie_cancels_login(self):
+        fields = [
+            {"id": "xs", "required": True},
+            {"id": "c_user", "required": True},
+            {"id": "datr", "required": True},
+        ]
+        client = FakeClient(fields)
+        with self.assertRaisesRegex(CookieInputError, "datr"):
+            login_with_browser_cookies(
+                client,
+                "Cookie: c_user=123456789; xs=11:secret:2:1234567890:-1:-1",
+            )
+        self.assertEqual(client.cancelled, ["login-1"])
+        self.assertIsNone(client.submitted)
 
 
 if __name__ == "__main__":
