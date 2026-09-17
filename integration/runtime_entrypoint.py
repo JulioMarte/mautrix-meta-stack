@@ -12,6 +12,7 @@ import meta_admin_patch
 import meta_legacy_redirect
 import history_safety_v9
 import conversation_lifecycle_v10
+import conversation_lifecycle_hardening_v11
 import conversation_lifecycle_callback_v10
 import chatwoot_target_guard_v11
 import meta_debug_observability
@@ -20,6 +21,7 @@ meta_admin_patch.install()
 meta_legacy_redirect.install()
 history_safety_v9.install()
 conversation_lifecycle_v10.install()
+conversation_lifecycle_hardening_v11.install()
 conversation_lifecycle_callback_v10.install()
 chatwoot_target_guard_v11.install()
 meta_debug_observability.install()
