@@ -65,8 +65,8 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
         cls.patch = importlib.import_module("meta_admin_patch")
-        cls.redirect = importlib.import_module("meta_legacy_redirect")
         cls.managed = importlib.import_module("nicegui_app")
+        cls.cookie_page = importlib.import_module("meta_cookie_page")
 
     @classmethod
     def tearDownClass(cls):
@@ -82,26 +82,33 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self):
+        self.client.close()
         routes.registry = self.original_registry
 
     def _store(self, step):
         self.stored.append(dict(step))
         return dict(step)
 
-    def test_supported_operator_path_and_helper_handoff_complete_end_to_end(self):
-        # Product navigation must enter the managed state machine, never the
-        # developer-tools/manual-cookie page.
-        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), self.patch.NAV_ITEMS)
-        self.assertNotIn("/admin/meta-cookie", {item[3] for item in self.patch.NAV_ITEMS})
+    def test_cookie_first_product_path_and_managed_helper_fallback_complete_end_to_end(self):
+        # The proven manual browser-cookie flow is the primary production path.
+        # The managed BridgeV2/helper flow remains intentionally available as a
+        # separate test path rather than replacing the known-good workflow.
+        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"), self.patch.NAV_ITEMS)
+        self.assertIn(("meta_test", "Facebook login (prueba)", "science", "/admin/meta"), self.patch.NAV_ITEMS)
+
+        cookie_source = importlib.import_module("inspect").getsource(self.cookie_page.meta_cookie_page)
+        self.assertIn("Copy as cURL", cookie_source)
+        self.assertIn("login_with_browser_cookies", cookie_source)
+        self.assertIn("Conectar Facebook", cookie_source)
 
         managed_source = importlib.import_module("inspect").getsource(self.managed.meta_onboarding_page)
         self.assertIn("create_pairing(saved_step)", managed_source)
         self.assertNotIn("Copy as cURL", managed_source)
         self.assertNotIn("Network / Red", managed_source)
 
-        # Simulate the exact server/helper boundary: browser starts a safe pairing,
-        # desktop helper fetches metadata, captures only requested cookies and posts
-        # them once, then BridgeV2 returns complete.
+        # Simulate the exact server/helper boundary for the experimental managed
+        # path: desktop helper fetches sanitized metadata, captures only requested
+        # cookies and posts them once, then BridgeV2 returns complete.
         item, token = routes.registry.create(COOKIE_STEP)
         headers = {
             "Authorization": f"Bearer {token}",
