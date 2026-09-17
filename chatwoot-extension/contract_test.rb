@@ -104,8 +104,8 @@ assert(timestamp.to_i.positive?, 'timestamp header missing')
 assert(signature == expected, 'HMAC signature did not use current execution-time token')
 assert(signature != stale, 'HMAC signature incorrectly used stale enqueue-time token')
 
-# Adversarial case: scope changed or inbox was removed before execution. No HTTP
-# request is allowed in either case.
+# Adversarial cases: stale scope, missing inbox, or malformed old job payload.
+# None of these may produce an HTTP request or a retry storm.
 def execute_without_http(inbox_singleton, request_singleton, inbox_result, inbox_id, payload)
   captured = false
   inbox_singleton.alias_method :__meta_delete_original_find_by_guard, :find_by
@@ -131,5 +131,9 @@ assert(!execute_without_http(inbox_singleton, request_singleton, nil, inbox_id, 
 wrong_scope_inbox = OpenStruct.new(id: 2, account_id: 999, channel_type: 'Channel::Api', channel: real_channel)
 assert(!execute_without_http(inbox_singleton, request_singleton, wrong_scope_inbox, inbox_id, payload),
        'scope-changed inbox still caused an HTTP callback')
+assert(!execute_without_http(inbox_singleton, request_singleton, fake_inbox, inbox_id, nil),
+       'malformed nil payload still caused an HTTP callback')
+assert(!execute_without_http(inbox_singleton, request_singleton, fake_inbox, inbox_id, 'legacy-corrupt-payload'),
+       'malformed string payload still caused an HTTP callback')
 
-puts 'PASS: Chatwoot deletion contract uses execution-time HMAC, keeps secrets out of job args, and fails closed on stale scope'
+puts 'PASS: Chatwoot deletion contract uses execution-time HMAC, keeps secrets out of job args, and fails closed on stale or malformed jobs'
