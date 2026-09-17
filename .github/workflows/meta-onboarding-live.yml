@@ -3,7 +3,9 @@ name: Meta onboarding live stack
 on:
   push:
     branches:
-      - feature/meta-onboarding-ci-validation
+      - 'feature/**'
+      - 'fix/**'
+      - dev
     paths:
       - 'compose.yaml'
       - 'integration/**'
@@ -100,6 +102,24 @@ jobs:
       - name: Exercise real v26.08.1 provisioning state machine
         run: docker compose -f compose.yaml exec -T integration python /app/smoke_mautrix_provisioning.py
 
+      - name: Verify production runtime exposes managed onboarding
+        run: |
+          docker compose -f compose.yaml exec -T integration python - <<'PY'
+          import inspect
+          import meta_admin_patch
+          import nicegui_app
+          import runtime_entrypoint
+
+          assert ('meta', 'Facebook Messenger', 'forum', '/admin/meta') in meta_admin_patch.NAV_ITEMS
+          assert '/admin/meta-cookie' not in {item[3] for item in meta_admin_patch.NAV_ITEMS}
+          source = inspect.getsource(nicegui_app.meta_onboarding_page)
+          assert 'create_pairing(saved_step)' in source
+          assert 'Copy as cURL' not in source
+          assert 'Network / Red' not in source
+          assert 'import meta_cookie_page' not in inspect.getsource(runtime_entrypoint)
+          print('managed onboarding is the production-facing Meta path')
+          PY
+
       - name: Confirm isolated secret survives mautrix runtime rewrite
         run: |
           docker compose -f compose.yaml exec -T integration python - <<'PY'
@@ -126,6 +146,12 @@ jobs:
           assert ports.get('29319/tcp') in (None, []), f'29319 has published NetworkSettings binding: {ports.get("29319/tcp")!r}'
           print('mautrix provisioning port 29319 is container-network-only')
           PY
+
+      - name: Show safe onboarding diagnostics
+        if: always()
+        run: |
+          echo '--- meta onboarding structured diagnostics ---'
+          docker compose -f compose.yaml logs --no-color integration 2>/dev/null | grep '"component":"meta_onboarding"' || true
 
       - name: Dump stack logs on failure
         if: failure()
