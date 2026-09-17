@@ -201,7 +201,7 @@ class RuntimeEnhancementTests(unittest.TestCase):
             "id": 2,
             "channel_type": "Channel::Api",
             "webhook_url": "https://bridge.example.com/webhooks/chatwoot/inbox",
-            "secret": "api-secret",
+            "hmac_token": "api-secret",
         }
         with patch.object(module, "chatwoot_request") as request_call, \
              patch.object(module, "api_inbox_details", return_value=details):

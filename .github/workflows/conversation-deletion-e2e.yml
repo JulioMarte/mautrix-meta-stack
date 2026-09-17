@@ -1,0 +1,98 @@
+name: Conversation deletion E2E
+
+# The primary Validate stack workflow runs this same destructive journey on
+# every PR/push that matters. Keep this workflow as an explicit diagnostic tool
+# so maintainers can reproduce the deletion path without paying the Docker/build
+# cost twice on normal CI runs.
+on:
+  workflow_dispatch:
+
+jobs:
+  deletion-journey:
+    runs-on: ubuntu-latest
+    env:
+      MATRIX_SERVER_NAME: matrix.example.com
+      MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+      MATRIX_ADMIN_PASSWORD: ci-test-value-not-a-secret
+      INTEGRATION_ADMIN_PASSWORD: ci-integration-admin-long-value
+      INTEGRATION_SESSION_SECRET: ci-session-secret-012345678901234567890123456789
+      CHATWOOT_WEBHOOK_SECRET: ci-webhook-secret-long-value
+      META_PROXY_RESOLVER_SECRET: ci-resolver-secret-long-value
+      META_PROXY_ENABLED: 'false'
+      META_PROXY_URL: ''
+      INTEGRATION_COOKIE_SECURE: 'false'
+      ALLOW_INSECURE_CHATWOOT: 'true'
+      SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+      MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.08.1
+      YQ_IMAGE: mikefarah/yq:4.47.2
+      CHATWOOT_BASE_IMAGE: chatwoot/chatwoot:v4.7.0
+      TZ: America/Santo_Domingo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose -f compose.yaml config -q
+
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+
+      - name: Run lifecycle tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-conversation-lifecycle-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-conversation-lifecycle-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest \
+              test_conversation_lifecycle_v10.py \
+              test_conversation_lifecycle_callback_v10.py
+
+      - name: Validate extension against pinned Chatwoot image
+        run: sh chatwoot-extension/run_contract_test.sh
+
+      - name: Reproduce stack bootstrap
+        run: docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
+
+      - name: Start runtime services
+        run: docker compose -f compose.yaml up -d synapse integration mautrix-meta
+
+      - name: Wait for runtime health
+        run: |
+          set -eu
+          wait_healthy() {
+            service="$1"
+            timeout="$2"
+            cid="$(docker compose -f compose.yaml ps -q "$service")"
+            [ -n "$cid" ] || return 1
+            end=$((SECONDS + timeout))
+            while [ "$SECONDS" -lt "$end" ]; do
+              status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+              echo "$service: $status"
+              [ "$status" = "healthy" ] && return 0
+              case "$status" in unhealthy|exited|dead) return 1 ;; esac
+              sleep 3
+            done
+            return 1
+          }
+          wait_healthy synapse 120
+          wait_healthy integration 120
+          wait_healthy mautrix-meta 120
+
+      - name: Run bidirectional deletion journey
+        run: docker compose -f compose.yaml exec -T integration python /app/journey_conversation_deletion.py
+
+      - name: Dump stack logs on failure
+        if: failure()
+        run: |
+          docker compose -f compose.yaml ps -a || true
+          docker compose -f compose.yaml logs --no-color synapse integration mautrix-meta || true
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml down -v --remove-orphans || true

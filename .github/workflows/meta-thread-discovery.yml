@@ -113,10 +113,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           ruby = Path('chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb').read_text()
+          job = Path('chatwoot-extension/app/jobs/meta_conversation_delete_webhook_job.rb').read_text()
           dockerfile = Path('chatwoot-extension/Dockerfile').read_text()
           assert 'def conversation_deleted(event)' in ruby
-          assert 'deliver_api_inbox_webhooks(payload, inbox)' in ruby
+          assert 'channel.hmac_token' in ruby
+          assert 'MetaConversationDeleteWebhookJob.perform_later(channel.webhook_url, payload, secret)' in ruby
           assert "event: __method__.to_s" in ruby
+          assert "X-Chatwoot-Timestamp" in job
+          assert "X-Chatwoot-Signature" in job
+          assert "OpenSSL::HMAC.hexdigest('SHA256'" in job
           assert 'CHATWOOT_BASE_IMAGE' in dockerfile
           assert ':latest' not in dockerfile
           PY

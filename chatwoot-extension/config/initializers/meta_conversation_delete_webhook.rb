@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
-# Chatwoot has an internal conversation.deleted dispatcher event, but the stock
-# WebhookListener does not forward it to API inbox callbacks. This initializer adds
-# only that missing forwarding path and reuses Chatwoot's existing signed API-inbox
-# webhook delivery mechanism.
+# Chatwoot dispatches an internal conversation.deleted event but v4.7.0 does
+# not expose it through API-inbox webhooks. The stock API-inbox delivery path in
+# that release is also unsigned, while our destructive integration callback is
+# intentionally HMAC-only. This initializer therefore forwards only deletion
+# events through a dedicated signed job using the API inbox hmac_token.
 module MetaConversationDeleteWebhook
   def conversation_deleted(event)
     data = event.data[:conversation_data]&.with_indifferent_access
@@ -11,6 +12,17 @@ module MetaConversationDeleteWebhook
 
     inbox = Inbox.find_by(id: data[:inbox_id], account_id: data[:account_id])
     return if inbox.blank? || inbox.channel_type != 'Channel::Api'
+
+    channel = inbox.channel
+    return if channel.blank? || channel.webhook_url.blank?
+
+    secret = channel.hmac_token.to_s
+    if secret.blank?
+      Rails.logger.error(
+        "conversation.deleted callback suppressed: API inbox #{inbox.id} has no HMAC token"
+      )
+      return
+    end
 
     payload = {
       event: __method__.to_s,
@@ -20,9 +32,7 @@ module MetaConversationDeleteWebhook
       inbox: { id: data[:inbox_id] }
     }
 
-    # Private in WebhookListener, intentionally reused so signing, retries,
-    # delivery_id generation and API-inbox secret handling remain stock Chatwoot.
-    deliver_api_inbox_webhooks(payload, inbox)
+    MetaConversationDeleteWebhookJob.perform_later(channel.webhook_url, payload, secret)
   end
 end
 

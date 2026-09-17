@@ -95,7 +95,9 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest test_runtime_enhancements.py
+            meta-chatwoot-integration python -m unittest \
+              test_runtime_enhancements.py \
+              test_api_inbox_hmac_token.py
 
       - name: Run conversation lifecycle tests
         run: |
@@ -113,6 +115,9 @@ jobs:
             meta-chatwoot-integration python -m unittest \
               test_conversation_lifecycle_v10.py \
               test_conversation_lifecycle_callback_v10.py
+
+      - name: Validate Chatwoot deletion extension contract
+        run: sh chatwoot-extension/run_contract_test.sh
 
       - name: Run delivery history tests
         run: |
@@ -253,6 +258,9 @@ jobs:
             test "$(yq ".backfill.max_initial_messages" /data/config.yaml)" = "100"
             test "$(yq ".backfill.max_catchup_messages" /data/config.yaml)" = "500"
           '
+
+      - name: Run bidirectional conversation deletion journey
+        run: docker compose -f compose.yaml exec -T integration python /app/journey_conversation_deletion.py
 
       - name: Dump stack logs on failure
         if: failure()

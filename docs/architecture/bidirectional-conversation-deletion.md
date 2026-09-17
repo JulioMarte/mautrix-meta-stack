@@ -32,9 +32,11 @@ After Chatwoot is confirmed gone, changing the operation to `completed` and remo
 
 ## Chatwoot -> Meta
 
-Stock Chatwoot internally dispatches `conversation.deleted`, but its stock `WebhookListener` does not forward that event to API inbox callbacks. `chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb` adds exactly that missing forwarding method and reuses Chatwoot's existing `deliver_api_inbox_webhooks` path, preserving the channel secret signature, webhook job retry behavior and delivery ID.
+Stock Chatwoot internally dispatches `conversation.deleted`, but its stock `WebhookListener` does not forward that event to API inbox callbacks. In Chatwoot v4.7.0, the stock API-inbox delivery path is also not signed with the raw-body/timestamp HMAC contract required by this integration for destructive callbacks.
 
-The integration accepts the event only on the already-signed API inbox callback. It then requires:
+`chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb` adds exactly the missing `conversation_deleted` listener and queues `MetaConversationDeleteWebhookJob`. The job posts to the configured API inbox `webhook_url` and signs `timestamp + "." + raw_body` with that API channel's real `hmac_token`, producing `X-Chatwoot-Timestamp` and `X-Chatwoot-Signature` headers. The integration imports the same `hmac_token` from Chatwoot's authenticated inbox API and verifies that signature before allowing deletion to continue.
+
+The integration accepts the event only on the signed API inbox callback. It then requires:
 
 1. configured Chatwoot account ID match;
 2. configured inbox ID match;
@@ -108,7 +110,13 @@ docker build \
 
 Use the resulting image for both Chatwoot web and worker services. Do not use an unpinned `latest` tag for this extension.
 
-After deployment, the existing API inbox callback URL and secret remain unchanged. No second unauthenticated webhook endpoint is introduced.
+After deployment, keep the API inbox callback URL unchanged. The signing key is the API channel's `hmac_token`; the integration's admin callback verification imports that token through the authenticated Chatwoot inbox API. No second unauthenticated webhook endpoint is introduced.
+
+## Validation contract
+
+CI runs the lifecycle unit/callback tests, boots the extension against pinned `chatwoot/chatwoot:v4.7.0` with PostgreSQL/pgvector and Redis, verifies that the real `Channel::Api` schema exposes both `webhook_url` and `hmac_token`, and confirms that the initializer queues a callback signed with that real token. The main `Validate stack` workflow also runs the bidirectional Docker journey with real Synapse, the real integration runtime, and the pinned mautrix-meta runtime.
+
+The remaining non-automated boundary is Meta itself: CI does not log into a real Facebook/Instagram account. Production/staging acceptance should therefore still include a disposable Meta account canary for one destructive test in each direction.
 
 ## Safety decisions
 
