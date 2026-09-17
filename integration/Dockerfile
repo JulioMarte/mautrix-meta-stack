@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       -r requirements.txt
 
 COPY . /app
+RUN python /app/apply_basic_setup_cleanup.py
 
 EXPOSE 8080
 # NiceGUI runs on its bundled Uvicorn server with one process; access logs are disabled
