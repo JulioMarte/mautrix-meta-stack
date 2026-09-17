@@ -1,6 +1,7 @@
 import importlib
 import os
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -129,6 +130,67 @@ class ConversationDeletionAdversarialTests(unittest.TestCase):
         self.assertEqual(legacy.get_setting("chatwoot_webhook_signing_secret"), "")
         self.assertEqual(legacy.get_setting("api_inbox_callback_verified_at"), "")
         self.assertEqual(legacy.get_setting("webhook_registration_verified_at"), "")
+
+    def test_target_switch_waits_for_inflight_destructive_delete(self):
+        room = self.seed()
+        delete_started = threading.Event()
+        release_delete = threading.Event()
+        switch_finished = threading.Event()
+        errors = []
+
+        def blocking_delete(url, **kwargs):
+            try:
+                self.assertIn("/api/v1/accounts/1/conversations/77", url)
+                self.assertEqual(legacy.get_setting("chatwoot_inbox_id"), "2")
+                delete_started.set()
+                if not release_delete.wait(3):
+                    raise AssertionError("test did not release blocked Chatwoot DELETE")
+                self.assertEqual(legacy.get_setting("chatwoot_inbox_id"), "2")
+                return FakeResponse(status=204)
+            except Exception as exc:
+                errors.append(exc)
+                raise
+
+        def delete_worker():
+            try:
+                lifecycle.process_matrix_leave(room, self.trusted_leave())
+            except Exception as exc:
+                errors.append(exc)
+
+        def fake_admin_save(*args, **kwargs):
+            legacy.set_setting("chatwoot_inbox_id", "9")
+            return None
+
+        def switch_worker():
+            try:
+                hardening._admin_save_with_deletion_state()
+                switch_finished.set()
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(lifecycle.requests, "delete", side_effect=blocking_delete), \
+             patch.object(hardening, "_base_admin_save", side_effect=fake_admin_save):
+            delete_thread = threading.Thread(target=delete_worker)
+            delete_thread.start()
+            self.assertTrue(delete_started.wait(2), "delete did not reach the remote side effect")
+
+            switch_thread = threading.Thread(target=switch_worker)
+            switch_thread.start()
+            time.sleep(0.15)
+            self.assertFalse(switch_finished.is_set(), "target switch bypassed lifecycle lock")
+            self.assertEqual(legacy.get_setting("chatwoot_inbox_id"), "2")
+
+            release_delete.set()
+            delete_thread.join(3)
+            switch_thread.join(3)
+
+        if errors:
+            raise errors[0]
+        self.assertFalse(delete_thread.is_alive())
+        self.assertFalse(switch_thread.is_alive())
+        self.assertTrue(switch_finished.is_set())
+        self.assertEqual(legacy.get_setting("chatwoot_inbox_id"), "9")
+        self.assertIsNone(lifecycle._operation(77))
 
     def test_matrix_timeout_retry_reuses_exact_same_transaction_id(self):
         self.seed()
