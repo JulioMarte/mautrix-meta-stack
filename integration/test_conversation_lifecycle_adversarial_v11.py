@@ -3,9 +3,11 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
+import yaml
 
 
 class FakeResponse:
@@ -29,6 +31,7 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         os.environ["DATA_DIR"] = cls.tmp.name
+        os.environ["MATRIX_SERVER_NAME"] = "matrix.example.com"
         os.environ["MATRIX_ADMIN_MXID"] = "@admin:matrix.example.com"
         os.environ["MATRIX_ADMIN_PASSWORD"] = "matrix-password-long-value"
         os.environ["INTEGRATION_ADMIN_PASSWORD"] = "admin-password-long-value"
@@ -38,6 +41,24 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
         os.environ["INTEGRATION_COOKIE_SECURE"] = "false"
         os.environ["START_MATRIX_SYNC"] = "false"
         os.environ["ALLOW_INSECURE_CHATWOOT"] = "true"
+        registration_path = Path(cls.tmp.name) / "registration.yaml"
+        os.environ["MAUTRIX_REGISTRATION_PATH"] = str(registration_path)
+        with registration_path.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(
+                {
+                    "id": "meta",
+                    "sender_localpart": "metabot",
+                    "as_token": "adversarial-as-token",
+                    "hs_token": "adversarial-hs-token",
+                    "namespaces": {
+                        "users": [{"regex": r"^@meta_[0-9]+:matrix\\.example\\.com$", "exclusive": True}],
+                        "aliases": [],
+                        "rooms": [],
+                    },
+                },
+                fh,
+                sort_keys=False,
+            )
 
         global runtime, legacy, lifecycle, hardening
         runtime = importlib.import_module("final_app")
@@ -47,6 +68,8 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
         legacy.init_db()
         lifecycle.ensure_schema()
         hardening.install()
+        if legacy.bridge_bot_mxid() != "@metabot:matrix.example.com":
+            raise AssertionError(f"unexpected bridge bot fixture: {legacy.bridge_bot_mxid()!r}")
 
     @classmethod
     def tearDownClass(cls):
@@ -64,6 +87,15 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
         legacy.set_setting("chatwoot_inbox_id", "2")
         legacy.set_setting("chatwoot_api_token", "token")
         legacy.set_setting("matrix_next_batch", "s1")
+        self.matrix_headers = patch.object(
+            legacy,
+            "matrix_headers",
+            return_value={"Authorization": "Bearer adversarial-test-token"},
+        )
+        self.matrix_headers.start()
+
+    def tearDown(self):
+        self.matrix_headers.stop()
 
     def seed(self, room="!portal:matrix.example.com", conversation=77, verified=True):
         with legacy.db() as conn:
