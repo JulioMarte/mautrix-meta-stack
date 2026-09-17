@@ -2,8 +2,8 @@
 
 The browser remains responsible for Facebook authentication, including MFA,
 passkeys, checkpoints and other interactive challenges. This module only parses
-an already-authenticated browser request and forwards the four cookies required
-by mautrix-meta's Facebook cookie login flow.
+an already-authenticated browser request and forwards the Facebook session
+cookies requested by the currently deployed mautrix-meta BridgeV2 login step.
 
 Secrets are intentionally kept in memory only and must never be logged or
 persisted by callers.
@@ -12,10 +12,15 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Iterable
 
 
-REQUIRED_FACEBOOK_COOKIES = ("datr", "c_user", "sb", "xs")
+# Cookies known to be used by mautrix-meta Facebook web authentication across
+# deployed/recent versions. The bridge's live cookie step is authoritative for
+# which subset is required for a particular login attempt.
+SUPPORTED_FACEBOOK_COOKIES = ("datr", "c_user", "sb", "xs")
+# Preserve the old parser contract for callers/tests that invoke it directly.
+REQUIRED_FACEBOOK_COOKIES = SUPPORTED_FACEBOOK_COOKIES
 
 
 class CookieInputError(ValueError):
@@ -80,27 +85,52 @@ def _extract_cookie_header(raw: str) -> str:
     )
 
 
-def parse_facebook_cookie_input(raw: str) -> dict[str, str]:
-    """Parse Copy-as-cURL, JSON, or a raw Cookie header into required cookies."""
+def _parse_all_cookie_input(raw: str) -> dict[str, str]:
     raw = (raw or "").strip()
     if not raw:
         raise CookieInputError("Pega primero la información de cookies del navegador.")
 
     parsed = _from_json(raw)
-    if parsed is None:
-        header = _extract_cookie_header(raw)
-        parsed = {}
-        for chunk in header.split(";"):
-            name, sep, value = chunk.strip().partition("=")
-            if sep and name:
-                parsed[name.strip()] = value.strip()
+    if parsed is not None:
+        return parsed
+
+    header = _extract_cookie_header(raw)
+    parsed = {}
+    for chunk in header.split(";"):
+        name, sep, value = chunk.strip().partition("=")
+        if sep and name:
+            parsed[name.strip()] = value.strip()
+    return parsed
+
+
+def parse_facebook_cookie_input(
+    raw: str,
+    *,
+    required: Iterable[str] | None = None,
+) -> dict[str, str]:
+    """Parse browser data and return supported Facebook cookies.
+
+    ``required`` defaults to the historical four-cookie contract for direct
+    callers. The production login path passes the exact field IDs advertised by
+    the live BridgeV2 cookie step instead, so version changes in mautrix-meta do
+    not make a valid browser session fail locally before provisioning sees it.
+    """
+    parsed = _parse_all_cookie_input(raw)
+    required_names = tuple(required) if required is not None else REQUIRED_FACEBOOK_COOKIES
+
+    unsupported = [name for name in required_names if name not in SUPPORTED_FACEBOOK_COOKIES]
+    if unsupported:
+        raise CookieInputError(
+            "La versión desplegada de mautrix-meta solicitó cookies que este panel aún no admite: "
+            + ", ".join(unsupported)
+        )
 
     result = {
         name: str(parsed.get(name) or "")
-        for name in REQUIRED_FACEBOOK_COOKIES
+        for name in SUPPORTED_FACEBOOK_COOKIES
         if str(parsed.get(name) or "")
     }
-    missing = [name for name in REQUIRED_FACEBOOK_COOKIES if not result.get(name)]
+    missing = [name for name in required_names if not result.get(name)]
     if missing:
         raise CookieInputError(
             "La sesión está incompleta. Faltan estas cookies requeridas por mautrix-meta: " + ", ".join(missing)
@@ -108,9 +138,30 @@ def parse_facebook_cookie_input(raw: str) -> dict[str, str]:
     return result
 
 
+def _requested_cookie_names(step: dict[str, Any]) -> tuple[str, ...]:
+    cookie_step = step.get("cookies")
+    if not isinstance(cookie_step, dict):
+        return ()
+    fields = cookie_step.get("fields")
+    if not isinstance(fields, list):
+        return ()
+
+    names: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("id") or "").strip()
+        if name and bool(field.get("required", True)) and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def login_with_browser_cookies(client: Any, raw: str) -> dict[str, Any]:
     """Run the BridgeV2 Facebook cookie flow without persisting browser secrets."""
-    cookies = parse_facebook_cookie_input(raw)
+    # Parse syntax first so malformed input doesn't create a bridge login process.
+    parsed = parse_facebook_cookie_input(raw, required=())
+    cookies: dict[str, str] = {}
+    login_id = ""
     try:
         step = client.start("facebook")
         if not isinstance(step, dict) or str(step.get("type") or "") != "cookies":
@@ -119,6 +170,28 @@ def login_with_browser_cookies(client: Any, raw: str) -> dict[str, Any]:
         step_id = str(step.get("step_id") or "")
         if not login_id or not step_id:
             raise RuntimeError("mautrix-meta devolvió un paso de cookies incompleto")
+
+        requested = _requested_cookie_names(step)
+        if not requested:
+            # Older BridgeV2 payloads did not always include the field schema.
+            requested = REQUIRED_FACEBOOK_COOKIES
+
+        unsupported = [name for name in requested if name not in SUPPORTED_FACEBOOK_COOKIES]
+        if unsupported:
+            raise CookieInputError(
+                "La versión desplegada de mautrix-meta solicitó cookies que este panel aún no admite: "
+                + ", ".join(unsupported)
+            )
+        missing = [name for name in requested if not parsed.get(name)]
+        if missing:
+            raise CookieInputError(
+                "La sesión está incompleta. Faltan estas cookies requeridas por mautrix-meta: " + ", ".join(missing)
+            )
+
+        # Submit only what this bridge step requested. This both follows the
+        # upstream contract and prevents unrelated browser cookies from crossing
+        # the server-side provisioning boundary.
+        cookies = {name: parsed[name] for name in requested}
         return client.submit_cookies_trusted(
             login_id,
             step_id,
@@ -128,4 +201,5 @@ def login_with_browser_cookies(client: Any, raw: str) -> dict[str, Any]:
     finally:
         # Best-effort lifetime reduction. Python strings cannot be reliably
         # zeroized, but we can at least drop our references immediately.
+        parsed.clear()
         cookies.clear()
