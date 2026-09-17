@@ -90,7 +90,7 @@ def save_configuration(*args, **kwargs):
         try:
             try:
                 result = _base_save_configuration(*args, **kwargs)
-            except BaseException:
+            except Exception:
                 new_target = _current_target()
                 if _target_changed(old_target, new_target):
                     runtime._reset_chatwoot_target_state(old_target, new_target)
