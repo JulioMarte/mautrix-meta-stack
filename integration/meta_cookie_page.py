@@ -2,8 +2,9 @@
 
 This intentionally avoids reproducing Facebook authentication. The operator logs
 in on facebook.com with the normal browser flow (including MFA/passkeys), then
-pastes a copied authenticated request. Only the four cookies required by
-mautrix-meta are forwarded to the private provisioning API.
+pastes a copied authenticated request. Only supported session cookies explicitly
+requested by the live mautrix-meta BridgeV2 step are forwarded to the private
+provisioning API.
 """
 from __future__ import annotations
 
@@ -107,7 +108,7 @@ def meta_cookie_page():
                     with ui.column().classes("gap-0"):
                         ui.label("Pega aquí y conecta").classes("font-semibold")
                         ui.label(
-                            "Pega el cURL completo en el cuadro inferior y pulsa Conectar Facebook. Nosotros extraemos solo datr, c_user, sb y xs."
+                            "Pega el cURL completo en el cuadro inferior y pulsa Conectar Facebook. El panel conserva únicamente las cookies de sesión Meta compatibles y envía solo las que la versión desplegada de mautrix-meta solicite."
                         ).classes("text-sm text-slate-600")
 
             ui.link("Abrir Facebook Messenger en una pestaña nueva", "https://www.facebook.com/messages/", new_tab=True).classes("text-blue-700 font-medium mt-4")
@@ -120,7 +121,7 @@ def meta_cookie_page():
         with ui.card().classes("w-full p-6"):
             ui.label("Pega aquí la sesión del navegador").classes("text-xl font-semibold")
             ui.label(
-                "El panel no ejecuta el cURL. Solo lee el encabezado Cookie, valida las cuatro cookies necesarias y las entrega al provisioning API privado de mautrix-meta."
+                "El panel no ejecuta el cURL. Solo lee el encabezado Cookie y entrega al provisioning API privado exactamente las cookies que el paso activo de mautrix-meta requiere."
             ).classes("text-slate-600")
 
             cookie_text = ui.textarea(
@@ -171,8 +172,8 @@ def meta_cookie_page():
         with ui.card().classes("w-full p-5 bg-slate-50"):
             ui.label("Qué datos usamos").classes("font-semibold")
             ui.label(
-                "Para Facebook, mautrix-meta necesita únicamente las cookies datr, c_user, sb y xs. El parser descarta el resto antes de enviarlas al provisioning API privado."
+                "El parser reconoce las cookies de sesión Meta datr, c_user, sb y xs, descarta el resto y después envía únicamente el subconjunto solicitado por el paso de login de mautrix-meta."
             ).classes("text-sm text-slate-600")
             ui.label(
-                "No ejecutamos el cURL que pegues. Solo extraemos el Cookie header y validamos esas cuatro cookies."
+                "En la versión v26.08.1 validada por CI, el flujo Facebook solicita actualmente xs, c_user y datr; el fallback conserva compatibilidad con el contrato histórico de cuatro cookies cuando el bridge no publica su esquema."
             ).classes("text-xs text-slate-500 mt-1")
