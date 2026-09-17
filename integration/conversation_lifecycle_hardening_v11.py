@@ -1,9 +1,9 @@
 """Adversarial race hardening for bidirectional conversation deletion.
 
 The v10 lifecycle persists an operation before remote effects. This layer closes
-one remaining race: Meta and Chatwoot can observe no operation concurrently and
-both attempt to claim the same conversation. The SQLite INSERT OR IGNORE is the
-authoritative arbiter; every caller must re-read its winner before side effects.
+remaining concurrency windows by making the lifecycle lock authoritative for the
+mapping lookup, operation claim and destructive side effect. Target migration uses
+the same lock, so a configuration change cannot interleave with an old-target delete.
 """
 from __future__ import annotations
 
@@ -34,18 +34,18 @@ def _chatwoot_origin_confirmation(conversation_id: int, room_id: str) -> dict:
 
 
 def process_matrix_leave(room_id: str, room: dict) -> dict:
-    """Resolve concurrent origins under the lifecycle lock before HTTP effects."""
-    link = lifecycle._link_by_room(room_id)
-    if not link:
-        return {"ok": True, "ignored": True, "reason": "unmapped_room"}
-    if not lifecycle.portal_was_verified(room_id):
-        return {"ok": True, "ignored": True, "reason": "portal_not_preverified"}
-    if not lifecycle._trusted_bridge_leave(room):
-        print(f"conversation lifecycle: untrusted Matrix leave ignored room={room_id}", flush=True)
-        return {"ok": True, "ignored": True, "reason": "leave_not_from_bridge_bot"}
-
-    conversation_id = int(link["conversation_id"])
+    """Resolve mapping, provenance, origin and HTTP effect under one lock."""
     with lifecycle._RECONCILE_LOCK:
+        link = lifecycle._link_by_room(room_id)
+        if not link:
+            return {"ok": True, "ignored": True, "reason": "unmapped_room"}
+        if not lifecycle.portal_was_verified(room_id):
+            return {"ok": True, "ignored": True, "reason": "portal_not_preverified"}
+        if not lifecycle._trusted_bridge_leave(room):
+            print(f"conversation lifecycle: untrusted Matrix leave ignored room={room_id}", flush=True)
+            return {"ok": True, "ignored": True, "reason": "leave_not_from_bridge_bot"}
+
+        conversation_id = int(link["conversation_id"])
         existing = lifecycle._operation(conversation_id)
         if existing and existing["origin"] == "chatwoot":
             return _chatwoot_origin_confirmation(conversation_id, room_id)
@@ -55,8 +55,8 @@ def process_matrix_leave(room_id: str, room: dict) -> dict:
         if not claimed:
             raise RuntimeError(f"conversation lifecycle claim disappeared: {conversation_id}")
 
-        # Chatwoot may have won INSERT OR IGNORE after our first read but before
-        # our claim. In that case the Meta leave is the remote confirmation.
+        # Chatwoot may have won INSERT OR IGNORE after an earlier callback entered.
+        # The Meta leave then serves as that operation's remote confirmation.
         if claimed["origin"] == "chatwoot":
             return _chatwoot_origin_confirmation(conversation_id, room_id)
         if claimed["origin"] != "meta":
@@ -97,7 +97,7 @@ def process_matrix_leave(room_id: str, room: dict) -> dict:
 
 
 def process_chatwoot_delete(payload: dict) -> dict:
-    """Re-read the SQLite origin winner before sending BridgeV2 delete_chat."""
+    """Claim origin and send BridgeV2 delete_chat under the lifecycle lock."""
     in_scope, reason = lifecycle._configured_scope(payload)
     if not in_scope:
         return {"ok": True, "ignored": True, "reason": reason}
@@ -106,40 +106,58 @@ def process_chatwoot_delete(payload: dict) -> dict:
     except (TypeError, ValueError):
         return {"ok": True, "ignored": True, "reason": "missing_conversation_id"}
 
-    existing = lifecycle._operation(conversation_id)
-    if existing:
-        if existing["origin"] == "meta":
+    with lifecycle._RECONCILE_LOCK:
+        existing = lifecycle._operation(conversation_id)
+        if existing:
+            if existing["origin"] == "meta":
+                return {"ok": True, "ignored": True, "reason": "meta_delete_loop_suppressed"}
+            if existing["state"] in {"remote_requested", "completed"}:
+                return {"ok": True, "duplicate": True, "state": existing["state"]}
+
+        link = lifecycle._link_by_conversation(conversation_id)
+        if not link:
+            return {"ok": True, "ignored": True, "reason": "unmapped_conversation"}
+        room_id = str(link["room_id"])
+        if not lifecycle.portal_was_verified(room_id):
+            return {"ok": True, "ignored": True, "reason": "portal_not_preverified"}
+
+        lifecycle._start_operation(conversation_id, room_id, "chatwoot", "pending")
+        claimed = lifecycle._operation(conversation_id)
+        if not claimed:
+            raise RuntimeError(f"conversation lifecycle claim disappeared: {conversation_id}")
+
+        # Meta may have won INSERT OR IGNORE after the callback's earlier scope
+        # checks. Never emit a delete_chat event for the loopback in that case.
+        if claimed["origin"] == "meta":
             return {"ok": True, "ignored": True, "reason": "meta_delete_loop_suppressed"}
-        if existing["state"] in {"remote_requested", "completed"}:
-            return {"ok": True, "duplicate": True, "state": existing["state"]}
+        if claimed["origin"] != "chatwoot":
+            raise RuntimeError(
+                f"conversation lifecycle origin conflict conversation={conversation_id} "
+                f"origin={claimed['origin']}"
+            )
+        if claimed["state"] in {"remote_requested", "completed"}:
+            return {"ok": True, "duplicate": True, "state": claimed["state"]}
 
-    link = lifecycle._link_by_conversation(conversation_id)
-    if not link:
-        return {"ok": True, "ignored": True, "reason": "unmapped_conversation"}
-    room_id = str(link["room_id"])
-    if not lifecycle.portal_was_verified(room_id):
-        return {"ok": True, "ignored": True, "reason": "portal_not_preverified"}
+        try:
+            event_id = lifecycle._send_matrix_delete(room_id, conversation_id)
+        except Exception as exc:
+            current = lifecycle._operation(conversation_id)
+            if current and current["state"] == "completed":
+                return {
+                    "ok": True,
+                    "completed": True,
+                    "origin": "chatwoot",
+                    "confirmed_during_submit": True,
+                }
+            lifecycle._update_operation(
+                conversation_id,
+                state="failed_retryable",
+                error=str(exc),
+                increment_attempts=True,
+                next_retry_at=0,
+            )
+            raise
 
-    lifecycle._start_operation(conversation_id, room_id, "chatwoot", "pending")
-    claimed = lifecycle._operation(conversation_id)
-    if not claimed:
-        raise RuntimeError(f"conversation lifecycle claim disappeared: {conversation_id}")
-
-    # Meta may have won INSERT OR IGNORE after our first read. Never emit a
-    # delete_chat event in that case: the callback is the expected loopback.
-    if claimed["origin"] == "meta":
-        return {"ok": True, "ignored": True, "reason": "meta_delete_loop_suppressed"}
-    if claimed["origin"] != "chatwoot":
-        raise RuntimeError(
-            f"conversation lifecycle origin conflict conversation={conversation_id} "
-            f"origin={claimed['origin']}"
-        )
-    if claimed["state"] in {"remote_requested", "completed"}:
-        return {"ok": True, "duplicate": True, "state": claimed["state"]}
-
-    try:
-        event_id = lifecycle._send_matrix_delete(room_id, conversation_id)
-    except Exception as exc:
         current = lifecycle._operation(conversation_id)
         if current and current["state"] == "completed":
             return {
@@ -150,29 +168,13 @@ def process_chatwoot_delete(payload: dict) -> dict:
             }
         lifecycle._update_operation(
             conversation_id,
-            state="failed_retryable",
-            error=str(exc),
+            state="remote_requested",
+            matrix_event_id=event_id,
+            error="",
             increment_attempts=True,
             next_retry_at=0,
         )
-        raise
 
-    current = lifecycle._operation(conversation_id)
-    if current and current["state"] == "completed":
-        return {
-            "ok": True,
-            "completed": True,
-            "origin": "chatwoot",
-            "confirmed_during_submit": True,
-        }
-    lifecycle._update_operation(
-        conversation_id,
-        state="remote_requested",
-        matrix_event_id=event_id,
-        error="",
-        increment_attempts=True,
-        next_retry_at=0,
-    )
     print(
         f"conversation lifecycle: Chatwoot delete requested on Meta "
         f"room={room_id} conversation={conversation_id} event={event_id}",
