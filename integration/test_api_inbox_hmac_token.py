@@ -24,6 +24,14 @@ class ApiInboxHmacTokenTests(unittest.TestCase):
         runtime = importlib.import_module("final_app")
         module = importlib.import_module("runtime_enhancements")
         legacy = runtime.legacy
+
+        # This suite may be run in the same unittest process after another suite
+        # that imported final_app with a different TemporaryDirectory. app.py
+        # resolves DB_PATH at import time, so reset the module globals explicitly
+        # to keep this test hermetic even when modules are already cached.
+        legacy.DATA_DIR = cls.tmp.name
+        legacy.DB_PATH = os.path.join(cls.tmp.name, "integration.db")
+        os.makedirs(legacy.DATA_DIR, exist_ok=True)
         legacy.init_db()
 
     @classmethod
