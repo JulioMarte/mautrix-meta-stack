@@ -26,6 +26,8 @@ Before calling Chatwoot DELETE, the integration persists a `conversation_deletio
 
 A temporary Chatwoot failure does **not** block Matrix `/sync` progress and does not lose the deletion. The operation moves to `failed_retryable`, persists a `next_retry_at` deadline, and is retried independently of Matrix with exponential backoff (30 seconds initially, capped at one hour). Reconciliation runs during later sync iterations and during lifecycle bootstrap after a process restart. A Chatwoot `404` during this retry is treated as idempotent success because the remote Meta deletion was already authoritatively confirmed before the retry record was created.
 
+A replayed Matrix leave does not bypass an existing future `next_retry_at`. If Chatwoot is unavailable and a deletion has already entered retry backoff, duplicate `/sync` delivery leaves the durable retry schedule intact instead of immediately hammering Chatwoot again.
+
 `remote_confirmed` itself is also recoverable. This matters if the integration process dies after persisting the authoritative Meta deletion but before it can call Chatwoot at all. On restart, reconciliation picks up that state immediately; it does not depend on Matrix redelivering the leave event.
 
 After Chatwoot is confirmed gone, changing the operation to `completed` and removing `room_links` happen in one SQLite transaction. If the process dies after the external Chatwoot DELETE but before that transaction commits, the still-persisted `remote_confirmed`/`failed_retryable` operation is retried; the resulting Chatwoot `404` finalizes it idempotently.
@@ -34,7 +36,9 @@ After Chatwoot is confirmed gone, changing the operation to `completed` and remo
 
 Stock Chatwoot internally dispatches `conversation.deleted`, but its stock `WebhookListener` does not forward that event to API inbox callbacks. In Chatwoot v4.7.0, the stock API-inbox delivery path is also not signed with the raw-body/timestamp HMAC contract required by this integration for destructive callbacks.
 
-`chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb` adds exactly the missing `conversation_deleted` listener and queues `MetaConversationDeleteWebhookJob`. The job posts to the configured API inbox `webhook_url` and signs `timestamp + "." + raw_body` with that API channel's real `hmac_token`, producing `X-Chatwoot-Timestamp` and `X-Chatwoot-Signature` headers. The integration imports the same `hmac_token` from Chatwoot's authenticated inbox API and verifies that signature before allowing deletion to continue.
+`chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb` adds exactly the missing `conversation_deleted` listener and queues `MetaConversationDeleteWebhookJob`. The initializer queues only the API inbox ID plus the deletion payload; it deliberately does **not** serialize `hmac_token` or the callback URL into ActiveJob/Sidekiq/Redis.
+
+At execution time the worker resolves the current `Inbox`, confirms it is still the same API inbox/account represented by the payload, then reads the current `Channel::Api.webhook_url` and `Channel::Api.hmac_token`. It signs `timestamp + "." + raw_body` and sends `X-Chatwoot-Timestamp` and `X-Chatwoot-Signature`. This means HMAC rotation while a job is waiting in the queue uses the new token, and a deleted, moved, malformed, or scope-changed delayed job is discarded without an HTTP callback. The integration imports the same current `hmac_token` from Chatwoot's authenticated inbox API and verifies that signature before allowing deletion to continue.
 
 The integration accepts the event only on the signed API inbox callback. It then requires:
 
@@ -59,9 +63,21 @@ BridgeV2 v0.30.0 routes `com.beeper.delete_chat` to mautrix-meta's `HandleMatrix
 
 The `room_links` row is deliberately retained after Matrix accepts the event. It is deleted only when BridgeV2 subsequently removes the portal and the trusted Matrix leave is observed. This keeps enough state for audit/recovery if the remote delete fails.
 
-The Matrix transaction ID is deterministic for the conversation/room pair. If delivery of the signed Chatwoot callback is retried after an HTTP submission failure, resubmitting the same Matrix transaction remains idempotent at the Matrix client API boundary. Once Matrix has returned an event ID, the lifecycle records `remote_requested` and does not proactively emit additional destructive events; final confirmation comes from the bridge-owned portal deletion.
+The Matrix transaction ID is deterministic for the conversation/room pair. If delivery of the signed Chatwoot callback is retried after an HTTP submission failure or the integration dies after Matrix accepted the request but before local state is updated, resubmitting the same Matrix transaction remains idempotent at the Matrix client API boundary. Once Matrix has returned an event ID and local state reaches `remote_requested`, later callbacks are treated as duplicates and do not emit another destructive request.
 
-A trusted bridge confirmation may race the HTTP submit path and arrive while the operation is still `pending`. That direct `pending -> completed` transition is allowed because the bridge-owned portal deletion is stronger evidence than the submit response. The submit path re-reads state before writing `remote_requested`, so a fast confirmation cannot be overwritten by a stale state update.
+Destructive lifecycle work is serialized under the same integration lock used by retry reconciliation. Two simultaneous `conversation_deleted` callbacks therefore cannot independently race the same `pending` operation into conflicting local transitions. Meta and Chatwoot can also observe deletion at almost the same time: SQLite's persisted operation is the authoritative origin arbiter. If Meta wins the operation claim, the Chatwoot callback is loop-suppressed; if Chatwoot wins, the trusted Meta/bridge leave is treated as the remote confirmation rather than as a second delete origin.
+
+A trusted bridge confirmation may arrive while the operation is still `pending`. That direct `pending -> completed` transition is allowed because the bridge-owned portal deletion is stronger evidence than the submit response. The submit path re-reads state before writing `remote_requested`, so a fast confirmation cannot be overwritten by a stale state update.
+
+## Chatwoot target identity and reconfiguration
+
+`chatwoot_base_url + chatwoot_account_id + chatwoot_inbox_id` is treated as one destination identity/security boundary. Chatwoot conversation IDs, deletion tombstones and callback secrets have meaning only inside that target.
+
+When the target changes through the real NiceGUI configuration path, the integration takes the same lifecycle lock used by destructive operations and marks the target as reconfiguring. It clears target-scoped `room_links`/dedupe state, `conversation_deletions`, API-inbox/account webhook secrets and their verification markers before callbacks can operate on the new target. Verified Meta portal provenance remains because it describes the source-side Matrix/Meta room rather than the Chatwoot destination.
+
+If configuration fails after only part of the new target has already been persisted, the guard still compares the old and resulting target and invalidates old-target state before exposing the failure. This prevents an interrupted save from leaving a new destination combined with old callback credentials or tombstones.
+
+For the API-inbox callback, a successful HMAC verification is additionally bound to the exact target tuple that was current during verification. The handler rechecks that tuple while holding the lifecycle lock. A callback whose signature was valid for the old target is rejected if the target changed before the destructive handler executes, even when the new account/inbox happen to reuse the same numeric IDs.
 
 ## Persistent state
 
@@ -114,7 +130,11 @@ After deployment, keep the API inbox callback URL unchanged. The signing key is 
 
 ## Validation contract
 
-CI runs the lifecycle unit/callback tests, boots the extension against pinned `chatwoot/chatwoot:v4.7.0` with PostgreSQL/pgvector and Redis, verifies that the real `Channel::Api` schema exposes both `webhook_url` and `hmac_token`, and confirms that the initializer queues a callback signed with that real token. The main `Validate stack` workflow also runs the bidirectional Docker journey with real Synapse, the real integration runtime, and the pinned mautrix-meta runtime.
+The primary `Validate stack` workflow runs the lifecycle unit/callback tests plus an adversarial suite covering origin races, simultaneous duplicate callbacks, malformed/spoofed Matrix leaves, retry/backoff replay, ambiguous Chatwoot timeouts, process death after Matrix acceptance, target migration with conversation-ID reuse, partial configuration failure, stale verified callbacks, and wrong account/inbox scope.
+
+CI also boots the extension against pinned `chatwoot/chatwoot:v4.7.0` with PostgreSQL/pgvector and Redis. The real Rails contract verifies the `Channel::Api` schema, proves that HMAC secrets are not queued in ActiveJob, rotates `hmac_token` between enqueue and execution, and confirms that deleted/scope-changed inboxes and malformed delayed jobs produce no HTTP callback.
+
+Finally, `Validate stack` starts real Synapse, the production integration runtime and the pinned mautrix-meta runtime, verifies persistence/restart behavior, and runs the bidirectional conversation deletion Docker journey. The journey verifies a real signed callback into the integration, a real `com.beeper.delete_chat` event in Synapse, trusted bridge-style confirmation, and Meta-origin cleanup to the controlled Chatwoot HTTP boundary.
 
 The remaining non-automated boundary is Meta itself: CI does not log into a real Facebook/Instagram account. Production/staging acceptance should therefore still include a disposable Meta account canary for one destructive test in each direction.
 
@@ -126,5 +146,7 @@ The remaining non-automated boundary is Meta itself: CI does not log into a real
 - The old "recreate deleted Chatwoot conversation" behavior is forcibly disabled by the lifecycle layer.
 - Chatwoot -> Meta does not automatically emit another destructive Matrix event after Matrix has already returned an event ID; confirmation comes from the bridge-owned portal deletion.
 - Meta -> Chatwoot failures are retried from durable local state because Meta deletion has already been confirmed and retrying the local Chatwoot DELETE cannot create a second remote Meta deletion.
-- Retry reconciliation is serialized inside the integration process so bootstrap and regular Matrix sync cannot concurrently perform the same local cleanup.
+- Retry reconciliation, destructive callback handling, trusted leave handling and Chatwoot target reconfiguration share one lifecycle lock so they cannot concurrently mutate the same deletion state inside one integration process.
 - Deletion is scoped to the current account/inbox and preverified portal mapping.
+- Callback secrets and deletion tombstones are invalidated when the Chatwoot target identity changes; source-side verified Meta portal provenance is retained.
+- HMAC verification is bound to the target that was current when the signature was checked, preventing an old-target callback from crossing a concurrent configuration switch.
