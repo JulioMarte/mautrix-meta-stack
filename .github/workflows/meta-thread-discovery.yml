@@ -14,6 +14,7 @@ on:
       - 'integration/chatwoot_target_guard_v11.py'
       - 'integration/test_conversation_lifecycle_v10.py'
       - 'integration/test_conversation_lifecycle_adversarial_v11.py'
+      - 'integration/test_conversation_lifecycle_reality_v12.py'
       - 'integration/test_conversation_lifecycle_callback_v10.py'
       - 'integration/test_chatwoot_target_guard_v11.py'
       - 'integration/test_history_safety_v9.py'
@@ -39,6 +40,7 @@ on:
       - 'integration/chatwoot_target_guard_v11.py'
       - 'integration/test_conversation_lifecycle_v10.py'
       - 'integration/test_conversation_lifecycle_adversarial_v11.py'
+      - 'integration/test_conversation_lifecycle_reality_v12.py'
       - 'integration/test_conversation_lifecycle_callback_v10.py'
       - 'integration/test_chatwoot_target_guard_v11.py'
       - 'integration/test_history_safety_v9.py'
@@ -113,6 +115,10 @@ jobs:
       - name: Test bidirectional conversation lifecycle
         run: docker run --rm meta-chatwoot-integration python -m unittest test_conversation_lifecycle_v10.py
 
+      - name: Test real-world adversarial deletion invariants
+        run: |
+          docker run --rm             -e DATA_DIR=/tmp/integration-reality-v12-test             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com'             -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value             -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value             -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value             -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-reality-v12-tests             -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value             -e INTEGRATION_COOKIE_SECURE=false             -e START_MATRIX_SYNC=false             -e ALLOW_INSECURE_CHATWOOT=true             meta-chatwoot-integration python -m unittest test_conversation_lifecycle_reality_v12.py
+
       - name: Test signed production lifecycle callback wiring
         run: docker run --rm meta-chatwoot-integration python -m unittest test_conversation_lifecycle_callback_v10.py
 
@@ -123,11 +129,15 @@ jobs:
           ruby = Path('chatwoot-extension/config/initializers/meta_conversation_delete_webhook.rb').read_text()
           job = Path('chatwoot-extension/app/jobs/meta_conversation_delete_webhook_job.rb').read_text()
           dockerfile = Path('chatwoot-extension/Dockerfile').read_text()
-          assert 'def conversation_deleted(event)' in ruby
-          assert 'MetaConversationDeleteWebhookJob.perform_later(inbox.id, payload)' in ruby
+          assert 'module MetaConversationDeleteObjectJobHook' in ruby
+          assert 'def perform(object, user = nil, ip = nil)' in ruby
+          assert 'object.is_a?(Conversation)' in ruby
+          assert "event: 'conversation_deleted'" in ruby
+          assert 'result = super' in ruby
+          assert 'MetaConversationDeleteWebhookJob.perform_later(inbox_id, payload)' in ruby
+          assert 'DeleteObjectJob.prepend(MetaConversationDeleteObjectJobHook)' in ruby
           assert 'channel.hmac_token' not in ruby
           assert 'secret =' not in ruby
-          assert "event: __method__.to_s" in ruby
           assert 'def perform(inbox_id, payload)' in job
           assert 'Inbox.find_by(id: inbox_id)' in job
           assert 'channel.hmac_token' in job
@@ -141,16 +151,4 @@ jobs:
 
       - name: Verify diagnostic module imports in production environment
         run: |
-          docker run --rm \
-            -e DATA_DIR=/tmp/integration-debug-test \
-            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
-            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
-            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
-            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
-            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-debug-tests \
-            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
-            -e INTEGRATION_COOKIE_SECURE=false \
-            -e START_MATRIX_SYNC=false \
-            -e ALLOW_INSECURE_CHATWOOT=true \
-            -e INTEGRATION_META_DEBUG=false \
-            meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; import conversation_lifecycle_hardening_v11; import conversation_lifecycle_callback_v10; import chatwoot_target_guard_v11; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install); assert callable(conversation_lifecycle_hardening_v11.install); assert callable(conversation_lifecycle_callback_v10.install); assert callable(chatwoot_target_guard_v11.install)"
+          docker run --rm             -e DATA_DIR=/tmp/integration-debug-test             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com'             -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value             -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value             -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value             -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-debug-tests             -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value             -e INTEGRATION_COOKIE_SECURE=false             -e START_MATRIX_SYNC=false             -e ALLOW_INSECURE_CHATWOOT=true             -e INTEGRATION_META_DEBUG=false             meta-chatwoot-integration python -c "import meta_debug_observability; import conversation_lifecycle_v10; import conversation_lifecycle_hardening_v11; import conversation_lifecycle_callback_v10; import chatwoot_target_guard_v11; assert callable(meta_debug_observability.collect_once); assert callable(conversation_lifecycle_v10.install); assert callable(conversation_lifecycle_hardening_v11.install); assert callable(conversation_lifecycle_callback_v10.install); assert callable(chatwoot_target_guard_v11.install)"
