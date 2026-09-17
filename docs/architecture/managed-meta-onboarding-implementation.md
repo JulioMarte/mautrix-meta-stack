@@ -1,133 +1,170 @@
 # Managed Meta onboarding implementation status
 
-Status: implemented in `dev`, real-provider acceptance pending
-Date: 2026-09-15
+Status: restored on `fix/restore-managed-meta-onboarding`; automated acceptance in progress; real-provider acceptance pending
+Date: 2026-09-17
 Contract: `managed-meta-onboarding.md`
+
+## Current product path
+
+The supported operator path is again the managed flow defined by the architecture contract:
+
+```text
+/admin
+-> Facebook Messenger
+-> /admin/meta
+-> choose/start a BridgeV2 login flow
+-> complete normal user-input steps in the panel
+-> if the pinned bridge requests privileged cookies, open the trusted local helper
+-> helper authenticates against Facebook in an isolated session
+-> one-time handoff sends only the requested cookies to integration
+-> integration submits them server-side to private mautrix provisioning
+-> Connected
+```
+
+The short-lived `/admin/meta-cookie` flow that instructed the operator to open DevTools and paste `Copy as cURL` is no longer a supported product surface. Existing bookmarks to that path are redirected to `/admin/meta`; production `runtime_entrypoint.py` no longer imports/registers the manual cookie page.
+
+This restores the non-negotiable product rule: a normal operator must not need Element, Matrix terminology, DevTools, cURL, raw cookies or the mautrix internal provisioning port.
 
 ## What is implemented
 
-The current `dev` branch now implements the architecture described by the managed onboarding contract without exposing Element or the mautrix provisioning port to the customer.
-
 ### Private provisioning adapter
 
-`integration/meta_provisioning.py` provides a server-side BridgeV2 provisioning client for the pinned mautrix-meta runtime.
+`integration/meta_provisioning.py` provides the server-side BridgeV2 provisioning client for the pinned mautrix-meta runtime.
 
 It:
 
-- reads `provisioning.shared_secret` from the existing read-only `/mautrix/config.yaml` mount (with an explicit env override only for tests/special deployments);
-- sends the secret only as a server-side Bearer credential;
-- supplies `MATRIX_ADMIN_MXID` as the provisioning `user_id`;
-- disables ambient process proxy inheritance for these private calls;
-- refuses redirects;
-- applies bounded request timeouts;
+- loads the provisioning secret only on the server-side trust boundary;
+- sends it only as a private Bearer credential;
+- supplies the configured Matrix admin identity as provisioning `user_id`;
+- disables ambient process proxy inheritance for private provisioning calls;
+- refuses redirects and applies bounded timeouts;
 - supports `whoami`, login-flow discovery, login start, `user_input`, trusted `cookies`, `display_and_wait`, cancel and logout;
-- normalizes bridge state into product-facing connected/connecting/action-required/disconnected states;
-- sanitizes login-step metadata before it is persisted/rendered.
+- normalizes connection state for the product UI;
+- sanitizes step metadata before persistence/rendering.
 
 Raw passwords, cookie values, WebAuthn assertions and provisioning credentials are not stored in the generic integration settings database.
 
-### NiceGUI product surface
+### NiceGUI managed onboarding
 
-`integration/nicegui_app.py` adds `/admin/meta` while retaining the previously tested admin implementation in `integration/nicegui_legacy.py`.
+`integration/nicegui_app.py` owns `/admin/meta` and remains the supported customer-facing Meta onboarding surface.
 
-The new surface:
+The page:
 
 - is protected by the existing admin authentication;
 - discovers login flows dynamically from the pinned bridge;
-- starts/cancels logins;
-- renders product-facing connection state;
-- supports normal `user_input` and `display_and_wait` steps;
-- handles logout/disconnect;
-- preserves only sanitized transient step metadata;
-- exposes a visible `Conectar Facebook` entry from the existing `/admin` surface;
-- never asks the operator to open Element or copy cookies from DevTools.
+- prefers the Messenger mobile flows when the pinned runtime exposes them;
+- starts/cancels login processes;
+- supports ordinary `user_input` and `display_and_wait` steps;
+- shows connected/connecting/action-required/disconnected product states;
+- handles disconnect/logout;
+- persists only sanitized transient step metadata;
+- invokes the helper only when the actual BridgeV2 state machine returns a privileged `cookies` step.
 
-### Trusted-helper handoff
+`integration/meta_admin_patch.py` now routes the native Facebook Messenger navigation entry to `/admin/meta`.
 
-The current Facebook/Messenger flows in mautrix-meta v26.08.1 start with a BridgeV2 `cookies` step. Because browser JavaScript cannot read Facebook's HttpOnly cross-origin cookies, the stack now has an explicit local-helper protocol instead of an iframe/popup workaround.
+### Trusted helper handoff
 
-`integration/meta_helper_handoff.py` and `integration/meta_helper_routes.py` implement an ephemeral handoff:
+`integration/meta_helper_handoff.py` and `integration/meta_helper_routes.py` implement an ephemeral trusted handoff for BridgeV2 cookie steps:
 
-- pairing ID + cryptographically random bearer token;
+- pairing ID plus cryptographically random bearer token;
 - SHA-256 token digest only in process memory;
 - five-minute expiry;
-- single-use semantics;
-- no SQLite persistence;
-- no mautrix provisioning secret in the helper;
-- safe GET descriptor for the required cookie step;
-- bounded POST payload;
-- allowlist of only the cookie field IDs requested by mautrix;
-- required-cookie validation before provisioning is called;
-- replay rejection even after a partial/failed submission;
-- immediate clearing of local raw-cookie dictionaries after submission.
+- single-use/replay-resistant semantics;
+- no SQLite persistence of helper credentials;
+- no mautrix provisioning secret in the desktop helper;
+- safe GET descriptor containing only sanitized step metadata;
+- bounded POST body and per-cookie size limits;
+- allowlist of only cookie field IDs explicitly requested by mautrix;
+- required-field validation before provisioning is called;
+- raw cookie dictionaries cleared immediately after synchronous provisioning submission.
 
-### Electron helper source
+### Operational diagnostics
 
-`meta-auth-helper/` contains the desktop helper implementation.
+`integration/meta_onboarding_diagnostics.py` adds structured one-line JSON diagnostics under the logger name `meta_onboarding`.
+
+The helper HTTP boundary emits correlation-friendly events such as:
+
+- `helper_pairing_created`;
+- `helper_descriptor_served` / `helper_descriptor_rejected`;
+- `helper_submission_forwarding`;
+- `helper_submission_rejected` with a safe reason;
+- `helper_submission_failed` with normalized failure class/status;
+- `helper_submission_complete`.
+
+Diagnostics carry a bounded `trace_id` and operational identifiers but never intentionally include raw cookie values, Authorization headers, passwords, session tokens or provisioning secrets. The E2E journey asserts that known test secret values do not appear in captured onboarding logs.
+
+The live-stack workflow prints these structured integration diagnostics and dumps full relevant container logs if a runtime gate fails.
+
+### Electron helper
+
+`meta-auth-helper/` contains the trusted local desktop client.
 
 It:
 
-- registers the `mautrix-meta-helper://` custom protocol;
-- accepts only HTTPS integration origins (HTTP is allowed only for localhost development);
-- fetches the current safe handoff descriptor with the one-time bearer;
-- opens the exact Facebook/Messenger URL returned by mautrix;
-- uses a non-persistent Electron session partition;
-- disables Node integration and DevTools in the Meta renderer;
-- denies browser permission requests;
-- blocks navigation outside Facebook/Messenger domains;
-- waits for both the mautrix completion URL pattern and the complete required cookie set;
-- reads only the requested cookie names through Electron's privileged cookie API;
-- posts those values once to the integration backend;
-- closes the Meta window after success/failure and tells the user to return to `/admin`.
+- registers `mautrix-meta-helper://`;
+- accepts only HTTPS integration origins, except localhost development;
+- retrieves the safe one-time descriptor from integration;
+- opens only the Meta URL returned by the bridge;
+- uses an in-memory, non-persistent Electron partition;
+- disables Node integration and renderer DevTools;
+- denies browser permission requests and new windows;
+- blocks navigation outside the allowed Meta origins;
+- waits for the bridge-provided completion URL condition and the complete requested cookie set;
+- reads only requested cookies through Electron's privileged cookie API;
+- posts them once to the integration backend and closes the authentication window.
 
-Electron is explicitly pinned in `package.json`; packaging is configured for Windows NSIS, macOS DMG and Linux AppImage.
+Electron and electron-builder are pinned. Packaging targets are configured for Windows NSIS, macOS DMG and Linux AppImage.
 
-## Automated evidence
+## Automated acceptance
 
-`.github/workflows/meta-onboarding.yml` is a dedicated acceptance lane for this feature. It builds the integration image and runs:
+`.github/workflows/meta-onboarding.yml` now treats the managed path as the contract rather than merely proving that some Meta page exists. It asserts that native navigation points to `/admin/meta`, fails if `/admin/meta-cookie` becomes the supported navigation target again, and runs:
 
 - provisioning adapter tests;
-- pairing expiry/replay tests;
-- helper HTTP-boundary tests;
-- full NiceGUI onboarding import;
-- the pre-existing NiceGUI regression suite;
-- JavaScript syntax validation for the Electron helper.
+- real HTTP provisioning contract tests;
+- helper expiry/replay/boundary tests;
+- BridgeV2 input compatibility tests;
+- native admin managed-route tests;
+- `test_meta_managed_onboarding_e2e.py`;
+- existing NiceGUI regression tests;
+- Electron helper syntax/security unit tests;
+- production entrypoint import assertions that the manual cookie page is not registered.
 
-The repository-wide `Validate stack` workflow still runs independently and remains the regression gate for the Compose topology and existing transport behavior.
+The E2E journey covers the supported server/helper boundary from a BridgeV2 cookie step through pairing, descriptor retrieval, allowlisted cookie submission, completion persistence, structured diagnostics and replay rejection.
 
-## What is not yet proven
+`.github/workflows/meta-onboarding-live.yml` now runs on normal `feature/**`, `fix/**` and `dev` development activity. It starts the exact Compose topology with `dock.mau.dev/mautrix/meta:v26.08.1`, verifies private secret isolation, exercises the real BridgeV2 provisioning state machine, confirms the production runtime exposes the managed route, and verifies port 29319 remains private.
 
-The code path is implemented, but the following cannot be truthfully marked complete from repository CI alone:
+## What automated CI still cannot prove
 
-1. **Real Facebook login through the packaged helper.** CI has no disposable Meta account and cannot exercise Facebook checkpoints/2FA.
-2. **Packaged desktop artifact behavior.** Source and packaging configuration exist, but production installers still need platform build jobs plus signing/notarization credentials before customer distribution.
-3. **End-to-end deployed handoff.** The custom URL protocol, public integration HTTPS domain, local helper, private provisioning API and real Meta session must be exercised together on the deployed `dev` revision.
-4. **Real Messenger/Marketplace round trip after helper login.** This requires the existing staging checklist with a live account and Chatwoot.
-5. **Session persistence across a real Coolify redeploy after helper-created login.** This must be observed with the actual named mautrix volume.
+The following remain real-environment acceptance gaps rather than server-side implementation gaps:
 
-These are staging/release-evidence gaps, not missing server-side onboarding logic.
+1. **Real Facebook authentication in the packaged desktop helper.** Repository CI has no disposable Meta account and cannot truthfully exercise real provider checkpoints, passkeys, 2FA, CAPTCHA or risk challenges.
+2. **Signed/notarized production installers.** Packaging targets exist, but customer distribution still requires platform build/signing/notarization credentials and release handling.
+3. **External custom-protocol handoff on a deployed HTTPS domain.** The OS protocol registration, browser prompt, local helper, public integration origin and actual provider session must be exercised together.
+4. **Real Messenger/Marketplace round trip after helper-created login.** This requires a live Meta account plus Chatwoot staging.
+5. **Session persistence through a real Coolify restart/redeploy.** This must be observed against the actual named mautrix data volume after a real helper-created login.
 
-## Required next acceptance pass
+## Required staging acceptance
 
-On a deployed `dev` revision:
+On the exact `dev` candidate intended for release evaluation:
 
 ```text
 /admin/meta
 -> Connect Facebook
--> Open helper
--> complete Facebook login / checkpoint / 2FA
--> helper sends one-time cookie handoff
+-> if requested, Open helper
+-> complete real Facebook login / checkpoint / 2FA
+-> helper sends one-time handoff
 -> mautrix reports complete
--> /admin/meta shows connected account
--> inbound Messenger/Marketplace conversation reaches Chatwoot
+-> /admin/meta shows the actual connected account
+-> inbound Messenger/Marketplace conversation reaches Chatwoot without Element
 -> Chatwoot reply reaches Meta
--> restart/redeploy
--> session reconnects without repeating login
+-> restart/redeploy the stack
+-> session reconnects without repeating login in the normal case
+-> reconnect from /admin/meta if required
 -> disconnect from /admin/meta
 ```
 
-During that pass inspect integration, mautrix and helper logs for accidental cookie/token exposure. None is expected by design.
+During this pass, inspect the structured `meta_onboarding` events plus integration, mautrix-meta and Chatwoot logs for unexpected credential exposure or routing failures.
 
 ## Promotion rule
 
-Do not promote this feature to `main` merely because CI is green. The managed onboarding contract explicitly requires real-provider acceptance. Promotion remains a separate human decision after the exact `dev` candidate passes the staging flow above.
+Do not promote this feature to `main` merely because automated CI is green. Real-provider staging remains mandatory, and promotion from `dev` to `main` remains a separate human-controlled action under `development-branch-workflow.md`.
