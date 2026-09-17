@@ -73,6 +73,8 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
         legacy.set_setting("api_inbox_delivery_verified_at", "old")
         legacy.set_setting("webhook_registration_verified_at", "old")
         legacy.set_setting("webhook_delivery_verified_at", "old")
+        legacy.set_setting("chatwoot_target_reconfiguring", "0")
+        guard._VERIFIED_API_INBOX_TARGET.set(None)
         self.matrix_headers = patch.object(
             legacy,
             "matrix_headers",
@@ -81,6 +83,7 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
         self.matrix_headers.start()
 
     def tearDown(self):
+        guard._VERIFIED_API_INBOX_TARGET.set(None)
         self.matrix_headers.stop()
 
     def seed_old_target_state(self, conversation_id=77, room_id="!old:matrix.example.com"):
@@ -112,6 +115,27 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
         # Matrix portal provenance is source-side identity and remains valid.
         self.assertTrue(lifecycle.portal_was_verified(room_id))
 
+    def test_partial_target_save_failure_still_invalidates_old_target_state(self):
+        room_id = self.seed_old_target_state()
+
+        def partial_failure(*_args, **_kwargs):
+            legacy.set_setting("chatwoot_base_url", "http://partially-new.example.com")
+            raise RuntimeError("simulated save crash")
+
+        with patch.object(guard, "_base_save_configuration", side_effect=partial_failure):
+            with self.assertRaisesRegex(RuntimeError, "simulated save crash"):
+                guard.save_configuration(
+                    "http://partially-new.example.com", "1", "2", "new-token",
+                    False, "", "",
+                )
+
+        self.assertEqual(legacy.get_setting("chatwoot_target_reconfiguring"), "0")
+        self.assertIsNone(runtime._linked_conversation_id(room_id))
+        self.assertFalse(legacy.event_seen("$old-event"))
+        self.assertIsNone(lifecycle._operation(77))
+        self.assertEqual(legacy.get_setting("chatwoot_api_inbox_signing_secret"), "")
+        self.assertEqual(legacy.get_setting("chatwoot_webhook_signing_secret"), "")
+
     def test_token_rotation_same_target_does_not_destroy_mappings_or_tombstones(self):
         room_id = self.seed_old_target_state()
 
@@ -134,6 +158,36 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "signing secret is not configured"):
             enhancements.verify_inbox_signature(b"{}", "sha256=stale", "2000000000", now=2000000000)
+
+    def test_verified_callback_is_rejected_if_target_changes_before_handler(self):
+        delegate = Mock(return_value={"ok": True})
+        with patch.object(guard, "_base_api_inbox_signature", return_value=True), \
+             patch.object(guard, "_base_callback_handler", delegate):
+            self.assertTrue(
+                guard.verify_api_inbox_signature(b"{}", "sha256=test", "2000000000", now=2000000000)
+            )
+            # Keep account/inbox IDs identical to prove the base URL identity is
+            # part of the authentication boundary, not just callback payload scope.
+            legacy.set_setting("chatwoot_base_url", "http://new-chatwoot.example.com")
+            with self.assertRaisesRegex(RuntimeError, "target changed after callback signature verification"):
+                guard.callback_handler(
+                    {"event": "conversation_deleted", "conversation_id": 77,
+                     "account": {"id": 1}, "inbox": {"id": 2}},
+                    signature_verified=True,
+                )
+        delegate.assert_not_called()
+        self.assertIsNone(guard._VERIFIED_API_INBOX_TARGET.get())
+
+    def test_verified_callback_without_bound_target_fails_closed(self):
+        delegate = Mock(return_value={"ok": True})
+        with patch.object(guard, "_base_callback_handler", delegate):
+            with self.assertRaisesRegex(RuntimeError, "no bound verification target"):
+                guard.callback_handler(
+                    {"event": "conversation_deleted", "conversation_id": 77,
+                     "account": {"id": 1}, "inbox": {"id": 2}},
+                    signature_verified=True,
+                )
+        delegate.assert_not_called()
 
     def test_explicit_wrong_account_is_rejected_even_when_inbox_matches(self):
         payload = {
