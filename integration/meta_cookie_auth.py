@@ -156,6 +156,24 @@ def _requested_cookie_names(step: dict[str, Any]) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _cancel_failed_login(client: Any, login_id: str) -> None:
+    """Best-effort cleanup for a BridgeV2 login process we cannot continue.
+
+    Cleanup must never mask the original parsing/provisioning failure. Older or
+    test clients may not expose ``cancel``; production ``MautrixProvisioningClient``
+    does.
+    """
+    if not login_id:
+        return
+    cancel = getattr(client, "cancel", None)
+    if not callable(cancel):
+        return
+    try:
+        cancel(login_id)
+    except Exception:
+        pass
+
+
 def login_with_browser_cookies(client: Any, raw: str) -> dict[str, Any]:
     """Run the BridgeV2 Facebook cookie flow without persisting browser secrets."""
     # Parse syntax first so malformed input doesn't create a bridge login process.
@@ -198,6 +216,9 @@ def login_with_browser_cookies(client: Any, raw: str) -> dict[str, Any]:
             cookies,
             txn_id=str(step.get("txn_id") or ""),
         )
+    except Exception:
+        _cancel_failed_login(client, login_id)
+        raise
     finally:
         # Best-effort lifetime reduction. Python strings cannot be reliably
         # zeroized, but we can at least drop our references immediately.
