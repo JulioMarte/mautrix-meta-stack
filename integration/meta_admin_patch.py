@@ -1,8 +1,7 @@
 """Native admin-v2 integration for managed Meta onboarding.
 
 The production admin redirects /admin to /admin/basic, so onboarding must be part
-of the actual NiceGUI navigation chrome instead of relying on injected JavaScript
-that only runs on the legacy /admin path.
+of the actual NiceGUI navigation chrome instead of relying on injected JavaScript.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ import admin_v2
 
 NAV_ITEMS = [
     ("basic", "Basic setup", "tune", "/admin/basic"),
-    ("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"),
+    ("meta", "Facebook Messenger", "forum", "/admin/meta"),
     ("advanced", "Advanced", "settings", "/admin/advanced"),
     ("status", "Status & tests", "monitor_heart", "/admin/status"),
 ]
