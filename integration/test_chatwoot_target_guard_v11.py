@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 
@@ -42,6 +43,10 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
         guard = importlib.import_module("chatwoot_target_guard_v11")
         nicegui_legacy = importlib.import_module("nicegui_legacy")
         legacy = runtime.legacy
+        # This suite may run in the same interpreter after another integration-style
+        # module. final_app intentionally caches app.DB_PATH at import time, so the
+        # prior suite may have removed that temporary parent directory already.
+        Path(legacy.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         legacy.init_db()
         lifecycle.ensure_schema()
         guard.install()
@@ -68,6 +73,15 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
         legacy.set_setting("api_inbox_delivery_verified_at", "old")
         legacy.set_setting("webhook_registration_verified_at", "old")
         legacy.set_setting("webhook_delivery_verified_at", "old")
+        self.matrix_headers = patch.object(
+            legacy,
+            "matrix_headers",
+            return_value={"Authorization": "Bearer target-guard-test-token"},
+        )
+        self.matrix_headers.start()
+
+    def tearDown(self):
+        self.matrix_headers.stop()
 
     def seed_old_target_state(self, conversation_id=77, room_id="!old:matrix.example.com"):
         with legacy.db() as conn:
