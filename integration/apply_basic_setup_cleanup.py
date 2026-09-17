@@ -6,49 +6,6 @@ from pathlib import Path
 PATH = Path(__file__).with_name("admin_v2.py")
 
 
-LEGACY_HELPERS = '''def _extract_hooks(data) -> list[dict]:
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        if "url" in data or "subscriptions" in data:
-            return [data]
-        for key in ("payload", "webhooks", "data"):
-            if key in data:
-                result = _extract_hooks(data[key])
-                if result:
-                    return result
-    return []
-
-
-def legacy_account_webhooks(expected_old_url: str) -> list[dict]:
-    if not legacy.get_setting("chatwoot_account_id"):
-        return []
-    account_id = int(legacy.get_setting("chatwoot_account_id"))
-    try:
-        hooks = _extract_hooks(_chatwoot_request("GET", f"/api/v1/accounts/{account_id}/webhooks"))
-    except Exception:
-        return []
-    expected = expected_old_url.rstrip("/")
-    return [hook for hook in hooks if str(hook.get("url") or "").rstrip("/") == expected]
-
-
-def remove_legacy_account_webhooks(expected_old_url: str) -> int:
-    account_id = int(legacy.get_setting("chatwoot_account_id"))
-    removed = 0
-    for hook in legacy_account_webhooks(expected_old_url):
-        hook_id = hook.get("id")
-        if hook_id is None:
-            continue
-        _chatwoot_request("DELETE", f"/api/v1/accounts/{account_id}/webhooks/{int(hook_id)}")
-        removed += 1
-    if removed:
-        legacy.set_setting("webhook_registration_verified_at", "")
-        legacy.set_setting("webhook_delivery_verified_at", "")
-    return removed
-
-
-'''
-
 OLD_CALLBACK_UI = '''            ui.label("This is now the canonical outbound path: Chatwoot agent reply → this integration → Matrix → Meta. It replaces the old account-level webhook setup for normal operation.").classes("text-slate-600")
             ui.input("Required callback URL", value=callback_url).props("outlined readonly").classes("w-full")
             callback_state = ui.label(
@@ -127,7 +84,6 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 
 def main() -> None:
     source = PATH.read_text(encoding="utf-8")
-    source = replace_once(source, LEGACY_HELPERS, "", "legacy webhook helper")
     source = replace_once(
         source,
         '    old_webhook_url = _origin(request) + "/webhooks/chatwoot"\n',
