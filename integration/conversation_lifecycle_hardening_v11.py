@@ -19,6 +19,7 @@ import final_app as runtime
 
 legacy = runtime.legacy
 _base_runtime_reset = None
+_base_runtime_save_view = None
 _base_admin_save = None
 _base_process_chatwoot_delete = None
 _base_process_matrix_leave = None
@@ -80,7 +81,18 @@ def _runtime_reset_with_deletion_state(old_target, new_target):
         return result
 
 
+def _runtime_save_view_serialized(*args, **kwargs):
+    # final_app's legacy Flask save handler mutates settings before it calls the
+    # target-reset helper. Lock the whole request handler, not only the reset,
+    # otherwise an in-flight delete could observe half-switched target settings.
+    with lifecycle._RECONCILE_LOCK:
+        return _base_runtime_save_view(*args, **kwargs)
+
+
 def _admin_save_with_deletion_state(*args, **kwargs):
+    # NiceGUI save_configuration performs the actual target mutation. Hold the
+    # same lock across mutation + cleanup so no destructive operation can execute
+    # against a partially changed destination.
     with lifecycle._RECONCILE_LOCK:
         old_target = _target()
         result = _base_admin_save(*args, **kwargs)
@@ -106,7 +118,7 @@ def _serialized_matrix_leave(room_id: str, room: dict) -> dict:
 
 
 def install() -> None:
-    global _base_runtime_reset, _base_admin_save
+    global _base_runtime_reset, _base_runtime_save_view, _base_admin_save
     global _base_process_chatwoot_delete, _base_process_matrix_leave
 
     if not getattr(lifecycle, "_conversation_lifecycle_serialized_v11", False):
@@ -122,6 +134,14 @@ def install() -> None:
         _base_runtime_reset = runtime._reset_chatwoot_target_state
         runtime._reset_chatwoot_target_state = _runtime_reset_with_deletion_state
         runtime._conversation_lifecycle_target_reset_v11 = True
+
+    application = getattr(runtime, "application", None)
+    if application is not None and "save_settings" in application.view_functions and not getattr(
+        runtime, "_conversation_lifecycle_save_view_v11", False
+    ):
+        _base_runtime_save_view = application.view_functions["save_settings"]
+        application.view_functions["save_settings"] = _runtime_save_view_serialized
+        runtime._conversation_lifecycle_save_view_v11 = True
 
     admin_ui = sys.modules.get("nicegui_legacy")
     if admin_ui is not None and hasattr(admin_ui, "save_configuration") and not getattr(
