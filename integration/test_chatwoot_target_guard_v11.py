@@ -75,10 +75,7 @@ class ChatwootTargetGuardV11Tests(unittest.TestCase):
                 "INSERT INTO room_links(room_id, contact_id, source_id, conversation_id, created_at) VALUES(?,?,?,?,?)",
                 (room_id, 5, "source-old", conversation_id, int(time.time())),
             )
-            conn.execute(
-                "INSERT INTO processed_events(event_id, direction, processed_at) VALUES(?,?,?)",
-                ("$old-event", "matrix_to_chatwoot", int(time.time())),
-            )
+        legacy.mark_event("$old-event", "matrix_to_chatwoot")
         lifecycle.remember_verified_portal(room_id)
         lifecycle._start_operation(conversation_id, room_id, "meta", "completed")
         return room_id
