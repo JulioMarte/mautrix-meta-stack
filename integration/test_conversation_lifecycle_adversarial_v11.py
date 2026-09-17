@@ -1,6 +1,7 @@
 import importlib
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -260,6 +261,47 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
                 self.assertEqual(result["reason"], "leave_not_from_bridge_bot")
         chatwoot_delete.assert_not_called()
         self.assertIsNotNone(lifecycle._link_by_room(room))
+
+    def test_concurrent_duplicate_chatwoot_callbacks_emit_one_matrix_delete(self):
+        self.seed()
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+        results = []
+        errors = []
+
+        def matrix_put(url, **_kwargs):
+            calls.append(url)
+            entered.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test did not release Matrix request")
+            return FakeResponse(payload={"event_id": "$concurrent-delete"})
+
+        def worker():
+            try:
+                results.append(hardening.process_chatwoot_delete(self.delete_payload()))
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch.object(lifecycle.requests, "put", side_effect=matrix_put):
+            first = threading.Thread(target=worker)
+            second = threading.Thread(target=worker)
+            first.start()
+            self.assertTrue(entered.wait(timeout=5), "first callback never reached Matrix")
+            second.start()
+            release.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        self.assertFalse(first.is_alive() or second.is_alive(), "concurrent callbacks deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(bool(item.get("remote_requested")) for item in results), 1)
+        self.assertEqual(sum(bool(item.get("duplicate")) for item in results), 1)
+        operation = lifecycle._operation(77)
+        self.assertEqual(operation["state"], "remote_requested")
+        self.assertEqual(operation["attempts"], 1)
 
     def test_wrong_account_delete_callback_is_ignored_without_matrix_effect(self):
         self.seed()
