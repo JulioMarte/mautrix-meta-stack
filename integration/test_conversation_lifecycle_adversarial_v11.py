@@ -239,16 +239,13 @@ class ConversationLifecycleAdversarialV11Tests(unittest.TestCase):
     def test_retry_reconciler_busy_lock_produces_no_remote_effect(self):
         room = self.seed()
         lifecycle._start_operation(77, room, "meta", "remote_confirmed")
-        lifecycle._RECONCILE_LOCK.acquire()
-        try:
-            with patch.object(lifecycle.requests, "delete") as chatwoot_delete:
-                # RLock is re-entrant in the same thread, so use a second thread-like
-                # nonblocking acquisition signal by patching acquire for this call.
-                with patch.object(lifecycle._RECONCILE_LOCK, "acquire", return_value=False):
-                    result = lifecycle.reconcile_retryable_meta_deletions(now=0)
-            chatwoot_delete.assert_not_called()
-        finally:
-            lifecycle._RECONCILE_LOCK.release()
+        busy_lock = Mock()
+        busy_lock.acquire.return_value = False
+        with patch.object(lifecycle, "_RECONCILE_LOCK", busy_lock), \
+             patch.object(lifecycle.requests, "delete") as chatwoot_delete:
+            result = lifecycle.reconcile_retryable_meta_deletions(now=0)
+        chatwoot_delete.assert_not_called()
+        busy_lock.release.assert_not_called()
         self.assertTrue(result["busy"])
         self.assertIsNotNone(lifecycle._link_by_room(room))
 
