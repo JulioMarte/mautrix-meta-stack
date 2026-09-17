@@ -3,17 +3,25 @@
 Deletion operations and webhook signing credentials are scoped to one Chatwoot
 base/account/inbox target. Reusing them after an operator switches targets can
 misclassify a new conversation that happens to reuse an old numeric ID or trust a
-callback signed by the old target. This layer clears only target-scoped state.
+callback signed by the old target.
+
+Target changes are serialized with every destructive conversation operation using
+the lifecycle reconciliation RLock. This prevents an in-flight operation from
+reading an old mapping and then issuing a destructive request against a newly
+configured Chatwoot target.
 """
 from __future__ import annotations
 
 import sys
 
+import conversation_lifecycle_v10 as lifecycle
 import final_app as runtime
 
 legacy = runtime.legacy
 _base_runtime_reset = None
 _base_admin_save = None
+_base_process_chatwoot_delete = None
+_base_process_matrix_leave = None
 
 
 def _target() -> tuple[str, str, str]:
@@ -60,33 +68,53 @@ def _target_changed(old_target, new_target) -> bool:
 
 
 def _runtime_reset_with_deletion_state(old_target, new_target):
-    result = _base_runtime_reset(old_target, new_target)
-    if _target_changed(old_target, new_target):
-        cleared = clear_target_scoped_deletion_state()
-        print(
-            "conversation lifecycle: Chatwoot target changed; cleared destructive state "
-            f"operations={cleared['deleted_operations']}",
-            flush=True,
-        )
-    return result
+    with lifecycle._RECONCILE_LOCK:
+        result = _base_runtime_reset(old_target, new_target)
+        if _target_changed(old_target, new_target):
+            cleared = clear_target_scoped_deletion_state()
+            print(
+                "conversation lifecycle: Chatwoot target changed; cleared destructive state "
+                f"operations={cleared['deleted_operations']}",
+                flush=True,
+            )
+        return result
 
 
 def _admin_save_with_deletion_state(*args, **kwargs):
-    old_target = _target()
-    result = _base_admin_save(*args, **kwargs)
-    new_target = _target()
-    if _target_changed(old_target, new_target):
-        cleared = clear_target_scoped_deletion_state()
-        print(
-            "conversation lifecycle: NiceGUI Chatwoot target changed; cleared destructive state "
-            f"operations={cleared['deleted_operations']}",
-            flush=True,
-        )
-    return result
+    with lifecycle._RECONCILE_LOCK:
+        old_target = _target()
+        result = _base_admin_save(*args, **kwargs)
+        new_target = _target()
+        if _target_changed(old_target, new_target):
+            cleared = clear_target_scoped_deletion_state()
+            print(
+                "conversation lifecycle: NiceGUI Chatwoot target changed; cleared destructive state "
+                f"operations={cleared['deleted_operations']}",
+                flush=True,
+            )
+        return result
+
+
+def _serialized_chatwoot_delete(payload: dict) -> dict:
+    with lifecycle._RECONCILE_LOCK:
+        return _base_process_chatwoot_delete(payload)
+
+
+def _serialized_matrix_leave(room_id: str, room: dict) -> dict:
+    with lifecycle._RECONCILE_LOCK:
+        return _base_process_matrix_leave(room_id, room)
 
 
 def install() -> None:
     global _base_runtime_reset, _base_admin_save
+    global _base_process_chatwoot_delete, _base_process_matrix_leave
+
+    if not getattr(lifecycle, "_conversation_lifecycle_serialized_v11", False):
+        _base_process_chatwoot_delete = lifecycle.process_chatwoot_delete
+        _base_process_matrix_leave = lifecycle.process_matrix_leave
+        lifecycle.process_chatwoot_delete = _serialized_chatwoot_delete
+        lifecycle.process_matrix_leave = _serialized_matrix_leave
+        lifecycle._conversation_lifecycle_serialized_v11 = True
 
     if hasattr(runtime, "_reset_chatwoot_target_state") and not getattr(
         runtime, "_conversation_lifecycle_target_reset_v11", False
