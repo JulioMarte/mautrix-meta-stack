@@ -18,6 +18,7 @@ from nicegui import ui
 import admin_v2 as _admin_v2
 import meta_admin_patch as _meta_admin_patch
 from meta_helper_routes import create_pairing, register_helper_routes
+from meta_login_recovery import is_missing_login_process
 from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
@@ -97,6 +98,14 @@ def _load_meta_step() -> tuple[dict[str, Any], bool]:
         started = 0
     expired = bool(started and time.time() - started > META_PROCESS_TTL)
     return step, expired
+
+
+def _recover_missing_login_process(exc: Exception) -> bool:
+    """Drop a persisted step when mautrix has lost its temporary login process."""
+    if not is_missing_login_process(exc):
+        return False
+    _clear_meta_step()
+    return True
 
 
 def meta_runtime_state() -> dict[str, Any]:
@@ -325,6 +334,14 @@ def meta_onboarding_page():
                         except Exception as exc:
                             for key in values:
                                 values[key] = ""
+                            if _recover_missing_login_process(exc):
+                                ui.notify(
+                                    "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
+                                    type="warning",
+                                    close_button=True,
+                                )
+                                ui.navigate.to("/admin/meta")
+                                return
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Continuar", icon="arrow_forward", on_click=submit_input).classes("mt-3")
@@ -347,6 +364,14 @@ def meta_onboarding_page():
                             _store_meta_step(step)
                             ui.navigate.to("/admin/meta")
                         except Exception as exc:
+                            if _recover_missing_login_process(exc):
+                                ui.notify(
+                                    "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
+                                    type="warning",
+                                    close_button=True,
+                                )
+                                ui.navigate.to("/admin/meta")
+                                return
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Ya completé este paso", on_click=continue_wait, icon="check").classes("mt-3")
