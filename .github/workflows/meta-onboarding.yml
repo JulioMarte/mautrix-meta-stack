@@ -10,6 +10,7 @@ on:
       - 'integration/meta_legacy_redirect.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
+      - 'integration/meta_onboarding_diagnostics.py'
       - 'integration/meta_admin_patch.py'
       - 'integration/runtime_entrypoint.py'
       - 'integration/nicegui_app.py'
@@ -22,11 +23,13 @@ on:
       - 'integration/test_meta_provisioning_http.py'
       - 'integration/test_meta_helper_handoff.py'
       - 'integration/test_meta_helper_routes.py'
+      - 'integration/test_meta_managed_onboarding_e2e.py'
       - 'integration/smoke_mautrix_provisioning.py'
       - 'meta-auth-helper/**'
       - 'docs/architecture/managed-meta-onboarding.md'
       - 'docs/architecture/managed-meta-onboarding-implementation.md'
       - '.github/workflows/meta-onboarding.yml'
+      - '.github/workflows/meta-onboarding-live.yml'
       - '.github/workflows/validate.yml'
   push:
     branches:
@@ -41,6 +44,7 @@ on:
       - 'integration/meta_legacy_redirect.py'
       - 'integration/meta_helper_handoff.py'
       - 'integration/meta_helper_routes.py'
+      - 'integration/meta_onboarding_diagnostics.py'
       - 'integration/meta_admin_patch.py'
       - 'integration/runtime_entrypoint.py'
       - 'integration/nicegui_app.py'
@@ -53,11 +57,13 @@ on:
       - 'integration/test_meta_provisioning_http.py'
       - 'integration/test_meta_helper_handoff.py'
       - 'integration/test_meta_helper_routes.py'
+      - 'integration/test_meta_managed_onboarding_e2e.py'
       - 'integration/smoke_mautrix_provisioning.py'
       - 'meta-auth-helper/**'
       - 'docs/architecture/managed-meta-onboarding.md'
       - 'docs/architecture/managed-meta-onboarding-implementation.md'
       - '.github/workflows/meta-onboarding.yml'
+      - '.github/workflows/meta-onboarding-live.yml'
       - '.github/workflows/validate.yml'
 
 jobs:
@@ -73,11 +79,16 @@ jobs:
             echo 'compose.yaml bypasses runtime_entrypoint.py and disables the native Meta admin navigation' >&2
             exit 1
           fi
+          grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta")' integration/meta_admin_patch.py
+          if grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")' integration/meta_admin_patch.py; then
+            echo 'manual cookie onboarding was restored as the supported admin path' >&2
+            exit 1
+          fi
 
       - name: Build integration image
         run: docker build -t meta-onboarding-test ./integration
 
-      - name: Run provisioning, cookie, helper, BridgeV2 input, and native admin navigation tests
+      - name: Run managed onboarding, helper security and end-to-end journey tests
         run: |
           docker run --rm \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
@@ -97,7 +108,8 @@ jobs:
               test_meta_helper_handoff.py \
               test_meta_helper_routes.py \
               test_meta_bridgev2_input_compat.py \
-              test_meta_admin_patch.py
+              test_meta_admin_patch.py \
+              test_meta_managed_onboarding_e2e.py
 
       - name: Import actual production NiceGUI entrypoint
         run: |
@@ -113,7 +125,7 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-onboarding-test python -c "import runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_cookie_page, meta_legacy_redirect; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(meta_cookie_page.meta_cookie_page); assert callable(meta_legacy_redirect.install)"
+            meta-onboarding-test python -c "import inspect, runtime_entrypoint, admin_v2, meta_admin_patch, nicegui_app, meta_legacy_redirect; assert admin_v2._admin_chrome is meta_admin_patch.admin_chrome; assert callable(nicegui_app.meta_runtime_state); assert callable(nicegui_app.meta_onboarding_page); assert callable(meta_legacy_redirect.install); src=inspect.getsource(runtime_entrypoint); assert 'import meta_cookie_page' not in src"
 
       - name: Preserve existing NiceGUI tests
         run: |
