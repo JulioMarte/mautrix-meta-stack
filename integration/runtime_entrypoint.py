@@ -13,6 +13,7 @@ import meta_legacy_redirect
 import history_safety_v9
 import conversation_lifecycle_v10
 import conversation_lifecycle_callback_v10
+import conversation_lifecycle_hardening_v11
 import meta_debug_observability
 
 meta_admin_patch.install()
@@ -20,6 +21,7 @@ meta_legacy_redirect.install()
 history_safety_v9.install()
 conversation_lifecycle_v10.install()
 conversation_lifecycle_callback_v10.install()
+conversation_lifecycle_hardening_v11.install()
 meta_debug_observability.install()
 
 # Register after the chrome patch so the page uses the same native admin shell.
