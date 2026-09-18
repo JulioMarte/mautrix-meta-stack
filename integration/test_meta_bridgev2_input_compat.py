@@ -86,6 +86,52 @@ class BridgeV2InputCompatibilityTests(unittest.TestCase):
         self.assertEqual(attachment["h"], 70)
         self.assertEqual(base64.b64decode(attachment["content"]), png)
 
+    def test_captcha_audio_attachment_is_preserved(self):
+        ogg = b"OggS" + b"audio-bytes"
+        step = {
+            "login_id": "proc",
+            "step_id": "fi.mau.meta.messengerlite.captcha",
+            "type": "user_input",
+            "user_input": {
+                "fields": [{"id": "captcha_code", "type": "captcha_code"}],
+                "attachments": [{
+                    "type": "m.audio",
+                    "filename": "captcha.ogg",
+                    "content": base64.b64encode(ogg).decode(),
+                    "info": {"mimetype": "audio/ogg", "size": len(ogg)},
+                }],
+            },
+        }
+        safe = mp.safe_step(step)
+        attachment = safe["user_input"]["attachments"][0]
+        self.assertEqual(attachment["type"], "m.audio")
+        self.assertEqual(attachment["mimetype"], "audio/ogg")
+        self.assertEqual(base64.b64decode(attachment["content"]), ogg)
+
+    def test_messenger_lite_recaptcha_cookie_contract_is_preserved(self):
+        extract_js = "new Promise(resolve => resolve({recaptcha_token: 'token'}))"
+        step = {
+            "login_id": "proc",
+            "step_id": "fi.mau.meta.messengerlite.recaptcha",
+            "type": "cookies",
+            "instructions": "Complete the Google reCAPTCHA challenge.",
+            "cookies": {
+                "url": "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
+                "fields": [{
+                    "id": "recaptcha_token",
+                    "required": True,
+                    "sources": [{"type": "special", "name": "recaptcha_token"}],
+                }],
+                "extract_js": extract_js,
+            },
+        }
+        safe = mp.safe_step(step)
+        self.assertEqual(safe["cookies"]["extract_js"], extract_js)
+        self.assertEqual(
+            safe["cookies"]["fields"][0]["sources"],
+            [{"type": "special", "name": "recaptcha_token"}],
+        )
+
     def test_non_image_and_invalid_image_attachments_are_dropped(self):
         step = {
             "login_id": "proc",
