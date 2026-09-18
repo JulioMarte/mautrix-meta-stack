@@ -8,6 +8,7 @@ const {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  allowedRecaptchaNavigation,
   completionPattern,
   isMessengerLiteRecaptchaStep,
   sanitizeExtractedValues,
@@ -45,7 +46,6 @@ test("Meta navigation allowlist blocks lookalike and non-HTTPS domains", () => {
     "https://m.facebook.com/",
     "https://messenger.com/",
     "https://www.messenger.com/t/1",
-    "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
   ]) assert.equal(allowedMetaNavigation(url), true, url);
 
   for (const url of [
@@ -56,6 +56,14 @@ test("Meta navigation allowlist blocks lookalike and non-HTTPS domains", () => {
     "javascript:alert(1)",
     "not-a-url",
   ]) assert.equal(allowedMetaNavigation(url), false, url);
+});
+
+test("reCAPTCHA navigation is isolated from normal Meta navigation", () => {
+  const challenge = "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US";
+  assert.equal(allowedMetaNavigation(challenge), false);
+  assert.equal(allowedRecaptchaNavigation(challenge), true);
+  assert.equal(allowedRecaptchaNavigation("https://www.fbsbx.com/not-a-recaptcha"), false);
+  assert.equal(allowedRecaptchaNavigation("https://evil.example/captcha/recaptcha/iframe/"), false);
 });
 
 test("cookie field normalization ignores malformed entries", () => {
