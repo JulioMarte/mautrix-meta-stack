@@ -18,9 +18,11 @@ RUN git clone --filter=blob:none https://github.com/mautrix/meta.git mautrix-met
     && test "$(git -C mautrix-meta rev-parse HEAD)" = "$MAUTRIX_META_UPSTREAM_SHA"
 
 COPY mautrix-meta-runtime/apply_thread_backfill_refresh.py /patch/apply_thread_backfill_refresh.py
+COPY mautrix-meta-runtime/apply_bloks_login_compat.py /patch/apply_bloks_login_compat.py
 RUN python3 /patch/apply_thread_backfill_refresh.py /src/mautrix-meta \
+    && python3 /patch/apply_bloks_login_compat.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
-    && gofmt -w pkg/connector/client.go pkg/connector/threadbackfill.go pkg/messagix/client.go \
+    && gofmt -w pkg/connector/client.go pkg/connector/threadbackfill.go pkg/messagix/client.go pkg/messagix/bloks/interp.go \
     && git diff --check \
     && ./build.sh
 
