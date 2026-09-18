@@ -38,13 +38,11 @@ function allowedMetaNavigation(raw) {
     const url = new URL(raw);
     if (url.protocol !== "https:") return false;
     const host = url.hostname.toLowerCase();
-    return [
-      "facebook.com",
-      "messenger.com",
-      "fbsbx.com",
-      "google.com",
-      "recaptcha.net",
-    ].some((domain) => host === domain || host.endsWith(`.${domain}`));
+    const under = (domain) => host === domain || host.endsWith(`.${domain}`);
+    if (under("facebook.com") || under("messenger.com")) return true;
+    if (under("fbsbx.com")) return url.pathname.startsWith("/captcha/recaptcha/");
+    if (under("google.com") || under("recaptcha.net")) return url.pathname.startsWith("/recaptcha/");
+    return false;
   } catch (_) {
     return false;
   }
