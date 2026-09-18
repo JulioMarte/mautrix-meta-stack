@@ -390,7 +390,8 @@ class NiceGUIAdminTests(unittest.TestCase):
     def test_managed_meta_page_renders_captcha_image_and_audio(self):
         import inspect
         source = inspect.getsource(module.meta_onboarding_page)
-        self.assertIn('f"data:{mimetype};base64,{content}"', source)
+        self.assertIn('image_src = f"data:{mimetype};base64,{content}"', source)
+        self.assertIn('<img src="{image_src}"', source)
         self.assertIn("Imagen de verificación", source)
         self.assertIn("ui.audio(", source)
         self.assertIn("audio alternativo", source)
