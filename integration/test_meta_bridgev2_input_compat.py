@@ -149,6 +149,21 @@ class BridgeV2InputCompatibilityTests(unittest.TestCase):
         safe = mp.safe_step(step)
         self.assertNotIn("attachments", safe["user_input"])
 
+    def test_malformed_audio_info_is_dropped_without_exception(self):
+        step = {
+            "type": "user_input",
+            "user_input": {
+                "fields": [],
+                "attachments": [{
+                    "type": "m.audio",
+                    "content": base64.b64encode(b"not-audio").decode(),
+                    "info": "not-an-object",
+                }],
+            },
+        }
+        safe = mp.safe_step(step)
+        self.assertNotIn("attachments", safe["user_input"])
+
     def test_oversized_login_image_attachment_is_dropped(self):
         raw = b"\x89PNG\r\n\x1a\n" + b"x" * mp.MAX_LOGIN_IMAGE_BYTES
         step = {
