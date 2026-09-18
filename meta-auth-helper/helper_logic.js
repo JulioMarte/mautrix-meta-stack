@@ -1,6 +1,22 @@
 "use strict";
 
 const PROTOCOL = "mautrix-meta-helper";
+const RECAPTCHA_EXTRACT_JS = `new Promise((resolve, reject) => {
+  window.FbLoginRecaptcha = {
+    onRecaptcha: data => {
+      try {
+        resolve({recaptcha_token: JSON.parse(data)["g-recaptcha-response"]});
+      } catch (err) {
+        reject(err);
+      }
+    }
+  }
+})`;
+
+function normalizeScript(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 
 function findProtocolUrl(argv) {
   return argv.find((arg) => typeof arg === "string" && arg.startsWith(`${PROTOCOL}://`)) || "";
@@ -67,7 +83,7 @@ function isMessengerLiteRecaptchaStep(step) {
   if (step?.type !== "cookies" || step?.step_id !== "fi.mau.meta.messengerlite.recaptcha") return false;
   const params = step.cookies || {};
   if (!allowedRecaptchaNavigation(String(params.url || ""))) return false;
-  if (typeof params.extract_js !== "string" || !params.extract_js.trim()) return false;
+  if (normalizeScript(params.extract_js) !== normalizeScript(RECAPTCHA_EXTRACT_JS)) return false;
   const fields = cookieFields(step);
   return fields.some((field) => {
     if (field.id !== "recaptcha_token") return false;
@@ -106,6 +122,7 @@ function completionPattern(raw) {
 
 module.exports = {
   PROTOCOL,
+  RECAPTCHA_EXTRACT_JS,
   findProtocolUrl,
   validatePairingUrl,
   cookieFields,
