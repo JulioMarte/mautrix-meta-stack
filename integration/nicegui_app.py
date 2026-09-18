@@ -145,6 +145,29 @@ def _field_label(field: dict[str, Any]) -> str:
     return str(field.get("name") or field.get("id") or "Dato")
 
 
+def _login_attachment_source(attachment: dict[str, Any]) -> str:
+    if not isinstance(attachment, dict) or attachment.get("type") != "m.image":
+        return ""
+    info = attachment.get("info") if isinstance(attachment.get("info"), dict) else {}
+    mimetype = str(info.get("mimetype") or "").lower()
+    content = attachment.get("content")
+    if mimetype not in {"image/png", "image/jpeg", "image/gif", "image/webp"} or not isinstance(content, str):
+        return ""
+    return f"data:{mimetype};base64,{content}"
+
+
+def _is_secret_login_field(step_id: str, field: dict[str, Any]) -> bool:
+    field_type = str(field.get("type") or "").lower()
+    field_id = str(field.get("id") or "")
+    lowered_id = field_id.lower()
+    if "captcha" in str(step_id or "").lower():
+        return False
+    return (
+        field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
+        or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
+    )
+
+
 def _ordered_flow_options(flow_options: dict[str, str]) -> dict[str, str]:
     """Keep recommended login methods first without preselecting an action."""
     ordered: dict[str, str] = {}
@@ -319,8 +342,23 @@ def meta_onboarding_page():
                     ui.label("El helper es necesario únicamente para los métodos web basados en cookies.").classes("text-xs text-slate-500 mt-2")
 
                 elif step_type == "user_input":
+                    user_input = saved_step.get("user_input") or {}
+                    attachments = user_input.get("attachments") or []
+                    for attachment in attachments:
+                        source = _login_attachment_source(attachment)
+                        if not source:
+                            continue
+                        with ui.column().classes("w-full gap-2 mt-3"):
+                            ui.label("Captcha de Facebook").classes("text-sm font-medium text-slate-700")
+                            ui.image(source).classes(
+                                "w-full max-w-md rounded border border-slate-200 bg-white object-contain"
+                            )
+                            ui.label(
+                                "Escribe en el campo de abajo exactamente los caracteres que aparecen en la imagen."
+                            ).classes("text-sm text-slate-600")
+
                     inputs: dict[str, Any] = {}
-                    for field in (saved_step.get("user_input") or {}).get("fields") or []:
+                    for field in user_input.get("fields") or []:
                         field_id = str(field.get("id") or "")
                         if not field_id:
                             continue
@@ -329,11 +367,9 @@ def meta_onboarding_page():
                             opts = {str(o.get("id")): str(o.get("name") or o.get("id")) for o in options if o.get("id") is not None}
                             inputs[field_id] = ui.select(opts, label=_field_label(field)).props("outlined").classes("w-full")
                         else:
-                            field_type = str(field.get("type") or "").lower()
-                            lowered_id = field_id.lower()
-                            secret = (
-                                field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
-                                or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
+                            secret = _is_secret_login_field(
+                                str(saved_step.get("step_id") or ""),
+                                field,
                             )
                             inputs[field_id] = ui.input(
                                 _field_label(field), password=secret, password_toggle_button=secret
