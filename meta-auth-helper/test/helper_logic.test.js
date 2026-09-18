@@ -1,6 +1,8 @@
 "use strict";
 
 const test = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
 const assert = require("node:assert/strict");
 
 const {
@@ -113,6 +115,23 @@ test("special challenge values are filtered to declared fields", () => {
     { recaptcha_token: "token-123" },
   );
   assert.throws(() => sanitizeExtractedValues(step, {}), /required fields/);
+});
+
+test("Electron auth window keeps hardened remote-content settings", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  for (const expected of [
+    "nodeIntegration: false",
+    "contextIsolation: true",
+    "sandbox: true",
+    "webSecurity: true",
+    "devTools: false",
+    "setPermissionCheckHandler(() => false)",
+    "setPermissionRequestHandler",
+    'setWindowOpenHandler(() => ({ action: "deny" }))',
+    "recaptchaWatcherRunning",
+  ]) {
+    assert.equal(source.includes(expected), true, expected);
+  }
 });
 
 test("completion regex is compiled and invalid patterns fail closed", () => {
