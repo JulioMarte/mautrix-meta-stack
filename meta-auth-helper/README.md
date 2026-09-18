@@ -16,7 +16,15 @@ The normal customer flow is:
 
 ## Why this exists
 
-A normal web page cannot read another origin's HttpOnly Facebook/Messenger cookies. The helper therefore runs an isolated Electron web session and uses Electron's privileged cookie API after the user finishes authenticating on the official Meta site.
+A normal web page cannot read another origin's HttpOnly Facebook/Messenger cookies or extract the result of a cross-origin interactive reCAPTCHA. The helper therefore runs an isolated Electron web session and uses the browser context requested by BridgeV2 after the user finishes authenticating on the official Meta site.
+
+For the current Messenger Lite BridgeV2 login state machine, CAPTCHA handling is split as follows:
+
+- text CAPTCHA: the admin panel renders the image and audio attachments returned by mautrix-meta and sends the operator-entered `captcha_code`;
+- Google reCAPTCHA: the helper opens the bridge-provided Meta/fbsbx webview, the operator solves it interactively, and the helper submits only the resulting `recaptcha_token`;
+- no-op/silent CAPTCHA: mautrix-meta executes it internally and no operator UI is required.
+
+This does not claim support for future CAPTCHA types that mautrix-meta itself does not recognize.
 
 It does **not** contain the mautrix provisioning secret. The integration backend remains the only component allowed to call mautrix provisioning with that secret.
 
