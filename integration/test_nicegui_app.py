@@ -372,6 +372,29 @@ class NiceGUIAdminTests(unittest.TestCase):
         decoded = base64.b64decode(header.split(" ", 1)[1], validate=True).decode("utf-8")
         self.assertEqual(decoded, "mautrix:resolver-secret-long-value")
 
+    def test_captcha_attachment_source_is_data_uri(self):
+        source = module._login_attachment_source({
+            "type": "m.image",
+            "content": "iVBORw0KGgo=",
+            "info": {"mimetype": "image/png"},
+        })
+        self.assertEqual(source, "data:image/png;base64,iVBORw0KGgo=")
+        self.assertEqual(module._login_attachment_source({
+            "type": "m.file",
+            "content": "aGVsbG8=",
+            "info": {"mimetype": "text/plain"},
+        }), "")
+
+    def test_captcha_code_is_visible_but_otp_remains_secret(self):
+        captcha = {"id": "captcha_code", "type": "text"}
+        otp = {"id": "otp_code", "type": "otp"}
+        self.assertFalse(
+            module._is_secret_login_field("fi.mau.meta.messengerlite.captcha", captcha)
+        )
+        self.assertTrue(
+            module._is_secret_login_field("fi.mau.meta.messengerlite.two_factor", otp)
+        )
+
     def test_nicegui_runtime_is_selected(self):
         self.assertTrue(callable(module.run))
         self.assertEqual(module.legacy.SESSION_SECRET, "session-secret-long-enough-for-nicegui-tests")
