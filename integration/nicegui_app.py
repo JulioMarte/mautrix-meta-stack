@@ -300,11 +300,19 @@ def meta_onboarding_page():
                     ui.navigate.to("/admin/meta")
 
                 if step_type == "cookies":
-                    url = str((saved_step.get("cookies") or {}).get("url") or "https://www.facebook.com/")
-                    ui.label(
-                        "Elegiste un método web. La versión actual de mautrix necesita las cookies de una sesión de Facebook y un "
-                        "navegador normal no puede entregarlas de forma segura al panel por las restricciones de origen y cookies HttpOnly."
-                    ).classes("text-slate-700 mt-3")
+                    cookie_params = saved_step.get("cookies") or {}
+                    url = str(cookie_params.get("url") or "https://www.facebook.com/")
+                    is_recaptcha = str(saved_step.get("step_id") or "") == "fi.mau.meta.messengerlite.recaptcha"
+                    if is_recaptcha:
+                        ui.label(
+                            "Facebook exige un reCAPTCHA interactivo. Este desafío debe resolverse en una ventana segura del helper; "
+                            "el panel no puede leer el token del reCAPTCHA desde un iframe por las restricciones del navegador."
+                        ).classes("text-slate-700 mt-3")
+                    else:
+                        ui.label(
+                            "Elegiste un método web. La versión actual de mautrix necesita las cookies de una sesión de Facebook y un "
+                            "navegador normal no puede entregarlas de forma segura al panel por las restricciones de origen y cookies HttpOnly."
+                        ).classes("text-slate-700 mt-3")
                     ui.label(f"Sitio de autenticación: {url}").classes("text-sm text-slate-500")
                     ui.label(
                         "Puedes cancelar este intento y usar Messenger Android/iOS para completar el acceso directamente en el panel, "
@@ -336,16 +344,30 @@ def meta_onboarding_page():
                     if attachments:
                         with ui.column().classes("w-full gap-2 mt-3"):
                             ui.label("Imagen de verificación").classes("text-sm font-medium text-slate-700")
+                            has_image = False
+                            has_audio = False
                             for attachment in attachments:
                                 content = str(attachment.get("content") or "")
                                 mimetype = str(attachment.get("mimetype") or "")
-                                if content and mimetype.startswith("image/"):
+                                if not content:
+                                    continue
+                                if mimetype.startswith("image/"):
+                                    has_image = True
                                     ui.image(
                                         f"data:{mimetype};base64,{content}"
                                     ).classes("max-w-md w-auto border rounded bg-white p-2")
-                            ui.label(
-                                "Escribe en el campo de abajo los caracteres que ves en la imagen."
-                            ).classes("text-sm text-slate-500")
+                                elif mimetype.startswith("audio/"):
+                                    has_audio = True
+                                    ui.audio(
+                                        f"data:{mimetype};base64,{content}"
+                                    ).classes("w-full max-w-md")
+                            if has_image and has_audio:
+                                hint = "Escribe los caracteres de la imagen o usa el audio alternativo."
+                            elif has_audio:
+                                hint = "Escucha el audio y escribe los caracteres que oyes."
+                            else:
+                                hint = "Escribe en el campo de abajo los caracteres que ves en la imagen."
+                            ui.label(hint).classes("text-sm text-slate-500")
 
                     inputs: dict[str, Any] = {}
                     for field in user_input.get("fields") or []:
