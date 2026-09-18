@@ -26,6 +26,8 @@ DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
 MAX_LOGIN_IMAGE_BYTES = 512 * 1024
+MAX_LOGIN_AUDIO_BYTES = 2 * 1024 * 1024
+MAX_LOGIN_EXTRACT_JS_BYTES = 16 * 1024
 
 _IMAGE_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -36,9 +38,10 @@ _IMAGE_MAGIC = (
 )
 
 
-def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Keep only small inline raster images returned by BridgeV2 login steps."""
-    if str(item.get("type") or "") != "m.image":
+def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only bounded image/audio challenge media returned by BridgeV2."""
+    attachment_type = str(item.get("type") or "")
+    if attachment_type not in {"m.image", "m.audio"}:
         return None
     raw = item.get("content")
     if not isinstance(raw, str) or not raw:
@@ -47,23 +50,35 @@ def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
         decoded = base64.b64decode(raw, validate=True)
     except (ValueError, binascii.Error):
         return None
-    if not decoded or len(decoded) > MAX_LOGIN_IMAGE_BYTES:
+    limit = MAX_LOGIN_IMAGE_BYTES if attachment_type == "m.image" else MAX_LOGIN_AUDIO_BYTES
+    if not decoded or len(decoded) > limit:
         return None
 
     mimetype = ""
-    if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WEBP":
-        mimetype = "image/webp"
+    if attachment_type == "m.image":
+        if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WEBP":
+            mimetype = "image/webp"
+        else:
+            for magic, candidate in _IMAGE_MAGIC[:-1]:
+                if decoded.startswith(magic):
+                    mimetype = candidate
+                    break
     else:
-        for magic, candidate in _IMAGE_MAGIC[:-1]:
-            if decoded.startswith(magic):
-                mimetype = candidate
-                break
+        declared = str((item.get("info") or {}).get("mimetype") or "")
+        if declared in {"audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/webm"}:
+            mimetype = declared
+        elif decoded.startswith(b"OggS"):
+            mimetype = "audio/ogg"
+        elif decoded.startswith(b"ID3") or decoded[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+            mimetype = "audio/mpeg"
+        elif decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WAVE":
+            mimetype = "audio/wav"
     if not mimetype:
         return None
 
     info = item.get("info") if isinstance(item.get("info"), dict) else {}
     out: dict[str, Any] = {
-        "type": "m.image",
+        "type": attachment_type,
         "content": raw,
         "mimetype": mimetype,
         "size": len(decoded),
@@ -71,10 +86,11 @@ def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
     filename = item.get("filename")
     if isinstance(filename, str) and filename:
         out["filename"] = filename[:200]
-    for key in ("w", "h"):
-        value = info.get(key)
-        if isinstance(value, int) and 0 < value <= 10000:
-            out[key] = value
+    if attachment_type == "m.image":
+        for key in ("w", "h"):
+            value = info.get(key)
+            if isinstance(value, int) and 0 < value <= 10000:
+                out[key] = value
     return out
 
 
@@ -247,14 +263,37 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
         }
         fields = []
         for item in cookies.get("fields") or []:
-            if isinstance(item, dict):
-                fields.append({
-                    key: item[key]
-                    for key in ("id", "name", "required")
-                    if isinstance(item.get(key), (str, bool))
-                })
+            if not isinstance(item, dict):
+                continue
+            field = {
+                key: item[key]
+                for key in ("id", "required", "pattern")
+                if isinstance(item.get(key), (str, bool))
+            }
+            sources = []
+            for source in item.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                source_type = source.get("type")
+                source_name = source.get("name")
+                if isinstance(source_type, str) and isinstance(source_name, str):
+                    sources.append({
+                        key: source[key]
+                        for key in ("type", "name", "request_url_regex", "cookie_domain")
+                        if isinstance(source.get(key), str)
+                    })
+            if sources:
+                field["sources"] = sources
+            fields.append(field)
         if fields:
             out["cookies"]["fields"] = fields
+
+        extract_js = cookies.get("extract_js")
+        if isinstance(extract_js, str) and 0 < len(extract_js.encode("utf-8")) <= MAX_LOGIN_EXTRACT_JS_BYTES:
+            out["cookies"]["extract_js"] = extract_js
+        hidden = cookies.get("hidden")
+        if isinstance(hidden, bool):
+            out["cookies"]["hidden"] = hidden
 
     if isinstance(step.get("user_input"), dict):
         params = step["user_input"]
@@ -288,7 +327,7 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
         attachments = []
         for item in params.get("attachments") or []:
             if isinstance(item, dict):
-                safe_attachment = _safe_login_image_attachment(item)
+                safe_attachment = _safe_login_attachment(item)
                 if safe_attachment:
                     attachments.append(safe_attachment)
         if attachments:
