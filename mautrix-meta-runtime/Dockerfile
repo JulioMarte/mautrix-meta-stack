@@ -19,10 +19,12 @@ RUN git clone --filter=blob:none https://github.com/mautrix/meta.git mautrix-met
 
 COPY mautrix-meta-runtime/apply_thread_backfill_refresh.py /patch/apply_thread_backfill_refresh.py
 COPY mautrix-meta-runtime/apply_bloks_login_compat.py /patch/apply_bloks_login_compat.py
+COPY mautrix-meta-runtime/apply_recaptcha_compat.py /patch/apply_recaptcha_compat.py
 RUN python3 /patch/apply_thread_backfill_refresh.py /src/mautrix-meta \
     && python3 /patch/apply_bloks_login_compat.py /src/mautrix-meta \
+    && python3 /patch/apply_recaptcha_compat.py /src/mautrix-meta \
     && cd /src/mautrix-meta \
-    && gofmt -w pkg/connector/client.go pkg/connector/threadbackfill.go pkg/messagix/client.go pkg/messagix/bloks/interp.go \
+    && gofmt -w pkg/connector/client.go pkg/connector/threadbackfill.go pkg/messagix/client.go pkg/messagix/bloks/interp.go pkg/messagix/bloks/selenium.go \
     && git diff --check \
     && ./build.sh
 

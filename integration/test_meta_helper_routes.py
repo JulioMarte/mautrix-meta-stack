@@ -87,6 +87,35 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 401)
         self.assertEqual(len(self.fake.calls), 1)
 
+    def test_special_recaptcha_token_is_forwarded_as_requested_field(self):
+        recaptcha_step = {
+            "type": "cookies",
+            "login_id": "process-recaptcha",
+            "step_id": "fi.mau.meta.messengerlite.recaptcha",
+            "txn_id": "txn-r",
+            "instructions": "Complete reCAPTCHA",
+            "cookies": {
+                "url": "https://www.fbsbx.com/captcha/recaptcha/iframe/",
+                "extract_js": "new Promise(resolve => window.done = resolve)",
+                "fields": [{
+                    "id": "recaptcha_token",
+                    "required": True,
+                    "sources": [{"type": "special", "name": "recaptcha_token"}],
+                }],
+            },
+        }
+        item, token = routes.registry.create(recaptcha_step)
+        response = self.client.post(
+            f"/api/meta/helper/{item.handoff_id}",
+            headers=self.headers(token),
+            json={"cookies": {"recaptcha_token": "challenge-token", "unexpected": "drop"}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            self.fake.calls[0],
+            ("process-recaptcha", "fi.mau.meta.messengerlite.recaptcha", {"recaptcha_token": "challenge-token"}, "txn-r"),
+        )
+
     def test_missing_required_cookie_can_be_retried_without_new_pairing(self):
         handoff_id, token = self.pair()
         response = self.client.post(

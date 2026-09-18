@@ -387,12 +387,31 @@ class NiceGUIAdminTests(unittest.TestCase):
             {"step_id": "fi.mau.meta.messengerlite.two_factor"},
         ))
 
-    def test_managed_meta_page_renders_inline_user_input_images(self):
+    def test_managed_meta_page_renders_inline_user_input_media(self):
         import inspect
         source = inspect.getsource(module.meta_onboarding_page)
         self.assertIn('f"data:{mimetype};base64,{content}"', source)
         self.assertIn("Imagen de verificación", source)
-        self.assertIn("Escribe en el campo de abajo", source)
+        self.assertIn("ui.audio", source)
+        self.assertIn("alternativa de audio", source)
+
+    def test_interactive_recaptcha_step_is_detected_from_special_field(self):
+        step = {
+            "type": "cookies",
+            "step_id": "fi.mau.meta.messengerlite.recaptcha",
+            "cookies": {
+                "extract_js": "new Promise(resolve => window.done = resolve)",
+                "fields": [{
+                    "id": "recaptcha_token",
+                    "sources": [{"type": "special", "name": "recaptcha_token"}],
+                }],
+            },
+        }
+        self.assertTrue(module._is_interactive_recaptcha_step(step))
+        self.assertFalse(module._is_interactive_recaptcha_step({
+            "type": "cookies",
+            "cookies": {"fields": [{"id": "c_user"}]},
+        }))
 
     def test_nicegui_runtime_is_selected(self):
         self.assertTrue(callable(module.run))

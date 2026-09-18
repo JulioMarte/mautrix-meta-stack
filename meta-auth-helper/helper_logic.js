@@ -38,10 +38,58 @@ function allowedMetaNavigation(raw) {
     const url = new URL(raw);
     if (url.protocol !== "https:") return false;
     const host = url.hostname.toLowerCase();
-    return host === "facebook.com" || host.endsWith(".facebook.com") || host === "messenger.com" || host.endsWith(".messenger.com");
+    const under = (domain) => host === domain || host.endsWith(`.${domain}`);
+    if (under("facebook.com") || under("messenger.com")) return true;
+    if (under("fbsbx.com")) return url.pathname.startsWith("/captcha/recaptcha/");
+    if (under("google.com") || under("recaptcha.net")) return url.pathname.startsWith("/recaptcha/");
+    return false;
   } catch (_) {
     return false;
   }
+}
+
+function fieldSources(field) {
+  return Array.isArray(field?.sources)
+    ? field.sources.filter((source) => source && typeof source.type === "string" && typeof source.name === "string")
+    : [];
+}
+
+function cookieSourceNames(field) {
+  const names = fieldSources(field)
+    .filter((source) => source.type === "cookie")
+    .map((source) => source.name)
+    .filter(Boolean);
+  return names.length ? names : [field.id];
+}
+
+function isRecaptchaField(field) {
+  return field?.id === "recaptcha_token" && fieldSources(field).some(
+    (source) => source.type === "special" && source.name === "recaptcha_token"
+  );
+}
+
+function interactiveExtractScript(step) {
+  const params = step?.cookies || {};
+  const fields = cookieFields(step);
+  if (!fields.some(isRecaptchaField)) return "";
+  return typeof params.extract_js === "string" ? params.extract_js : "";
+}
+
+function normalizeExtractedValues(step, result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("The interactive challenge did not return a field map");
+  }
+  const fields = cookieFields(step);
+  const allowed = new Set(fields.map((field) => field.id));
+  const values = {};
+  for (const [key, value] of Object.entries(result)) {
+    if (!allowed.has(key) || typeof value !== "string" || !value) continue;
+    values[key] = value;
+  }
+  const missing = fields
+    .filter((field) => field.required !== false && !values[field.id])
+    .map((field) => field.id);
+  return { values, missing };
 }
 
 function completionPattern(raw) {
@@ -58,5 +106,10 @@ module.exports = {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  fieldSources,
+  cookieSourceNames,
+  isRecaptchaField,
+  interactiveExtractScript,
+  normalizeExtractedValues,
   completionPattern,
 };

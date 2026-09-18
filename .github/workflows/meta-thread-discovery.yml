@@ -60,6 +60,7 @@ jobs:
         run: |
           python3 -m unittest mautrix-meta-runtime/test_thread_backfill_refresh.py
           python3 -m unittest mautrix-meta-runtime/test_bloks_login_compat.py
+          python3 -m unittest mautrix-meta-runtime/test_recaptcha_compat.py
 
       - name: Verify deployment build resource bounds
         run: |

@@ -86,6 +86,56 @@ class BridgeV2InputCompatibilityTests(unittest.TestCase):
         self.assertEqual(attachment["h"], 70)
         self.assertEqual(base64.b64decode(attachment["content"]), png)
 
+    def test_captcha_audio_attachment_is_preserved(self):
+        ogg = b"OggS" + b"audio-captcha"
+        step = {
+            "type": "user_input",
+            "step_id": "fi.mau.meta.messengerlite.captcha",
+            "user_input": {
+                "fields": [{"id": "captcha_code", "type": "captcha_code"}],
+                "attachments": [{
+                    "type": "m.audio",
+                    "filename": "captcha.ogg",
+                    "content": base64.b64encode(ogg).decode(),
+                    "info": {"mimetype": "audio/ogg", "size": len(ogg)},
+                }],
+            },
+        }
+        safe = mp.safe_step(step)
+        attachment = safe["user_input"]["attachments"][0]
+        self.assertEqual(attachment["type"], "m.audio")
+        self.assertEqual(attachment["mimetype"], "audio/ogg")
+        self.assertEqual(base64.b64decode(attachment["content"]), ogg)
+
+    def test_interactive_recaptcha_cookie_contract_is_preserved_without_secret_values(self):
+        extract_js = "new Promise(resolve => window.done = resolve)"
+        step = {
+            "type": "cookies",
+            "login_id": "proc",
+            "step_id": "fi.mau.meta.messengerlite.recaptcha",
+            "cookies": {
+                "url": "https://www.fbsbx.com/captcha/recaptcha/iframe/",
+                "extract_js": extract_js,
+                "hidden": False,
+                "fields": [{
+                    "id": "recaptcha_token",
+                    "required": True,
+                    "sources": [{"type": "special", "name": "recaptcha_token"}],
+                }],
+                "initial_cookies": [{"name": "secret", "value": "must-not-persist"}],
+            },
+        }
+        safe = mp.safe_step(step)
+        cookies = safe["cookies"]
+        self.assertEqual(cookies["extract_js"], extract_js)
+        self.assertFalse(cookies["hidden"])
+        self.assertEqual(
+            cookies["fields"][0]["sources"],
+            [{"type": "special", "name": "recaptcha_token"}],
+        )
+        self.assertEqual(cookies["initial_cookie_count"], 1)
+        self.assertNotIn("must-not-persist", repr(safe))
+
     def test_non_image_and_invalid_image_attachments_are_dropped(self):
         step = {
             "login_id": "proc",
