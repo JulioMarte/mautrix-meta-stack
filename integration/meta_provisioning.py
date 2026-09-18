@@ -72,6 +72,34 @@ class ProvisioningError(RuntimeError):
         self.status_code = status_code
 
 
+def operator_error_message(exc: Exception) -> str:
+    """Translate provisioning failures into actionable, credential-safe UI text."""
+    if isinstance(exc, ProvisioningError):
+        if exc.status_code == 500 and exc.errcode == "M_UNKNOWN":
+            return (
+                "El bridge encontró un error interno mientras procesaba este paso de Facebook. "
+                "Esto suele indicar una incompatibilidad del flujo de acceso y no significa por sí "
+                "solo que el usuario o la contraseña sean incorrectos. Revisa los logs de "
+                "mautrix-meta del mismo momento del intento para ver la causa técnica exacta."
+            )
+        if exc.status_code == 401:
+            return (
+                "El panel no pudo autenticarse contra la API privada de provisioning de mautrix. "
+                "Verifica el shared secret y que el runtime desplegado corresponda a esta configuración."
+            )
+        if exc.status_code == 403:
+            return (
+                "mautrix rechazó este paso por permisos o alcance del usuario de provisioning. "
+                "Revisa el usuario Matrix configurado y la política del bridge."
+            )
+        if exc.status_code == 404 and exc.errcode == "M_NOT_FOUND":
+            return (
+                "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado "
+                "o el proceso expiró; inicia una conexión nueva."
+            )
+    return str(exc)
+
+
 @dataclass(frozen=True)
 class ProvisioningConfig:
     base_url: str

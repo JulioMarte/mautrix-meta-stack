@@ -29,16 +29,55 @@ NEW = '''\tcase "bk.action.i64.Const":
 \tcase "bk.action.map.Get":
 '''
 
+ASSERT_TYPE_OLD = '''\t\tactual, err := getBloksType(val)
+\t\tif err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t\tif expected != actual {
+\t\t\treturn nil, fmt.Errorf("bloks type assertion failure (%d != %d)", actual, expected)
+\t\t}
+'''
+
+ASSERT_TYPE_NEW = '''\t\tactual, err := getBloksType(val)
+\t\tif err != nil {
+\t\t\treturn nil, err
+\t\t}
+\t\t// Native Bloks uses 100 as the numeric union type: either int or float.
+\t\t// Newer Facebook 2FA payloads rely on this assertion.
+\t\tif expected == 100 {
+\t\t\tswitch actual {
+\t\t\tcase 3, 4:
+\t\t\t\tactual = expected
+\t\t\t}
+\t\t}
+\t\tif expected != actual {
+\t\t\treturn nil, fmt.Errorf("bloks type assertion failure (%d != %d)", actual, expected)
+\t\t}
+'''
+
 
 def patch_interp(text: str) -> str:
-    count = text.count(OLD)
-    if count != 1:
+    convert_count = text.count(OLD)
+    if convert_count != 1:
         raise RuntimeError(
-            f"pkg/messagix/bloks/interp.go: expected exactly one upstream anchor, found {count}"
+            "pkg/messagix/bloks/interp.go: expected exactly one i64.Convert "
+            f"upstream anchor, found {convert_count}"
         )
     if 'case "bk.action.i64.Convert":' in text:
         raise RuntimeError("pkg/messagix/bloks/interp.go: i64.Convert is already implemented")
-    return text.replace(OLD, NEW, 1)
+
+    assert_count = text.count(ASSERT_TYPE_OLD)
+    if assert_count != 1:
+        raise RuntimeError(
+            "pkg/messagix/bloks/interp.go: expected exactly one AssertType "
+            f"upstream anchor, found {assert_count}"
+        )
+    if "if expected == 100 {" in text:
+        raise RuntimeError(
+            "pkg/messagix/bloks/interp.go: numeric AssertType compatibility is already implemented"
+        )
+
+    return text.replace(OLD, NEW, 1).replace(ASSERT_TYPE_OLD, ASSERT_TYPE_NEW, 1)
 
 
 def main() -> None:

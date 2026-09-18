@@ -160,6 +160,30 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
         self.assertEqual(ctx.exception.errcode, "M_UNKNOWN_TOKEN")
         self.assertNotIn("wrong-secret-long-enough", str(ctx.exception))
 
+    def test_operator_message_explains_internal_bridge_error_without_blame(self):
+        exc = mp.ProvisioningError(
+            "Internal error in login step",
+            errcode="M_UNKNOWN",
+            status_code=500,
+        )
+        message = mp.operator_error_message(exc)
+        self.assertIn("error interno", message)
+        self.assertIn("incompatibilidad", message)
+        self.assertIn("no significa", message)
+        self.assertIn("mautrix-meta", message)
+        self.assertNotIn("contraseña incorrecta", message.lower())
+
+    def test_operator_message_keeps_specific_non_internal_error(self):
+        exc = mp.ProvisioningError(
+            "Facebook rejected this step",
+            errcode="M_FORBIDDEN",
+            status_code=400,
+        )
+        self.assertEqual(
+            mp.operator_error_message(exc),
+            "Facebook rejected this step",
+        )
+
     def test_debug_logging_redacts_payload_secrets_and_temporary_ids(self):
         stream = io.StringIO()
         with redirect_stdout(stream):

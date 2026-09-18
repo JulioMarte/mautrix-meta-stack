@@ -23,6 +23,7 @@ from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
     connection_summary,
+    operator_error_message,
     provisioning_debug,
     safe_step,
 )
@@ -234,7 +235,7 @@ def meta_onboarding_page():
                         status_code=getattr(exc, "status_code", 0),
                         errcode=getattr(exc, "errcode", ""),
                     )
-                    ui.notify(f"No se pudo iniciar la conexión: {exc}", type="negative", close_button=True)
+                    ui.notify(f"No se pudo iniciar la conexión: {operator_error_message(exc)}", type="negative", close_button=True)
 
             async def disconnect_all():
                 try:
@@ -380,7 +381,7 @@ def meta_onboarding_page():
                                 status_code=getattr(exc, "status_code", 0),
                                 errcode=getattr(exc, "errcode", ""),
                             )
-                            ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
+                            ui.notify(f"No se pudo continuar: {operator_error_message(exc)}", type="negative", close_button=True)
 
                     ui.button("Continuar", icon="arrow_forward", on_click=submit_input).classes("mt-3")
 
@@ -427,7 +428,7 @@ def meta_onboarding_page():
                                 status_code=getattr(exc, "status_code", 0),
                                 errcode=getattr(exc, "errcode", ""),
                             )
-                            ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
+                            ui.notify(f"No se pudo continuar: {operator_error_message(exc)}", type="negative", close_button=True)
 
                     ui.button("Ya completé este paso", on_click=continue_wait, icon="check").classes("mt-3")
 
