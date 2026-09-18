@@ -74,6 +74,7 @@ class HandoffRegistry:
             txn_id=str(safe_step.get("txn_id") or ""),
             metadata={
                 "type": "cookies",
+                "step_id": step_id,
                 "instructions": str(safe_step.get("instructions") or ""),
                 "cookies": dict(safe_step.get("cookies") or {}),
             },
