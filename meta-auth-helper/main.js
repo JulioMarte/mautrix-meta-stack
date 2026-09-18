@@ -7,6 +7,7 @@ const {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  allowedRecaptchaNavigation,
   completionPattern,
   isMessengerLiteRecaptchaStep,
   sanitizeExtractedValues,
@@ -86,9 +87,11 @@ async function beginCookieLogin(pairing, descriptor) {
   const step = descriptor.step || {};
   const params = step.cookies || {};
   const authUrl = String(params.url || "");
-  if (!allowedMetaNavigation(authUrl)) throw new Error("The bridge returned an unexpected authentication origin");
-
   const interactiveRecaptcha = isMessengerLiteRecaptchaStep(step);
+  if (!(allowedMetaNavigation(authUrl) || (interactiveRecaptcha && allowedRecaptchaNavigation(authUrl)))) {
+    throw new Error("The bridge returned an unexpected authentication origin");
+  }
+
   const completionRegex = interactiveRecaptcha ? null : completionPattern(params.wait_for_url_pattern);
   const fields = cookieFields(step);
   if (!fields.length) throw new Error("The bridge did not specify the required authentication fields");
@@ -112,11 +115,14 @@ async function beginCookieLogin(pairing, descriptor) {
   const ses = authWindow.webContents.session;
   ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   authWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const allowedTopLevelNavigation = (url) => (
+    allowedMetaNavigation(url) || (interactiveRecaptcha && allowedRecaptchaNavigation(url))
+  );
   authWindow.webContents.on("will-navigate", (event, url) => {
-    if (!allowedMetaNavigation(url)) event.preventDefault();
+    if (!allowedTopLevelNavigation(url)) event.preventDefault();
   });
   authWindow.webContents.on("will-redirect", (event, url) => {
-    if (!allowedMetaNavigation(url)) event.preventDefault();
+    if (!allowedTopLevelNavigation(url)) event.preventDefault();
   });
   if (params.user_agent) authWindow.webContents.setUserAgent(String(params.user_agent));
 
