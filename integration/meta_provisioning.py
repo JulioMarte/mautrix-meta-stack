@@ -26,6 +26,7 @@ DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
 MAX_LOGIN_IMAGE_BYTES = 512 * 1024
+MAX_LOGIN_AUDIO_BYTES = 2 * 1024 * 1024
 
 _IMAGE_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -35,11 +36,13 @@ _IMAGE_MAGIC = (
     (b"RIFF", "image/webp"),
 )
 
+_AUDIO_MAGIC = (
+    (b"OggS", "audio/ogg"),
+    (b"ID3", "audio/mpeg"),
+)
 
-def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
-    """Keep only small inline raster images returned by BridgeV2 login steps."""
-    if str(item.get("type") or "") != "m.image":
-        return None
+
+def _decode_inline_attachment_content(item: dict[str, Any], max_bytes: int) -> tuple[str, bytes] | None:
     raw = item.get("content")
     if not isinstance(raw, str) or not raw:
         return None
@@ -47,8 +50,19 @@ def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
         decoded = base64.b64decode(raw, validate=True)
     except (ValueError, binascii.Error):
         return None
-    if not decoded or len(decoded) > MAX_LOGIN_IMAGE_BYTES:
+    if not decoded or len(decoded) > max_bytes:
         return None
+    return raw, decoded
+
+
+def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only small inline raster images returned by BridgeV2 login steps."""
+    if str(item.get("type") or "") != "m.image":
+        return None
+    decoded_item = _decode_inline_attachment_content(item, MAX_LOGIN_IMAGE_BYTES)
+    if not decoded_item:
+        return None
+    raw, decoded = decoded_item
 
     mimetype = ""
     if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WEBP":
@@ -77,6 +91,50 @@ def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
             out[key] = value
     return out
 
+
+def _safe_login_audio_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only small inline audio CAPTCHA alternatives returned by BridgeV2."""
+    if str(item.get("type") or "") != "m.audio":
+        return None
+    decoded_item = _decode_inline_attachment_content(item, MAX_LOGIN_AUDIO_BYTES)
+    if not decoded_item:
+        return None
+    raw, decoded = decoded_item
+
+    mimetype = ""
+    if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WAVE":
+        mimetype = "audio/wav"
+    elif len(decoded) >= 12 and decoded[4:8] == b"ftyp":
+        mimetype = "audio/mp4"
+    elif decoded.startswith((b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        mimetype = "audio/mpeg"
+    else:
+        for magic, candidate in _AUDIO_MAGIC:
+            if decoded.startswith(magic):
+                mimetype = candidate
+                break
+    if not mimetype:
+        return None
+
+    out: dict[str, Any] = {
+        "type": "m.audio",
+        "content": raw,
+        "mimetype": mimetype,
+        "size": len(decoded),
+    }
+    filename = item.get("filename")
+    if isinstance(filename, str) and filename:
+        out["filename"] = filename[:200]
+    return out
+
+
+def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    attachment_type = str(item.get("type") or "")
+    if attachment_type == "m.image":
+        return _safe_login_image_attachment(item)
+    if attachment_type == "m.audio":
+        return _safe_login_audio_attachment(item)
+    return None
 
 
 def _safe_id(value: str) -> str:
@@ -145,6 +203,13 @@ def operator_error_message(exc: Exception) -> str:
             return (
                 "mautrix rechazó este paso por permisos o alcance del usuario de provisioning. "
                 "Revisa el usuario Matrix configurado y la política del bridge."
+            )
+        if exc.errcode == "FI.MAU.META_GOOGLE_RECAPTCHA":
+            return (
+                "Facebook está exigiendo Google reCAPTCHA. La versión actual de mautrix-meta no puede "
+                "completar ese desafío dentro de este flujo. Intenta iniciar sesión primero en la app o "
+                "sitio oficial de Facebook y vuelve a probar; si continúa, cambia temporalmente el método "
+                "de verificación de la cuenta. El panel no debe fingir que puede resolver este tipo."
             )
         if exc.status_code == 404 and exc.errcode == "M_NOT_FOUND":
             return (
@@ -288,7 +353,7 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
         attachments = []
         for item in params.get("attachments") or []:
             if isinstance(item, dict):
-                safe_attachment = _safe_login_image_attachment(item)
+                safe_attachment = _safe_login_attachment(item)
                 if safe_attachment:
                     attachments.append(safe_attachment)
         if attachments:
