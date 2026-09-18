@@ -1,0 +1,27 @@
+name: Adversarial runtime v12
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  adversarial-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build integration sidecar
+        run: docker build -t meta-chatwoot-integration ./integration
+      - name: Run real-world conversation lifecycle adversarial tests
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-reality-v12-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-reality-v12-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_conversation_lifecycle_reality_v12.py

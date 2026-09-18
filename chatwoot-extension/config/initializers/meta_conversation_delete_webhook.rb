@@ -1,37 +1,36 @@
 # frozen_string_literal: true
 
-# Chatwoot dispatches an internal conversation.deleted event but v4.7.0 does
-# not expose it through API-inbox webhooks. The stock API-inbox delivery path in
-# that release is also unsigned, while our destructive integration callback is
-# intentionally HMAC-only. This initializer therefore forwards only deletion
-# events through a dedicated signed job.
+# Chatwoot v4.7.0 does not define a conversation.deleted dispatcher event.
+# Its API controller enqueues DeleteObjectJob for a Conversation and that job
+# performs object.destroy!. Hook that real deletion path instead of relying on
+# an event that does not exist in this pinned Chatwoot release.
 #
-# The HMAC token is intentionally NOT passed to ActiveJob. The worker resolves
-# the current Channel::Api.hmac_token at execution time so secrets are not
-# serialized into Redis and token rotation between enqueue/delivery is safe.
-module MetaConversationDeleteWebhook
-  def conversation_deleted(event)
-    data = event.data[:conversation_data]&.with_indifferent_access
-    return if data.blank?
-
-    inbox = Inbox.find_by(id: data[:inbox_id], account_id: data[:account_id])
-    return if inbox.blank? || inbox.channel_type != 'Channel::Api'
-
-    channel = inbox.channel
-    return if channel.blank? || channel.webhook_url.blank?
+# The callback is enqueued only AFTER Chatwoot successfully destroys the
+# conversation. Only inbox ID + non-secret scope metadata are serialized. The
+# delivery job resolves the current API inbox webhook_url and hmac_token at
+# execution time, keeping secrets out of Sidekiq/Redis and making token rotation
+# safe between deletion and callback delivery.
+module MetaConversationDeleteObjectJobHook
+  def perform(object, user = nil, ip = nil)
+    unless object.is_a?(Conversation)
+      return super
+    end
 
     payload = {
-      event: __method__.to_s,
-      id: data[:id],
-      conversation_id: data[:id],
-      account: { id: data[:account_id] },
-      inbox: { id: data[:inbox_id] }
+      event: 'conversation_deleted',
+      id: object.id,
+      conversation_id: object.id,
+      account: { id: object.account_id },
+      inbox: { id: object.inbox_id }
     }
+    inbox_id = object.inbox_id
 
-    MetaConversationDeleteWebhookJob.perform_later(inbox.id, payload)
+    result = super
+    MetaConversationDeleteWebhookJob.perform_later(inbox_id, payload)
+    result
   end
 end
 
 Rails.application.config.to_prepare do
-  WebhookListener.prepend(MetaConversationDeleteWebhook) unless WebhookListener < MetaConversationDeleteWebhook
+  DeleteObjectJob.prepend(MetaConversationDeleteObjectJobHook) unless DeleteObjectJob < MetaConversationDeleteObjectJobHook
 end
