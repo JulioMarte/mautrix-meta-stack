@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -30,6 +31,19 @@ def _safe_id(value: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10] if raw else ""
 
 
+def _safe_path(value: str) -> str:
+    """Remove temporary login/step identifiers from provisioning paths."""
+    path = str(value or "")
+    path = re.sub(
+        r"(/v3/login/step/)[^/]+/[^/]+/(user_input|cookies|display_and_wait)$",
+        r"\1{login_id}/{step_id}/\2",
+        path,
+    )
+    path = re.sub(r"(/v3/login/cancel/)[^/]+$", r"\1{login_id}", path)
+    path = re.sub(r"(/v3/logout/)[^/]+$", r"\1{login_id}", path)
+    return path
+
+
 def provisioning_debug(event: str, **fields: Any) -> None:
     """Emit one structured, credential-safe Meta onboarding diagnostic line."""
     safe: dict[str, Any] = {"event": str(event)}
@@ -38,6 +52,8 @@ def provisioning_debug(event: str, **fields: Any) -> None:
             continue
         if key in {"login_id", "txn_id"}:
             safe[key + "_hash"] = _safe_id(str(value))
+        elif key == "path":
+            safe[key] = _safe_path(str(value))
         elif key in {"payload", "values", "cookies", "password", "secret", "authorization"}:
             continue
         elif isinstance(value, (str, int, float, bool)):
