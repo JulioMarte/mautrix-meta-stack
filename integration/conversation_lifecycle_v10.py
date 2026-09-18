@@ -422,6 +422,31 @@ def process_chatwoot_delete(payload: dict) -> dict:
     return {"ok": True, "remote_requested": True, "event_id": event_id}
 
 
+def recover_missing_chatwoot_conversation(room_id: str, conversation_id: int) -> dict:
+    """Recover a Chatwoot deletion whose webhook was missed.
+
+    A 404 observed while syncing operator context is authoritative only for the
+    exact persisted room/conversation mapping. Reuse the normal Chatwoot-origin
+    deletion state machine so we never recreate an intentionally deleted chat and
+    never bypass portal verification or loop suppression.
+    """
+    try:
+        conversation_id = int(conversation_id)
+    except (TypeError, ValueError):
+        return {"ok": True, "ignored": True, "reason": "invalid_conversation_id"}
+
+    link = _link_by_conversation(conversation_id)
+    if not link or str(link["room_id"]) != str(room_id):
+        return {"ok": True, "ignored": True, "reason": "stale_mapping_changed"}
+
+    return process_chatwoot_delete({
+        "event": "conversation_deleted",
+        "conversation_id": conversation_id,
+        "account": {"id": int(legacy.get_setting("chatwoot_account_id"))},
+        "inbox": {"id": int(legacy.get_setting("chatwoot_inbox_id"))},
+    })
+
+
 def handle_chatwoot_event(payload: dict) -> dict:
     if payload.get("event") == "conversation_deleted":
         return process_chatwoot_delete(payload)
@@ -521,6 +546,7 @@ def install() -> None:
     prod.ensure_room_link = verified_ensure_room_link
     legacy.ensure_room_link = verified_ensure_room_link
     enhancements.handle_chatwoot_outgoing = handle_chatwoot_event
+    enhancements.handle_missing_chatwoot_conversation = recover_missing_chatwoot_conversation
     legacy.sync_once = lifecycle_sync_once
 
     threading.Thread(
