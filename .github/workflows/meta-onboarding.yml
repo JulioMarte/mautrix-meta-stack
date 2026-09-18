@@ -150,8 +150,9 @@ jobs:
             -e ALLOW_INSECURE_CHATWOOT=true \
             meta-onboarding-test python -m unittest test_nicegui_app.py
 
-      - name: Run helper security unit tests
+      - name: Install and test declared Electron helper runtime
         run: |
-          node --check meta-auth-helper/main.js
-          node --check meta-auth-helper/helper_logic.js
-          node --test meta-auth-helper/test/*.test.js
+          npm --prefix meta-auth-helper install --no-audit --no-fund
+          test "$(node -p "require('./meta-auth-helper/node_modules/electron/package.json').version")" = "44.4.3"
+          npm --prefix meta-auth-helper run check
+          npm --prefix meta-auth-helper test
