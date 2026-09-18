@@ -23,6 +23,7 @@ from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
     connection_summary,
+    provisioning_debug,
     safe_step,
 )
 
@@ -226,6 +227,13 @@ def meta_onboarding_page():
                     _store_meta_step(step)
                     ui.navigate.to("/admin/meta")
                 except Exception as exc:
+                    provisioning_debug(
+                        "ui_start_failed",
+                        flow_id=selected,
+                        error_type=type(exc).__name__,
+                        status_code=getattr(exc, "status_code", 0),
+                        errcode=getattr(exc, "errcode", ""),
+                    )
                     ui.notify(f"No se pudo iniciar la conexión: {exc}", type="negative", close_button=True)
 
             async def disconnect_all():
@@ -348,6 +356,14 @@ def meta_onboarding_page():
                             for key in values:
                                 values[key] = ""
                             if _recover_missing_login_process(exc):
+                                provisioning_debug(
+                                    "ui_login_process_missing",
+                                    operation="submit_user_input",
+                                    login_id=str(saved_step.get("login_id") or ""),
+                                    step_id=str(saved_step.get("step_id") or ""),
+                                    status_code=getattr(exc, "status_code", 0),
+                                    errcode=getattr(exc, "errcode", ""),
+                                )
                                 ui.notify(
                                     "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
                                     type="warning",
@@ -355,6 +371,15 @@ def meta_onboarding_page():
                                 )
                                 ui.navigate.to("/admin/meta")
                                 return
+                            provisioning_debug(
+                                "ui_submit_failed",
+                                operation="submit_user_input",
+                                login_id=str(saved_step.get("login_id") or ""),
+                                step_id=str(saved_step.get("step_id") or ""),
+                                error_type=type(exc).__name__,
+                                status_code=getattr(exc, "status_code", 0),
+                                errcode=getattr(exc, "errcode", ""),
+                            )
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Continuar", icon="arrow_forward", on_click=submit_input).classes("mt-3")
@@ -378,6 +403,14 @@ def meta_onboarding_page():
                             ui.navigate.to("/admin/meta")
                         except Exception as exc:
                             if _recover_missing_login_process(exc):
+                                provisioning_debug(
+                                    "ui_login_process_missing",
+                                    operation="display_and_wait",
+                                    login_id=str(saved_step.get("login_id") or ""),
+                                    step_id=str(saved_step.get("step_id") or ""),
+                                    status_code=getattr(exc, "status_code", 0),
+                                    errcode=getattr(exc, "errcode", ""),
+                                )
                                 ui.notify(
                                     "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado; inicia una conexión nueva.",
                                     type="warning",
@@ -385,6 +418,15 @@ def meta_onboarding_page():
                                 )
                                 ui.navigate.to("/admin/meta")
                                 return
+                            provisioning_debug(
+                                "ui_submit_failed",
+                                operation="display_and_wait",
+                                login_id=str(saved_step.get("login_id") or ""),
+                                step_id=str(saved_step.get("step_id") or ""),
+                                error_type=type(exc).__name__,
+                                status_code=getattr(exc, "status_code", 0),
+                                errcode=getattr(exc, "errcode", ""),
+                            )
                             ui.notify(f"No se pudo continuar: {exc}", type="negative", close_button=True)
 
                     ui.button("Ya completé este paso", on_click=continue_wait, icon="check").classes("mt-3")
