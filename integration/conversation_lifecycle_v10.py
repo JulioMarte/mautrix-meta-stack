@@ -11,6 +11,7 @@ import requests
 import final_app as runtime
 import meta_portal_reconcile as reconcile
 import runtime_enhancements as enhancements
+from meta_provisioning import MautrixProvisioningClient, connection_summary
 
 legacy = runtime.legacy
 prod = runtime.prod
@@ -23,6 +24,11 @@ _base_chatwoot_handler = enhancements.handle_chatwoot_outgoing
 META_RETRY_BASE_SECONDS = 30
 META_RETRY_MAX_SECONDS = 3600
 META_RETRY_BATCH_SIZE = 20
+CHATWOOT_RETRY_BATCH_SIZE = 10
+CHATWOOT_LOGIN_RETRY_SECONDS = 60
+META_LOGIN_CACHE_SECONDS = 15
+_META_LOGIN_CACHE_LOCK = threading.Lock()
+_META_LOGIN_CACHE = {"checked_at": 0.0, "available": False, "reason": "not_checked"}
 
 _ALLOWED_TRANSITIONS = {
     "pending": {"remote_requested", "failed_retryable", "completed"},
@@ -181,6 +187,46 @@ def _mark_retryable(conversation_id: int, exc: Exception) -> None:
         error=str(exc),
         increment_attempts=True,
         next_retry_at=retry_at,
+    )
+
+
+def _meta_login_available(*, force: bool = False) -> tuple[bool, str]:
+    """Return whether BridgeV2 currently has a usable Meta login.
+
+    The result is cached briefly so a batch of stale Chatwoot mappings produces
+    one provisioning status request rather than one request per conversation.
+    Failures are treated as unavailable: deletion intent stays durable and is
+    retried later instead of sending an event that mautrix-meta cannot execute.
+    """
+    now = time.monotonic()
+    with _META_LOGIN_CACHE_LOCK:
+        age = now - float(_META_LOGIN_CACHE["checked_at"])
+        if not force and age >= 0 and age < META_LOGIN_CACHE_SECONDS:
+            return bool(_META_LOGIN_CACHE["available"]), str(_META_LOGIN_CACHE["reason"])
+
+        try:
+            summary = connection_summary(MautrixProvisioningClient().whoami())
+            available = bool(summary.get("connected"))
+            reason = str(summary.get("status") or ("connected" if available else "disconnected"))
+        except Exception as exc:
+            available = False
+            reason = f"status_unavailable:{type(exc).__name__}"
+
+        _META_LOGIN_CACHE.update(
+            checked_at=now,
+            available=available,
+            reason=reason,
+        )
+        return available, reason
+
+
+def _defer_chatwoot_delete(conversation_id: int, reason: str) -> None:
+    _update_operation(
+        conversation_id,
+        state="failed_retryable",
+        error=f"Meta login unavailable: {reason}",
+        increment_attempts=False,
+        next_retry_at=int(time.time()) + CHATWOOT_LOGIN_RETRY_SECONDS,
     )
 
 
@@ -364,6 +410,76 @@ def _send_matrix_delete(room_id: str, conversation_id: int) -> str:
     return event_id
 
 
+def reconcile_retryable_chatwoot_deletions(*, limit: int = CHATWOOT_RETRY_BATCH_SIZE,
+                                           now: int | None = None) -> dict:
+    """Resume Chatwoot-origin deletes without flooding Matrix while Meta is offline."""
+    current_time = int(time.time()) if now is None else int(now)
+    with legacy.db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversation_deletions "
+            "WHERE origin='chatwoot' AND state='failed_retryable' AND next_retry_at<=? "
+            "ORDER BY next_retry_at ASC, updated_at ASC LIMIT ?",
+            (current_time, max(1, int(limit))),
+        ).fetchall()
+
+    if not rows:
+        return {"processed": 0, "requested": 0, "deferred": 0, "failed": 0}
+
+    available, reason = _meta_login_available(force=True)
+    if not available:
+        retry_at = current_time + CHATWOOT_LOGIN_RETRY_SECONDS
+        for row in rows:
+            _update_operation(
+                int(row["conversation_id"]),
+                state="failed_retryable",
+                error=f"Meta login unavailable: {reason}",
+                next_retry_at=retry_at,
+            )
+        print(
+            f"conversation lifecycle: deferred {len(rows)} Chatwoot->Meta deletes; "
+            f"Meta login unavailable reason={reason}",
+            flush=True,
+        )
+        return {"processed": len(rows), "requested": 0, "deferred": len(rows), "failed": 0}
+
+    requested = 0
+    failed = 0
+    for row in rows:
+        conversation_id = int(row["conversation_id"])
+        room_id = str(row["room_id"])
+        if not _link_by_conversation(conversation_id):
+            continue
+        try:
+            event_id = _send_matrix_delete(room_id, conversation_id)
+            existing = _operation(conversation_id)
+            if existing and existing["state"] == "completed":
+                continue
+            _update_operation(
+                conversation_id,
+                state="remote_requested",
+                matrix_event_id=event_id,
+                error="",
+                increment_attempts=True,
+                next_retry_at=0,
+            )
+            requested += 1
+            print(
+                f"conversation lifecycle: resumed Chatwoot delete on Meta "
+                f"room={room_id} conversation={conversation_id} event={event_id}",
+                flush=True,
+            )
+        except Exception as exc:
+            failed += 1
+            _mark_retryable(conversation_id, exc)
+
+    return {
+        "processed": len(rows),
+        "requested": requested,
+        "deferred": 0,
+        "failed": failed,
+    }
+
+
 def process_chatwoot_delete(payload: dict) -> dict:
     """Translate a signed Chatwoot deletion into BridgeV2's native delete event."""
     in_scope, reason = _configured_scope(payload)
@@ -380,6 +496,16 @@ def process_chatwoot_delete(payload: dict) -> dict:
             return {"ok": True, "ignored": True, "reason": "meta_delete_loop_suppressed"}
         if existing["state"] in {"remote_requested", "completed"}:
             return {"ok": True, "duplicate": True, "state": existing["state"]}
+        if existing["state"] == "failed_retryable":
+            retry_at = int(existing["next_retry_at"] or 0)
+            now = int(time.time())
+            if retry_at > now:
+                return {
+                    "ok": True,
+                    "deferred": True,
+                    "reason": "retry_scheduled",
+                    "retry_at": retry_at,
+                }
 
     link = _link_by_conversation(conversation_id)
     if not link:
@@ -389,19 +515,24 @@ def process_chatwoot_delete(payload: dict) -> dict:
         return {"ok": True, "ignored": True, "reason": "portal_not_preverified"}
 
     _start_operation(conversation_id, room_id, "chatwoot", "pending")
+
+    available, unavailable_reason = _meta_login_available()
+    if not available:
+        _defer_chatwoot_delete(conversation_id, unavailable_reason)
+        return {
+            "ok": True,
+            "deferred": True,
+            "reason": "meta_login_unavailable",
+            "retry_after_seconds": CHATWOOT_LOGIN_RETRY_SECONDS,
+        }
+
     try:
         event_id = _send_matrix_delete(room_id, conversation_id)
     except Exception as exc:
         existing = _operation(conversation_id)
         if existing and existing["state"] == "completed":
             return {"ok": True, "completed": True, "origin": "chatwoot", "confirmed_during_submit": True}
-        _update_operation(
-            conversation_id,
-            state="failed_retryable",
-            error=str(exc),
-            increment_attempts=True,
-            next_retry_at=0,
-        )
+        _mark_retryable(conversation_id, exc)
         raise
 
     existing = _operation(conversation_id)
@@ -458,6 +589,10 @@ def lifecycle_sync_once() -> None:
         reconcile_retryable_meta_deletions()
     except Exception as exc:
         print(f"conversation lifecycle: retry reconciliation failed: {exc}", flush=True)
+    try:
+        reconcile_retryable_chatwoot_deletions()
+    except Exception as exc:
+        print(f"conversation lifecycle: Chatwoot retry reconciliation failed: {exc}", flush=True)
 
     since = legacy.get_setting("matrix_next_batch")
     params = {"timeout": 25000}
