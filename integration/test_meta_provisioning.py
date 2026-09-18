@@ -120,6 +120,48 @@ class MetaProvisioningTests(unittest.TestCase):
         self.assertIn("/v3/login/step/process%2F1/step%2F1/user_input", session.request.call_args_list[1].args[1])
         self.assertEqual(session.request.call_args_list[1].kwargs["json"]["password"], "secret")
 
+    def test_safe_step_preserves_captcha_image_and_detects_real_png_mime(self):
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+            "/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
+        )
+        step = {
+            "login_id": "proc",
+            "step_id": "fi.mau.meta.messengerlite.captcha",
+            "type": "user_input",
+            "instructions": "Facebook requires solving a captcha",
+            "user_input": {
+                "fields": [{"id": "captcha_code", "name": "Captcha code", "type": "text"}],
+                "attachments": [{
+                    "type": "m.image",
+                    "content": png_b64,
+                    "filename": "captcha.jpg",
+                    "info": {"mimetype": "image/jpeg", "size": 9999, "w": 280, "h": 70},
+                }],
+            },
+        }
+        safe = mp.safe_step(step)
+        attachments = safe["user_input"]["attachments"]
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0]["content"], png_b64)
+        self.assertEqual(attachments[0]["info"]["mimetype"], "image/png")
+        self.assertGreater(attachments[0]["info"]["size"], 0)
+
+    def test_safe_step_rejects_non_image_or_invalid_base64_attachments(self):
+        step = {
+            "type": "user_input",
+            "user_input": {
+                "fields": [],
+                "attachments": [
+                    {"type": "m.file", "content": "aGVsbG8=", "info": {"mimetype": "text/plain"}},
+                    {"type": "m.image", "content": "not-base64!!!", "info": {"mimetype": "image/png"}},
+                    {"type": "m.image", "content": "aGVsbG8=", "info": {"mimetype": "image/png"}},
+                ],
+            },
+        }
+        safe = mp.safe_step(step)
+        self.assertNotIn("attachments", safe["user_input"])
+
     def test_safe_step_drops_sensitive_payloads(self):
         step = {
             "login_id": "proc",
