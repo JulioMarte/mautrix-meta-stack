@@ -7,6 +7,8 @@ shared secret never needs to reach browser JavaScript.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,29 @@ DEFAULT_BASE_URL = "http://mautrix-meta:29319/_matrix/provision"
 DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
+
+
+def _safe_id(value: str) -> str:
+    """Return a non-reversible short correlation token for temporary IDs."""
+    raw = str(value or "")
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10] if raw else ""
+
+
+def provisioning_debug(event: str, **fields: Any) -> None:
+    """Emit one structured, credential-safe Meta onboarding diagnostic line."""
+    safe: dict[str, Any] = {"event": str(event)}
+    for key, value in fields.items():
+        if value in (None, ""):
+            continue
+        if key in {"login_id", "txn_id"}:
+            safe[key + "_hash"] = _safe_id(str(value))
+        elif key in {"payload", "values", "cookies", "password", "secret", "authorization"}:
+            continue
+        elif isinstance(value, (str, int, float, bool)):
+            safe[key] = value
+        else:
+            safe[key] = str(value)
+    print("META_LOGIN_DEBUG " + json.dumps(safe, sort_keys=True, separators=(",", ":")), flush=True)
 
 
 class ProvisioningError(RuntimeError):
@@ -190,6 +215,7 @@ class MautrixProvisioningClient:
         }
         if payload is not None:
             headers["Content-Type"] = "application/json"
+        provisioning_debug("http_request", method=method, path=path)
         try:
             response = self.session.request(
                 method,
@@ -201,6 +227,12 @@ class MautrixProvisioningClient:
                 allow_redirects=False,
             )
         except requests.RequestException as exc:
+            provisioning_debug(
+                "http_transport_error",
+                method=method,
+                path=path,
+                error_type=type(exc).__name__,
+            )
             raise ProvisioningError("Could not reach the private mautrix provisioning API") from exc
 
         if 300 <= response.status_code < 400:
@@ -214,7 +246,16 @@ class MautrixProvisioningClient:
             message = str(body.get("error") or "") if isinstance(body, dict) else ""
             if not message:
                 message = f"Mautrix provisioning returned HTTP {response.status_code}"
+            provisioning_debug(
+                "http_error",
+                method=method,
+                path=path,
+                status_code=response.status_code,
+                errcode=errcode,
+                error_type="ProvisioningError",
+            )
             raise ProvisioningError(message, errcode=errcode, status_code=response.status_code)
+        provisioning_debug("http_success", method=method, path=path, status_code=response.status_code)
         if not response.content:
             return {}
         try:
@@ -240,23 +281,50 @@ class MautrixProvisioningClient:
         flow_id = (flow_id or "").strip()
         if not flow_id:
             raise ValueError("A Meta login flow must be selected")
+        provisioning_debug("login_start", flow_id=flow_id, existing_login=bool(existing_login_id))
         data = self._request(
             "POST",
             f"/v3/login/start/{quote(flow_id, safe='')}",
             params={"login_id": existing_login_id or None},
         )
         if not isinstance(data, dict):
+            provisioning_debug("invalid_login_step", flow_id=flow_id, response_type=type(data).__name__)
             raise ProvisioningError("Mautrix returned an invalid login step")
+        provisioning_debug(
+            "login_step",
+            flow_id=flow_id,
+            step_type=str(data.get("type") or ""),
+            step_id=str(data.get("step_id") or ""),
+            login_id=str(data.get("login_id") or ""),
+            txn_id=str(data.get("txn_id") or ""),
+        )
         return data
 
     def submit_user_input(self, login_id: str, step_id: str, values: dict[str, str], *, txn_id: str = "") -> dict[str, Any]:
+        provisioning_debug(
+            "user_input_submit",
+            login_id=login_id,
+            txn_id=txn_id,
+            step_id=step_id,
+            field_ids=",".join(sorted(str(key) for key in values)),
+            field_count=len(values),
+        )
         data = self._request(
             "POST",
             f"/v3/login/step/{quote(login_id, safe='')}/{quote(step_id, safe='')}/user_input",
             params={"txn_id": txn_id or None},
             payload={str(k): str(v) for k, v in values.items()},
         )
-        return data if isinstance(data, dict) else {}
+        if isinstance(data, dict):
+            provisioning_debug(
+                "login_step",
+                step_type=str(data.get("type") or ""),
+                step_id=str(data.get("step_id") or ""),
+                login_id=str(data.get("login_id") or login_id),
+                txn_id=str(data.get("txn_id") or ""),
+            )
+            return data
+        return {}
 
     def submit_cookies_trusted(self, login_id: str, step_id: str, cookies: dict[str, str], *, txn_id: str = "") -> dict[str, Any]:
         """Trusted-helper boundary. Do not expose this as a normal browser form."""
