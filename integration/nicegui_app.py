@@ -13,7 +13,7 @@ from typing import Any
 
 import nicegui_legacy as _legacy_ui
 from nicegui_legacy import *  # noqa: F401,F403 - compatibility surface
-from nicegui import ui
+from nicegui import html, ui
 
 import admin_v2 as _admin_v2
 import meta_admin_patch as _meta_admin_patch
@@ -354,11 +354,10 @@ def meta_onboarding_page():
                                 if mimetype.startswith("image/"):
                                     has_image = True
                                     image_src = f"data:{mimetype};base64,{content}"
-                                    ui.html(
-                                        f'<img src="{image_src}" alt="Facebook CAPTCHA" '
-                                        'style="display:block;max-width:100%;height:auto;border:1px solid #cbd5e1;'
-                                        'border-radius:0.375rem;background:white;padding:0.5rem" />'
-                                    ).classes("w-full max-w-md")
+                                    html.img(
+                                        src=image_src,
+                                        alt="Facebook CAPTCHA",
+                                    ).classes("block w-full max-w-md h-auto border rounded bg-white p-2")
                                 elif mimetype.startswith("audio/"):
                                     has_audio = True
                                     ui.audio(
