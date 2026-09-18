@@ -42,9 +42,21 @@ function allowedMetaNavigation(raw) {
       host === "facebook.com" ||
       host.endsWith(".facebook.com") ||
       host === "messenger.com" ||
-      host.endsWith(".messenger.com") ||
-      host === "fbsbx.com" ||
-      host.endsWith(".fbsbx.com")
+      host.endsWith(".messenger.com")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function allowedRecaptchaNavigation(raw) {
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase();
+    return (
+      url.protocol === "https:" &&
+      (host === "fbsbx.com" || host.endsWith(".fbsbx.com")) &&
+      url.pathname.startsWith("/captcha/recaptcha/iframe/")
     );
   } catch (_) {
     return false;
@@ -54,18 +66,7 @@ function allowedMetaNavigation(raw) {
 function isMessengerLiteRecaptchaStep(step) {
   if (step?.type !== "cookies" || step?.step_id !== "fi.mau.meta.messengerlite.recaptcha") return false;
   const params = step.cookies || {};
-  let challengeUrl;
-  try {
-    challengeUrl = new URL(String(params.url || ""));
-  } catch (_) {
-    return false;
-  }
-  const challengeHost = challengeUrl.hostname.toLowerCase();
-  if (
-    challengeUrl.protocol !== "https:" ||
-    !(challengeHost === "fbsbx.com" || challengeHost.endsWith(".fbsbx.com")) ||
-    !challengeUrl.pathname.startsWith("/captcha/recaptcha/iframe/")
-  ) return false;
+  if (!allowedRecaptchaNavigation(String(params.url || ""))) return false;
   if (typeof params.extract_js !== "string" || !params.extract_js.trim()) return false;
   const fields = cookieFields(step);
   return fields.some((field) => {
@@ -109,6 +110,7 @@ module.exports = {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  allowedRecaptchaNavigation,
   completionPattern,
   isMessengerLiteRecaptchaStep,
   sanitizeExtractedValues,
