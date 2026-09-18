@@ -88,6 +88,10 @@ test("Messenger Lite interactive reCAPTCHA contract is recognized narrowly", () 
     ...step,
     cookies: { ...step.cookies, url: "https://evil.example/" },
   }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: { ...step.cookies, url: "https://www.fbsbx.com/not-a-recaptcha" },
+  }), false);
 });
 
 test("special challenge values are filtered to declared fields", () => {
