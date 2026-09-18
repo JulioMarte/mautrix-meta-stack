@@ -206,7 +206,7 @@ SELENIUM_RECAPTCHA_CASE = '''	case StateReCaptchaPage:
 			}
 			break
 		}
-		log.Debug().Str("recaptcha_token", token).Msg("Got recaptcha token from webview")
+		log.Debug().Bool("has_recaptcha_token", token != "").Msg("Got recaptcha token from webview")
 		callback := webview.GetScript("callback")
 		if callback == nil {
 			return nil, fmt.Errorf("reCAPTCHA webview has no callback")
