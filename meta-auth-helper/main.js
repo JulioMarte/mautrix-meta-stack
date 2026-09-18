@@ -113,6 +113,7 @@ async function beginCookieLogin(pairing, descriptor) {
     },
   });
   const ses = authWindow.webContents.session;
+  ses.setPermissionCheckHandler(() => false);
   ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   authWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   const allowedTopLevelNavigation = (url) => (
@@ -156,13 +157,16 @@ async function beginCookieLogin(pairing, descriptor) {
     await submitValues(captured.values);
   };
 
+  let recaptchaWatcherRunning = false;
   const waitForInteractiveRecaptcha = async () => {
-    if (!interactiveRecaptcha || submitting) return;
+    if (!interactiveRecaptcha || submitting || recaptchaWatcherRunning) return;
+    recaptchaWatcherRunning = true;
     try {
       const raw = await authWindow.webContents.executeJavaScript(String(params.extract_js), true);
       const values = sanitizeExtractedValues(step, raw);
       await submitValues(values);
     } catch (error) {
+      recaptchaWatcherRunning = false;
       if (!submitting) {
         setStatus("No se pudo completar el reCAPTCHA", error.message || String(error), true);
       }
