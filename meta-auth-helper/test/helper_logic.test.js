@@ -6,6 +6,7 @@ const path = require("node:path");
 const assert = require("node:assert/strict");
 
 const {
+  RECAPTCHA_EXTRACT_JS,
   findProtocolUrl,
   validatePairingUrl,
   cookieFields,
