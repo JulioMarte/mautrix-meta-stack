@@ -56,8 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test deployed runtime transform guard
-        run: python3 -m unittest mautrix-meta-runtime/test_thread_backfill_refresh.py
+      - name: Test deployed runtime transform guards
+        run: |
+          python3 -m unittest mautrix-meta-runtime/test_thread_backfill_refresh.py
+          python3 -m unittest mautrix-meta-runtime/test_bloks_login_compat.py
 
       - name: Verify deployment build resource bounds
         run: |
