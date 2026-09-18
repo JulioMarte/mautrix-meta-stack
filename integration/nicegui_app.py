@@ -336,16 +336,36 @@ def meta_onboarding_page():
                     if attachments:
                         with ui.column().classes("w-full gap-2 mt-3"):
                             ui.label("Imagen de verificación").classes("text-sm font-medium text-slate-700")
+                            has_image = False
+                            has_audio = False
                             for attachment in attachments:
                                 content = str(attachment.get("content") or "")
                                 mimetype = str(attachment.get("mimetype") or "")
-                                if content and mimetype.startswith("image/"):
+                                if not content:
+                                    continue
+                                if mimetype.startswith("image/"):
+                                    has_image = True
                                     ui.image(
                                         f"data:{mimetype};base64,{content}"
                                     ).classes("max-w-md w-auto border rounded bg-white p-2")
-                            ui.label(
-                                "Escribe en el campo de abajo los caracteres que ves en la imagen."
-                            ).classes("text-sm text-slate-500")
+                                elif mimetype.startswith("audio/"):
+                                    has_audio = True
+                                    ui.audio(
+                                        f"data:{mimetype};base64,{content}"
+                                    ).classes("w-full max-w-md")
+                            if has_image and has_audio:
+                                ui.label(
+                                    "Puedes leer la imagen o reproducir el audio alternativo. "
+                                    "Escribe abajo la solución del desafío."
+                                ).classes("text-sm text-slate-500")
+                            elif has_image:
+                                ui.label(
+                                    "Escribe en el campo de abajo los caracteres que ves en la imagen."
+                                ).classes("text-sm text-slate-500")
+                            elif has_audio:
+                                ui.label(
+                                    "Reproduce el audio y escribe en el campo de abajo los caracteres que escuches."
+                                ).classes("text-sm text-slate-500")
 
                     inputs: dict[str, Any] = {}
                     for field in user_input.get("fields") or []:
