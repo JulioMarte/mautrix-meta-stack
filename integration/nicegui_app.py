@@ -145,6 +145,18 @@ def _field_label(field: dict[str, Any]) -> str:
     return str(field.get("name") or field.get("id") or "Dato")
 
 
+def _field_is_secret(field: dict[str, Any], step: dict[str, Any]) -> bool:
+    field_type = str(field.get("type") or "").lower()
+    lowered_id = str(field.get("id") or "").lower()
+    step_id = str(step.get("step_id") or "").lower()
+    if "captcha" in lowered_id or "captcha" in step_id:
+        return False
+    return (
+        field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
+        or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
+    )
+
+
 def _ordered_flow_options(flow_options: dict[str, str]) -> dict[str, str]:
     """Keep recommended login methods first without preselecting an action."""
     ordered: dict[str, str] = {}
@@ -319,8 +331,24 @@ def meta_onboarding_page():
                     ui.label("El helper es necesario únicamente para los métodos web basados en cookies.").classes("text-xs text-slate-500 mt-2")
 
                 elif step_type == "user_input":
+                    user_input = saved_step.get("user_input") or {}
+                    attachments = user_input.get("attachments") or []
+                    if attachments:
+                        with ui.column().classes("w-full gap-2 mt-3"):
+                            ui.label("Imagen de verificación").classes("text-sm font-medium text-slate-700")
+                            for attachment in attachments:
+                                content = str(attachment.get("content") or "")
+                                mimetype = str(attachment.get("mimetype") or "")
+                                if content and mimetype.startswith("image/"):
+                                    ui.image(
+                                        f"data:{mimetype};base64,{content}"
+                                    ).classes("max-w-md w-auto border rounded bg-white p-2")
+                            ui.label(
+                                "Escribe en el campo de abajo los caracteres que ves en la imagen."
+                            ).classes("text-sm text-slate-500")
+
                     inputs: dict[str, Any] = {}
-                    for field in (saved_step.get("user_input") or {}).get("fields") or []:
+                    for field in user_input.get("fields") or []:
                         field_id = str(field.get("id") or "")
                         if not field_id:
                             continue
@@ -329,12 +357,7 @@ def meta_onboarding_page():
                             opts = {str(o.get("id")): str(o.get("name") or o.get("id")) for o in options if o.get("id") is not None}
                             inputs[field_id] = ui.select(opts, label=_field_label(field)).props("outlined").classes("w-full")
                         else:
-                            field_type = str(field.get("type") or "").lower()
-                            lowered_id = field_id.lower()
-                            secret = (
-                                field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
-                                or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
-                            )
+                            secret = _field_is_secret(field, saved_step)
                             inputs[field_id] = ui.input(
                                 _field_label(field), password=secret, password_toggle_button=secret
                             ).props("outlined autocomplete=off").classes("w-full")
@@ -444,8 +467,9 @@ def meta_onboarding_page():
         with ui.card().classes("w-full p-5 bg-slate-50"):
             ui.label("Seguridad").classes("font-semibold")
             ui.label(
-                "El secreto de provisioning nunca llega al navegador. El estado persistido del onboarding contiene solo metadatos "
-                "sanitizados; las contraseñas y cookies no se guardan en la configuración genérica del panel."
+                "El secreto de provisioning nunca llega al navegador. El estado persistido del onboarding contiene metadatos "
+                "sanitizados y, cuando Facebook exige un CAPTCHA, únicamente la imagen temporal del desafío. "
+                "Las contraseñas y cookies no se guardan en la configuración genérica del panel."
             ).classes("text-sm text-slate-600")
             if _legacy_ui.legacy.get_setting(META_LAST_COMPLETE_KEY):
                 ui.label(f"Última conexión completada: {_legacy_ui.legacy.get_setting(META_LAST_COMPLETE_KEY)}").classes("text-xs text-slate-500 mt-2")

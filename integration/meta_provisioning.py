@@ -7,6 +7,8 @@ shared secret never needs to reach browser JavaScript.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -23,6 +25,58 @@ DEFAULT_BASE_URL = "http://mautrix-meta:29319/_matrix/provision"
 DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
+MAX_LOGIN_IMAGE_BYTES = 512 * 1024
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"RIFF", "image/webp"),
+)
+
+
+def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only small inline raster images returned by BridgeV2 login steps."""
+    if str(item.get("type") or "") != "m.image":
+        return None
+    raw = item.get("content")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not decoded or len(decoded) > MAX_LOGIN_IMAGE_BYTES:
+        return None
+
+    mimetype = ""
+    if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WEBP":
+        mimetype = "image/webp"
+    else:
+        for magic, candidate in _IMAGE_MAGIC[:-1]:
+            if decoded.startswith(magic):
+                mimetype = candidate
+                break
+    if not mimetype:
+        return None
+
+    info = item.get("info") if isinstance(item.get("info"), dict) else {}
+    out: dict[str, Any] = {
+        "type": "m.image",
+        "content": raw,
+        "mimetype": mimetype,
+        "size": len(decoded),
+    }
+    filename = item.get("filename")
+    if isinstance(filename, str) and filename:
+        out["filename"] = filename[:200]
+    for key in ("w", "h"):
+        value = info.get(key)
+        if isinstance(value, int) and 0 < value <= 10000:
+            out[key] = value
+    return out
+
 
 
 def _safe_id(value: str) -> str:
@@ -230,7 +284,16 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
                             })
                 safe["options"] = normalized_options
             fields.append(safe)
-        out["user_input"] = {"fields": fields}
+        user_input: dict[str, Any] = {"fields": fields}
+        attachments = []
+        for item in params.get("attachments") or []:
+            if isinstance(item, dict):
+                safe_attachment = _safe_login_image_attachment(item)
+                if safe_attachment:
+                    attachments.append(safe_attachment)
+        if attachments:
+            user_input["attachments"] = attachments
+        out["user_input"] = user_input
 
     if isinstance(step.get("display_and_wait"), dict):
         display = step["display_and_wait"]
