@@ -173,6 +173,18 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
         self.assertIn("mautrix-meta", message)
         self.assertNotIn("contraseña incorrecta", message.lower())
 
+    def test_operator_message_explains_unsupported_google_recaptcha(self):
+        exc = mp.ProvisioningError(
+            "Meta is requiring Google reCAPTCHA authentication which is not supported",
+            errcode="FI.MAU.META_GOOGLE_RECAPTCHA",
+            status_code=400,
+        )
+        message = mp.operator_error_message(exc)
+        self.assertIn("Google reCAPTCHA", message)
+        self.assertIn("no puede completar", message)
+        self.assertIn("app o sitio oficial", message)
+        self.assertIn("no debe fingir", message)
+
     def test_operator_message_keeps_specific_non_internal_error(self):
         exc = mp.ProvisioningError(
             "Facebook rejected this step",
