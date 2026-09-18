@@ -91,6 +91,21 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["pragma"], "no-cache")
 
+    def test_recaptcha_descriptor_contains_step_identity_and_extract_contract(self):
+        item, token = routes.registry.create(RECAPTCHA_STEP)
+        response = self.client.get(
+            f"/api/meta/helper/{item.handoff_id}",
+            headers=self.headers(token),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        step = response.json()["step"]
+        self.assertEqual(step["step_id"], "fi.mau.meta.messengerlite.recaptcha")
+        self.assertEqual(
+            step["cookies"]["fields"][0]["sources"],
+            [{"type": "special", "name": "recaptcha_token"}],
+        )
+        self.assertIn("recaptcha_token", step["cookies"]["extract_js"])
+
     def test_special_recaptcha_value_submission_reaches_provisioning(self):
         item, token = routes.registry.create(RECAPTCHA_STEP)
         response = self.client.post(
