@@ -136,6 +136,7 @@ test("Electron auth window keeps hardened remote-content settings", () => {
     "setPermissionRequestHandler",
     'setWindowOpenHandler(() => ({ action: "deny" }))',
     "recaptchaWatcherRunning",
+    "executeJavaScript(RECAPTCHA_EXTRACT_JS, true)",
   ]) {
     assert.equal(source.includes(expected), true, expected);
   }
