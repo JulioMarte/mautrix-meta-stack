@@ -353,9 +353,12 @@ def meta_onboarding_page():
                                     continue
                                 if mimetype.startswith("image/"):
                                     has_image = True
-                                    ui.image(
-                                        f"data:{mimetype};base64,{content}"
-                                    ).classes("max-w-md w-auto border rounded bg-white p-2")
+                                    image_src = f"data:{mimetype};base64,{content}"
+                                    ui.html(
+                                        f'<img src="{image_src}" alt="Facebook CAPTCHA" '
+                                        'style="display:block;max-width:100%;height:auto;border:1px solid #cbd5e1;'
+                                        'border-radius:0.375rem;background:white;padding:0.5rem" />'
+                                    ).classes("w-full max-w-md")
                                 elif mimetype.startswith("audio/"):
                                     has_audio = True
                                     ui.audio(
