@@ -54,6 +54,7 @@ def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
     if not decoded or len(decoded) > limit:
         return None
 
+    info = item.get("info") if isinstance(item.get("info"), dict) else {}
     mimetype = ""
     if attachment_type == "m.image":
         if decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WEBP":
@@ -64,7 +65,7 @@ def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
                     mimetype = candidate
                     break
     else:
-        declared = str((item.get("info") or {}).get("mimetype") or "")
+        declared = str(info.get("mimetype") or "")
         if declared in {"audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "audio/wav", "audio/webm"}:
             mimetype = declared
         elif decoded.startswith(b"OggS"):
@@ -76,7 +77,6 @@ def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
     if not mimetype:
         return None
 
-    info = item.get("info") if isinstance(item.get("info"), dict) else {}
     out: dict[str, Any] = {
         "type": attachment_type,
         "content": raw,
