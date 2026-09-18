@@ -391,7 +391,8 @@ class NiceGUIAdminTests(unittest.TestCase):
         import inspect
         source = inspect.getsource(module.meta_onboarding_page)
         self.assertIn('image_src = f"data:{mimetype};base64,{content}"', source)
-        self.assertIn('<img src="{image_src}"', source)
+        self.assertIn("html.img(", source)
+        self.assertIn('alt="Facebook CAPTCHA"', source)
         self.assertIn("Imagen de verificación", source)
         self.assertIn("ui.audio(", source)
         self.assertIn("audio alternativo", source)
