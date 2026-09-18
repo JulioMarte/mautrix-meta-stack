@@ -88,3 +88,20 @@ A successful source build is not enough. Before this helper is considered produc
 7. Messenger/Marketplace inbound + reply works without Element;
 8. restart/redeploy preserves the mautrix session;
 9. raw Meta cookies do not appear in integration/mautrix/helper logs.
+
+
+## External contract references
+
+The helper/runtime CAPTCHA contract is intentionally checked against these upstream/official references:
+
+- BridgeV2 login API: https://pkg.go.dev/maunium.net/go/mautrix/bridgev2 — `LoginCookiesParams`, `LoginCookieFieldSource`, `LoginCookieTypeSpecial`, and `LoginProcessCookies`.
+- Electron security guidance: https://www.electronjs.org/docs/latest/tutorial/security — remote content must keep Node integration disabled, context isolation/sandboxing enabled, permissions constrained, new windows blocked, and navigation limited.
+- Electron `webContents`: https://www.electronjs.org/docs/latest/api/web-contents — `executeJavaScript()` waits on returned Promises; `will-navigate` is main-frame-only while frame navigation has separate events.
+- Google reCAPTCHA v2 display contract: https://developers.google.com/recaptcha/docs/display — successful completion yields a `g-recaptcha-response` token through the configured callback.
+- Google reCAPTCHA verification semantics: https://developers.google.com/recaptcha/docs/verify — response tokens are short-lived and single-use, so the helper submits the result immediately rather than persisting it.
+- mautrix/meta pinned runtime: https://github.com/mautrix/meta/commit/001f276beca5b90dead1bbc1351e1036e3f966a7.
+- Corrected upstream reCAPTCHA sequence used for the backport:
+  - speculative support: https://github.com/mautrix/meta/commit/f5e19be9c7adf44553712406ba77fc79040caea6
+  - native webview callback handling: https://github.com/mautrix/meta/commit/27814d1a505f6acc760cded86dcd3f812dd2d8f7
+  - corrected `ExtractJS` field-map return: https://github.com/mautrix/meta/commit/03997a531030db363f70e6859150ff6f5c9ff424
+
