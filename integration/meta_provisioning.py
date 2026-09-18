@@ -7,6 +7,8 @@ shared secret never needs to reach browser JavaScript.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -23,6 +25,8 @@ DEFAULT_BASE_URL = "http://mautrix-meta:29319/_matrix/provision"
 DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
+MAX_LOGIN_IMAGE_BYTES = 512 * 1024
+ALLOWED_LOGIN_IMAGE_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 
 def _safe_id(value: str) -> str:
@@ -230,7 +234,37 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
                             })
                 safe["options"] = normalized_options
             fields.append(safe)
+        attachments = []
+        for attachment in params.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_type = str(attachment.get("type") or "")
+            content = attachment.get("content")
+            info = attachment.get("info") if isinstance(attachment.get("info"), dict) else {}
+            mimetype = str(info.get("mimetype") or "").lower()
+            filename = str(attachment.get("filename") or "")
+            if attachment_type != "m.image" or mimetype not in ALLOWED_LOGIN_IMAGE_MIME or not isinstance(content, str):
+                continue
+            try:
+                decoded = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            if not decoded or len(decoded) > MAX_LOGIN_IMAGE_BYTES:
+                continue
+            attachments.append({
+                "type": "m.image",
+                "content": content,
+                "filename": filename[:255],
+                "info": {
+                    "mimetype": mimetype,
+                    "size": len(decoded),
+                    "w": int(info.get("w") or 0),
+                    "h": int(info.get("h") or 0),
+                },
+            })
         out["user_input"] = {"fields": fields}
+        if attachments:
+            out["user_input"]["attachments"] = attachments
 
     if isinstance(step.get("display_and_wait"), dict):
         display = step["display_and_wait"]
