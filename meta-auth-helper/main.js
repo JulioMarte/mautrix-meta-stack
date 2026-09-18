@@ -3,6 +3,7 @@
 const { app, BrowserWindow } = require("electron");
 const {
   PROTOCOL,
+  RECAPTCHA_EXTRACT_JS,
   findProtocolUrl,
   validatePairingUrl,
   cookieFields,
@@ -162,7 +163,7 @@ async function beginCookieLogin(pairing, descriptor) {
     if (!interactiveRecaptcha || submitting || recaptchaWatcherRunning) return;
     recaptchaWatcherRunning = true;
     try {
-      const raw = await authWindow.webContents.executeJavaScript(String(params.extract_js), true);
+      const raw = await authWindow.webContents.executeJavaScript(RECAPTCHA_EXTRACT_JS, true);
       const values = sanitizeExtractedValues(step, raw);
       await submitValues(values);
     } catch (error) {
