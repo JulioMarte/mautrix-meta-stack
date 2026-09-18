@@ -54,7 +54,18 @@ function allowedMetaNavigation(raw) {
 function isMessengerLiteRecaptchaStep(step) {
   if (step?.type !== "cookies" || step?.step_id !== "fi.mau.meta.messengerlite.recaptcha") return false;
   const params = step.cookies || {};
-  if (typeof params.url !== "string" || !allowedMetaNavigation(params.url)) return false;
+  let challengeUrl;
+  try {
+    challengeUrl = new URL(String(params.url || ""));
+  } catch (_) {
+    return false;
+  }
+  const challengeHost = challengeUrl.hostname.toLowerCase();
+  if (
+    challengeUrl.protocol !== "https:" ||
+    !(challengeHost === "fbsbx.com" || challengeHost.endsWith(".fbsbx.com")) ||
+    !challengeUrl.pathname.startsWith("/captcha/recaptcha/iframe/")
+  ) return false;
   if (typeof params.extract_js !== "string" || !params.extract_js.trim()) return false;
   const fields = cookieFields(step);
   return fields.some((field) => {
