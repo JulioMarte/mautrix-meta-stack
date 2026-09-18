@@ -26,6 +26,14 @@ For the current Messenger Lite BridgeV2 login state machine, CAPTCHA handling is
 
 This does not claim support for future CAPTCHA types that mautrix-meta itself does not recognize.
 
+### Pinned runtime compatibility
+
+The production runtime is intentionally pinned to mautrix/meta `001f276beca5b90dead1bbc1351e1036e3f966a7` (v26.08.1 lineage). That baseline already supports the image/audio CAPTCHA and silent/no-op CAPTCHA, but it rejects `com.bloks.www.two_step_verification.google_recaptcha` with `FI.MAU.META_GOOGLE_RECAPTCHA`.
+
+`mautrix-meta-runtime/apply_bloks_login_compat.py` therefore backports the minimal final upstream reCAPTCHA contract onto that exact SHA. The backport includes the BridgeV2 cookie-step implementation, Bloks webview metadata, embedded webview lookup, `InterpBindArgs`, `StateReCaptchaPage`, and the corrected `ExtractJS` result shape `{recaptcha_token: ...}`. The transform is fail-closed against source drift and the patched Go sources are formatted and compiled in the runtime image build.
+
+The implementation follows the corrected upstream sequence rather than the earlier speculative version: upstream first introduced the webview path, then changed it to the native `FbLoginRecaptcha.onRecaptcha` callback, and finally fixed `ExtractJS` to return a field map compatible with BridgeV2.
+
 It does **not** contain the mautrix provisioning secret. The integration backend remains the only component allowed to call mautrix provisioning with that secret.
 
 ## Security model
