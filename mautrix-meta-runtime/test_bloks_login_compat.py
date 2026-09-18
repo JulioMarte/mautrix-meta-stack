@@ -64,6 +64,8 @@ class BloksLoginCompatPatchTests(unittest.TestCase):
         self.assertIn('Name: "recaptcha_token"', patched)
         self.assertIn('resolve({recaptcha_token: JSON.parse(data)["g-recaptcha-response"]})', patched)
         self.assertIn("InterpBindArgs(ctx, token)", patched)
+        self.assertIn('Bool("has_recaptcha_token", token != "")', patched)
+        self.assertNotIn('Str("recaptcha_token", token)', patched)
         self.assertNotIn(mod.SELENIUM_ROUTE_OLD, patched)
 
     def test_recaptcha_patchers_fail_closed_if_anchor_changes(self):
