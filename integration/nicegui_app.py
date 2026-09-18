@@ -145,6 +145,18 @@ def _field_label(field: dict[str, Any]) -> str:
     return str(field.get("name") or field.get("id") or "Dato")
 
 
+def _field_is_secret(field: dict[str, Any], step: dict[str, Any]) -> bool:
+    field_type = str(field.get("type") or "").lower()
+    lowered_id = str(field.get("id") or "").lower()
+    step_id = str(step.get("step_id") or "").lower()
+    if "captcha" in lowered_id or "captcha" in step_id:
+        return False
+    return (
+        field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
+        or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
+    )
+
+
 def _ordered_flow_options(flow_options: dict[str, str]) -> dict[str, str]:
     """Keep recommended login methods first without preselecting an action."""
     ordered: dict[str, str] = {}
@@ -345,13 +357,7 @@ def meta_onboarding_page():
                             opts = {str(o.get("id")): str(o.get("name") or o.get("id")) for o in options if o.get("id") is not None}
                             inputs[field_id] = ui.select(opts, label=_field_label(field)).props("outlined").classes("w-full")
                         else:
-                            field_type = str(field.get("type") or "").lower()
-                            lowered_id = field_id.lower()
-                            captcha_field = "captcha" in lowered_id or "captcha" in str(saved_step.get("step_id") or "").lower()
-                            secret = not captcha_field and (
-                                field_type in {"password", "secret", "token", "2fa_code", "otp", "code"}
-                                or any(marker in lowered_id for marker in ("password", "passcode", "token", "2fa", "otp", "code"))
-                            )
+                            secret = _field_is_secret(field, saved_step)
                             inputs[field_id] = ui.input(
                                 _field_label(field), password=secret, password_toggle_button=secret
                             ).props("outlined autocomplete=off").classes("w-full")
