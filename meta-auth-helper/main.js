@@ -7,6 +7,9 @@ const {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  cookieSourceNames,
+  interactiveExtractScript,
+  normalizeExtractedValues,
   completionPattern,
 } = require("./helper_logic");
 
@@ -73,8 +76,13 @@ async function collectRequiredCookies(session, authUrl, fields) {
   const available = await session.cookies.get({ url: authUrl });
   const values = {};
   for (const field of fields) {
-    const found = available.find((cookie) => cookie.name === field.id);
-    if (found && found.value) values[field.id] = found.value;
+    for (const sourceName of cookieSourceNames(field)) {
+      const found = available.find((cookie) => cookie.name === sourceName);
+      if (found && found.value) {
+        values[field.id] = found.value;
+        break;
+      }
+    }
   }
   const missing = fields.filter((field) => field.required !== false && !values[field.id]).map((field) => field.id);
   return { values, missing };
@@ -86,9 +94,14 @@ async function beginCookieLogin(pairing, descriptor) {
   const authUrl = String(params.url || "");
   if (!allowedMetaNavigation(authUrl)) throw new Error("The bridge returned an unexpected authentication origin");
 
-  const completionRegex = completionPattern(params.wait_for_url_pattern);
   const fields = cookieFields(step);
-  if (!fields.length) throw new Error("The bridge did not specify the required Meta cookies");
+  if (!fields.length) throw new Error("The bridge did not specify required authentication fields");
+  if (Number(params.initial_cookie_count || 0) > 0) {
+    throw new Error("This challenge requires private initial cookies that the panel intentionally does not persist");
+  }
+  const extractScript = interactiveExtractScript(step);
+  const interactive = Boolean(extractScript);
+  const completionRegex = interactive ? null : completionPattern(params.wait_for_url_pattern);
 
   if (authWindow && !authWindow.isDestroyed()) authWindow.destroy();
   const partition = `meta-auth-${pairing.id}-${Date.now()}`; // no persist: prefix => in-memory session
@@ -118,12 +131,10 @@ async function beginCookieLogin(pairing, descriptor) {
   if (params.user_agent) authWindow.webContents.setUserAgent(String(params.user_agent));
 
   let submitting = false;
-  const maybeComplete = async (url) => {
-    if (submitting || !completionRegex.test(url)) return;
-    const captured = await collectRequiredCookies(ses, authUrl, fields);
-    if (captured.missing.length) return;
+  const submitValues = async (captured) => {
+    if (submitting || captured.missing.length) return;
     submitting = true;
-    setStatus("Validando la sesión", "Facebook terminó el acceso. Estamos entregando la sesión directamente al bridge.");
+    setStatus("Validando la sesión", "El desafío terminó. Estamos entregando el resultado directamente al bridge.");
     try {
       const result = await helperRequest(pairing, "POST", { cookies: captured.values });
       for (const key of Object.keys(captured.values)) captured.values[key] = "";
@@ -136,18 +147,40 @@ async function beginCookieLogin(pairing, descriptor) {
       }
     } catch (error) {
       for (const key of Object.keys(captured.values)) captured.values[key] = "";
+      submitting = false;
       setStatus("No se pudo completar el acceso", error.message || String(error), true);
-      if (authWindow && !authWindow.isDestroyed()) authWindow.close();
+    }
+  };
+
+  const maybeComplete = async (url) => {
+    if (interactive || submitting || !completionRegex.test(url)) return;
+    await submitValues(await collectRequiredCookies(ses, authUrl, fields));
+  };
+
+  const runInteractiveChallenge = async () => {
+    if (!interactive || submitting) return;
+    try {
+      const extracted = await authWindow.webContents.executeJavaScript(extractScript, true);
+      await submitValues(normalizeExtractedValues(step, extracted));
+    } catch (error) {
+      setStatus("No se pudo completar el desafío", error.message || String(error), true);
     }
   };
 
   authWindow.webContents.on("did-navigate", (_event, url) => { void maybeComplete(url); });
   authWindow.webContents.on("did-navigate-in-page", (_event, url) => { void maybeComplete(url); });
+  if (interactive) {
+    authWindow.webContents.on("did-finish-load", () => { void runInteractiveChallenge(); });
+  }
   authWindow.on("closed", () => { authWindow = null; });
 
-  setStatus("Inicia sesión en Facebook", "Completa el acceso, 2FA o cualquier checkpoint dentro de la ventana segura que acaba de abrirse.");
+  if (interactive) {
+    setStatus("Resuelve el CAPTCHA de Facebook", "Completa el desafío interactivo en la ventana segura. El token se entregará directamente al bridge.");
+  } else {
+    setStatus("Inicia sesión en Facebook", "Completa el acceso, 2FA o cualquier checkpoint dentro de la ventana segura que acaba de abrirse.");
+  }
   await authWindow.loadURL(authUrl);
-  authWindow.show();
+  if (!params.hidden) authWindow.show();
 }
 
 async function handleProtocol(raw) {
