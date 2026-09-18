@@ -8,6 +8,9 @@ const {
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  cookieSourceNames,
+  interactiveExtractScript,
+  normalizeExtractedValues,
   completionPattern,
 } = require("../helper_logic");
 
@@ -63,6 +66,67 @@ test("cookie field normalization ignores malformed entries", () => {
     { name: "missing id" },
     { id: "xs", required: true },
   ] } }).map((f) => f.id), ["c_user", "xs"]);
+});
+
+test("challenge navigation allows Meta and known reCAPTCHA origins only", () => {
+  for (const url of [
+    "https://www.fbsbx.com/captcha/recaptcha/iframe/",
+    "https://www.google.com/recaptcha/api2/anchor",
+    "https://www.recaptcha.net/recaptcha/api2/anchor",
+  ]) assert.equal(allowedMetaNavigation(url), true, url);
+
+  for (const url of [
+    "https://google.com.evil.example/recaptcha",
+    "https://evil.example/captcha",
+  ]) assert.equal(allowedMetaNavigation(url), false, url);
+});
+
+test("cookie source names honor BridgeV2 source metadata", () => {
+  assert.deepEqual(cookieSourceNames({
+    id: "session",
+    sources: [{ type: "cookie", name: "xs" }, { type: "cookie", name: "c_user" }],
+  }), ["xs", "c_user"]);
+  assert.deepEqual(cookieSourceNames({ id: "legacy" }), ["legacy"]);
+});
+
+test("interactive reCAPTCHA extractor is enabled only for special recaptcha field", () => {
+  const step = {
+    type: "cookies",
+    cookies: {
+      extract_js: "new Promise(resolve => window.done = resolve)",
+      fields: [{
+        id: "recaptcha_token",
+        required: true,
+        sources: [{ type: "special", name: "recaptcha_token" }],
+      }],
+    },
+  };
+  assert.equal(interactiveExtractScript(step), step.cookies.extract_js);
+  assert.equal(interactiveExtractScript({
+    type: "cookies",
+    cookies: { extract_js: "danger()", fields: [{ id: "xs" }] },
+  }), "");
+});
+
+test("interactive extraction keeps only requested non-empty strings", () => {
+  const step = {
+    cookies: {
+      fields: [{
+        id: "recaptcha_token",
+        required: true,
+        sources: [{ type: "special", name: "recaptcha_token" }],
+      }],
+    },
+  };
+  assert.deepEqual(
+    normalizeExtractedValues(step, { recaptcha_token: "token", unexpected: "drop" }),
+    { values: { recaptcha_token: "token" }, missing: [] }
+  );
+  assert.deepEqual(
+    normalizeExtractedValues(step, { recaptcha_token: "" }),
+    { values: {}, missing: ["recaptcha_token"] }
+  );
+  assert.throws(() => normalizeExtractedValues(step, "token"), /field map/);
 });
 
 test("completion regex is compiled and invalid patterns fail closed", () => {
