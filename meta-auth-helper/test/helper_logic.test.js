@@ -9,6 +9,8 @@ const {
   cookieFields,
   allowedMetaNavigation,
   completionPattern,
+  isMessengerLiteRecaptchaStep,
+  sanitizeExtractedValues,
 } = require("../helper_logic");
 
 test("deep link accepts HTTPS integration origin", () => {
@@ -43,6 +45,7 @@ test("Meta navigation allowlist blocks lookalike and non-HTTPS domains", () => {
     "https://m.facebook.com/",
     "https://messenger.com/",
     "https://www.messenger.com/t/1",
+    "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
   ]) assert.equal(allowedMetaNavigation(url), true, url);
 
   for (const url of [
@@ -63,6 +66,41 @@ test("cookie field normalization ignores malformed entries", () => {
     { name: "missing id" },
     { id: "xs", required: true },
   ] } }).map((f) => f.id), ["c_user", "xs"]);
+});
+
+test("Messenger Lite interactive reCAPTCHA contract is recognized narrowly", () => {
+  const step = {
+    type: "cookies",
+    step_id: "fi.mau.meta.messengerlite.recaptcha",
+    cookies: {
+      url: "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
+      fields: [{
+        id: "recaptcha_token",
+        required: true,
+        sources: [{ type: "special", name: "recaptcha_token" }],
+      }],
+      extract_js: "new Promise(resolve => resolve({recaptcha_token: 'abc'}))",
+    },
+  };
+  assert.equal(isMessengerLiteRecaptchaStep(step), true);
+  assert.equal(isMessengerLiteRecaptchaStep({ ...step, step_id: "other" }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: { ...step.cookies, url: "https://evil.example/" },
+  }), false);
+});
+
+test("special challenge values are filtered to declared fields", () => {
+  const step = {
+    cookies: {
+      fields: [{ id: "recaptcha_token", required: true }],
+    },
+  };
+  assert.deepEqual(
+    sanitizeExtractedValues(step, { recaptcha_token: "token-123", unexpected: "drop-me" }),
+    { recaptcha_token: "token-123" },
+  );
+  assert.throws(() => sanitizeExtractedValues(step, {}), /required fields/);
 });
 
 test("completion regex is compiled and invalid patterns fail closed", () => {
