@@ -38,7 +38,7 @@ It does **not** contain the mautrix provisioning secret. The integration backend
 - The Meta BrowserWindow uses an in-memory Electron partition (no `persist:` prefix).
 - Node integration and DevTools are disabled in the Meta renderer.
 - Permission requests are denied.
-- Navigation is limited to `facebook.com`, `messenger.com`, and their subdomains.
+- Main-frame navigation is restricted to HTTPS Meta authentication origins; the Messenger Lite reCAPTCHA flow additionally permits the bridge-defined `fbsbx.com/captcha/recaptcha/iframe/` challenge URL. Embedded third-party frames required by the provider remain governed by Chromium/Electron web security rather than this main-frame allowlist.
 - The helper reads only cookie names requested by the current mautrix login step.
 - Raw cookie values are sent directly to the one-time integration endpoint and are never persisted by the integration service.
 - A failed/partial submission still spends the pairing token to prevent replay.
