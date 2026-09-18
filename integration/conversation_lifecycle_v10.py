@@ -496,6 +496,16 @@ def process_chatwoot_delete(payload: dict) -> dict:
             return {"ok": True, "ignored": True, "reason": "meta_delete_loop_suppressed"}
         if existing["state"] in {"remote_requested", "completed"}:
             return {"ok": True, "duplicate": True, "state": existing["state"]}
+        if existing["state"] == "failed_retryable":
+            retry_at = int(existing["next_retry_at"] or 0)
+            now = int(time.time())
+            if retry_at > now:
+                return {
+                    "ok": True,
+                    "deferred": True,
+                    "reason": "retry_scheduled",
+                    "retry_at": retry_at,
+                }
 
     link = _link_by_conversation(conversation_id)
     if not link:
