@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import sqlite3
+import requests
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -224,6 +225,27 @@ class MarketplaceRebuildV4Tests(unittest.TestCase):
         self.assertNotIn("/api/v1/accounts/1/custom_attribute_definitions/11", deleted_paths)
         self.assertIn("/api/v1/accounts/1/labels/20", deleted_paths)
         self.assertEqual(created_labels, {"marketplace"})
+
+    def test_context_sync_routes_missing_conversation_to_lifecycle(self):
+        link = {"conversation_id": 117, "contact_id": 33}
+        response = requests.Response()
+        response.status_code = 404
+        missing = requests.HTTPError("conversation missing", response=response)
+
+        with patch.object(module, "ensure_chatwoot_marketplace_schema"), \
+             patch.object(media, "portal_context", return_value={
+                 "name": "Alberto · Hp core i3", "is_marketplace": True
+             }), \
+             patch.object(prod, "cw_get", side_effect=missing), \
+             patch.object(
+                 enhancements,
+                 "handle_missing_chatwoot_conversation",
+                 create=True,
+                 return_value={"ok": True, "remote_requested": True},
+             ) as recover:
+            module.sync_conversation_context("!market:matrix.example.com", link)
+
+        recover.assert_called_once_with("!market:matrix.example.com", 117)
 
     def test_context_sync_removes_bridge_plumbing_and_sets_useful_fields(self):
         link = {"conversation_id": 117, "contact_id": 33}

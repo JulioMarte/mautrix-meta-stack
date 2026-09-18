@@ -166,6 +166,27 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.assertEqual(op["state"], "remote_requested")
         self.assertEqual(op["matrix_event_id"], "$delete")
 
+    def test_observed_404_reuses_chatwoot_deletion_state_machine(self):
+        room = self.seed()
+        put = Mock(return_value=FakeResponse(payload={"event_id": "$delete-from-404"}))
+        with patch.object(self.module.requests, "put", put):
+            result = self.module.recover_missing_chatwoot_conversation(room, 77)
+
+        self.assertTrue(result["remote_requested"])
+        self.assertEqual(self.module._operation(77)["origin"], "chatwoot")
+        self.assertEqual(self.module._operation(77)["state"], "remote_requested")
+        self.assertIsNotNone(self.module._link_by_room(room))
+        put.assert_called_once()
+
+    def test_observed_404_does_not_act_on_changed_mapping(self):
+        self.seed()
+        with patch.object(self.module.requests, "put") as put:
+            result = self.module.recover_missing_chatwoot_conversation(
+                "!different:matrix.example.com", 77
+            )
+        put.assert_not_called()
+        self.assertEqual(result["reason"], "stale_mapping_changed")
+
     def test_meta_confirmation_of_chatwoot_delete_does_not_delete_chatwoot_twice(self):
         room = self.seed()
         self.module._start_operation(77, room, "chatwoot", "remote_requested")

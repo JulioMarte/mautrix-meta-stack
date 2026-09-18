@@ -330,9 +330,24 @@ def sync_conversation_context(room_id: str, link) -> None:
         conversation_id = int(link["conversation_id"])
         contact_id = int(link["contact_id"])
 
-        conversation = prod.cw_get(
-            f"/api/v1/accounts/{account_id}/conversations/{conversation_id}"
-        )
+        try:
+            conversation = prod.cw_get(
+                f"/api/v1/accounts/{account_id}/conversations/{conversation_id}"
+            )
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 404:
+                raise
+            recover = getattr(enhancements, "handle_missing_chatwoot_conversation", None)
+            if not callable(recover):
+                raise
+            result = recover(room_id, conversation_id)
+            if isinstance(result, dict) and result.get("remote_requested"):
+                print(
+                    f"conversation lifecycle: recovered missed Chatwoot delete "
+                    f"room={room_id} conversation={conversation_id}",
+                    flush=True,
+                )
+            return
         current = conversation.get("custom_attributes") if isinstance(conversation, dict) else {}
         merged = dict(current) if isinstance(current, dict) else {}
         for key in _OBSOLETE_CONVERSATION_KEYS:
