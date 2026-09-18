@@ -120,6 +120,11 @@ class ConversationLifecycleTests(unittest.TestCase):
         self.legacy.settings["matrix_next_batch"] = "s1"
         self.enhancements.handle_chatwoot_outgoing.reset_mock()
         self.enhancements.enhanced_live_matrix_event.reset_mock()
+        self.module._META_LOGIN_CACHE.update(
+            checked_at=self.module.time.monotonic(),
+            available=True,
+            reason="connected",
+        )
 
     def seed(self, room="!room:matrix.example.com", conversation=77, verified=True):
         with self.legacy.db() as conn:
@@ -186,6 +191,131 @@ class ConversationLifecycleTests(unittest.TestCase):
             )
         put.assert_not_called()
         self.assertEqual(result["reason"], "stale_mapping_changed")
+
+    def test_chatwoot_delete_is_deferred_without_usable_meta_login(self):
+        room = self.seed()
+        self.module._META_LOGIN_CACHE.update(
+            checked_at=self.module.time.monotonic(),
+            available=False,
+            reason="disconnected",
+        )
+        with patch.object(self.module.requests, "put") as put:
+            result = self.module.process_chatwoot_delete({
+                "event": "conversation_deleted", "conversation_id": 77,
+                "account": {"id": 1}, "inbox": {"id": 2},
+            })
+
+        put.assert_not_called()
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["reason"], "meta_login_unavailable")
+        op = self.module._operation(77)
+        self.assertEqual(op["state"], "failed_retryable")
+        self.assertEqual(op["attempts"], 0)
+        self.assertGreater(op["next_retry_at"], 0)
+        self.assertIsNotNone(self.module._link_by_room(room))
+
+    def test_retry_deadline_blocks_repeated_marketplace_404_from_resending(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "chatwoot", "pending")
+        self.module._update_operation(
+            77,
+            state="failed_retryable",
+            error="HTTP 429",
+            increment_attempts=True,
+            next_retry_at=500,
+        )
+        with patch.object(self.module.time, "time", return_value=100), \
+             patch.object(self.module.requests, "put") as put:
+            result = self.module.recover_missing_chatwoot_conversation(room, 77)
+
+        put.assert_not_called()
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["reason"], "retry_scheduled")
+        self.assertEqual(result["retry_at"], 500)
+        self.assertEqual(self.module._operation(77)["attempts"], 1)
+
+    def test_retry_reconciler_defers_entire_batch_with_one_login_probe(self):
+        room1 = self.seed(room="!room1:matrix.example.com", conversation=77)
+        room2 = self.seed(room="!room2:matrix.example.com", conversation=78)
+        for conversation, room in ((77, room1), (78, room2)):
+            self.module._start_operation(conversation, room, "chatwoot", "pending")
+            self.module._update_operation(
+                conversation,
+                state="failed_retryable",
+                error="Meta login unavailable",
+                next_retry_at=10,
+            )
+
+        with patch.object(
+            self.module,
+            "_meta_login_available",
+            return_value=(False, "disconnected"),
+        ) as available, patch.object(self.module.requests, "put") as put:
+            result = self.module.reconcile_retryable_chatwoot_deletions(now=10)
+
+        available.assert_called_once_with(force=True)
+        put.assert_not_called()
+        self.assertEqual(
+            result,
+            {"processed": 2, "requested": 0, "deferred": 2, "failed": 0},
+        )
+        self.assertEqual(self.module._operation(77)["attempts"], 0)
+        self.assertEqual(self.module._operation(78)["attempts"], 0)
+        self.assertGreater(self.module._operation(77)["next_retry_at"], 10)
+        self.assertGreater(self.module._operation(78)["next_retry_at"], 10)
+
+    def test_retry_reconciler_resumes_delete_after_meta_reconnects(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "chatwoot", "pending")
+        self.module._update_operation(
+            77,
+            state="failed_retryable",
+            error="Meta login unavailable",
+            next_retry_at=10,
+        )
+        put = Mock(return_value=FakeResponse(payload={"event_id": "$resumed"}))
+        with patch.object(
+            self.module,
+            "_meta_login_available",
+            return_value=(True, "connected"),
+        ), patch.object(self.module.requests, "put", put):
+            result = self.module.reconcile_retryable_chatwoot_deletions(now=10)
+
+        self.assertEqual(
+            result,
+            {"processed": 1, "requested": 1, "deferred": 0, "failed": 0},
+        )
+        op = self.module._operation(77)
+        self.assertEqual(op["state"], "remote_requested")
+        self.assertEqual(op["matrix_event_id"], "$resumed")
+        self.assertEqual(op["attempts"], 1)
+        self.assertIsNotNone(self.module._link_by_room(room))
+
+    def test_retry_reconciler_uses_exponential_backoff_after_matrix_failure(self):
+        room = self.seed()
+        self.module._start_operation(77, room, "chatwoot", "pending")
+        self.module._update_operation(
+            77,
+            state="failed_retryable",
+            error="Meta login unavailable",
+            next_retry_at=100,
+        )
+        with patch.object(
+            self.module,
+            "_meta_login_available",
+            return_value=(True, "connected"),
+        ), patch.object(self.module.time, "time", return_value=100), \
+             patch.object(self.module.requests, "put", side_effect=RuntimeError("HTTP 429")):
+            result = self.module.reconcile_retryable_chatwoot_deletions(now=100)
+
+        self.assertEqual(
+            result,
+            {"processed": 1, "requested": 0, "deferred": 0, "failed": 1},
+        )
+        op = self.module._operation(77)
+        self.assertEqual(op["state"], "failed_retryable")
+        self.assertEqual(op["attempts"], 1)
+        self.assertEqual(op["next_retry_at"], 130)
 
     def test_meta_confirmation_of_chatwoot_delete_does_not_delete_chatwoot_twice(self):
         room = self.seed()
