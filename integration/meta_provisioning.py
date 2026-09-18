@@ -26,6 +26,8 @@ DEFAULT_SECRET_PATH = "/run/mautrix-provisioning/shared_secret"
 DEFAULT_CONFIG_PATH = "/mautrix/config.yaml"
 DEFAULT_TIMEOUT = 15
 MAX_LOGIN_IMAGE_BYTES = 512 * 1024
+MAX_LOGIN_AUDIO_BYTES = 2 * 1024 * 1024
+MAX_LOGIN_EXTRACT_JS_BYTES = 32 * 1024
 
 _IMAGE_MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -77,6 +79,74 @@ def _safe_login_image_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
             out[key] = value
     return out
 
+
+def _safe_login_audio_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Keep only small inline audio CAPTCHA alternatives returned by BridgeV2."""
+    if str(item.get("type") or "") != "m.audio":
+        return None
+    raw = item.get("content")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not decoded or len(decoded) > MAX_LOGIN_AUDIO_BYTES:
+        return None
+
+    mimetype = ""
+    if decoded.startswith(b"OggS"):
+        mimetype = "audio/ogg"
+    elif decoded.startswith(b"RIFF") and len(decoded) >= 12 and decoded[8:12] == b"WAVE":
+        mimetype = "audio/wav"
+    elif decoded.startswith(b"ID3") or (len(decoded) >= 2 and decoded[0] == 0xFF and decoded[1] & 0xE0 == 0xE0):
+        mimetype = "audio/mpeg"
+    if not mimetype:
+        return None
+
+    out: dict[str, Any] = {
+        "type": "m.audio",
+        "content": raw,
+        "mimetype": mimetype,
+        "size": len(decoded),
+    }
+    filename = item.get("filename")
+    if isinstance(filename, str) and filename:
+        out["filename"] = filename[:200]
+    return out
+
+
+def _safe_login_attachment(item: dict[str, Any]) -> dict[str, Any] | None:
+    return _safe_login_image_attachment(item) or _safe_login_audio_attachment(item)
+
+
+def _safe_cookie_field(item: dict[str, Any]) -> dict[str, Any] | None:
+    field_id = item.get("id")
+    if not isinstance(field_id, str) or not field_id:
+        return None
+    out: dict[str, Any] = {"id": field_id[:200]}
+    if isinstance(item.get("required"), bool):
+        out["required"] = item["required"]
+    if isinstance(item.get("pattern"), str):
+        out["pattern"] = item["pattern"][:1000]
+
+    sources = []
+    for source in item.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        source_type = str(source.get("type") or "")
+        name = str(source.get("name") or "")
+        if source_type not in {"cookie", "local_storage", "request_header", "request_body", "special"} or not name:
+            continue
+        safe_source: dict[str, Any] = {"type": source_type, "name": name[:200]}
+        for key in ("request_url_regex", "cookie_domain"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                safe_source[key] = value[:2000]
+        sources.append(safe_source)
+    if sources:
+        out["sources"] = sources
+    return out
 
 
 def _safe_id(value: str) -> str:
@@ -245,16 +315,25 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
             for key in ("url", "user_agent", "wait_for_url_pattern")
             if isinstance(cookies.get(key), str)
         }
+        if isinstance(cookies.get("hidden"), bool):
+            out["cookies"]["hidden"] = cookies["hidden"]
+        extract_js = cookies.get("extract_js")
+        if isinstance(extract_js, str) and 0 < len(extract_js.encode("utf-8")) <= MAX_LOGIN_EXTRACT_JS_BYTES:
+            out["cookies"]["extract_js"] = extract_js
         fields = []
         for item in cookies.get("fields") or []:
             if isinstance(item, dict):
-                fields.append({
-                    key: item[key]
-                    for key in ("id", "name", "required")
-                    if isinstance(item.get(key), (str, bool))
-                })
+                safe_field = _safe_cookie_field(item)
+                if safe_field:
+                    fields.append(safe_field)
         if fields:
             out["cookies"]["fields"] = fields
+        # Initial cookie values are session material and are intentionally not
+        # persisted in generic admin state. Flag their presence so the helper
+        # can fail closed instead of pretending it can resume such a challenge.
+        initial_cookies = cookies.get("initial_cookies")
+        if isinstance(initial_cookies, list) and initial_cookies:
+            out["cookies"]["initial_cookie_count"] = len(initial_cookies)
 
     if isinstance(step.get("user_input"), dict):
         params = step["user_input"]
@@ -288,7 +367,7 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
         attachments = []
         for item in params.get("attachments") or []:
             if isinstance(item, dict):
-                safe_attachment = _safe_login_image_attachment(item)
+                safe_attachment = _safe_login_attachment(item)
                 if safe_attachment:
                     attachments.append(safe_attachment)
         if attachments:
