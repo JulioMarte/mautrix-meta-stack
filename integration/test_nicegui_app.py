@@ -372,6 +372,28 @@ class NiceGUIAdminTests(unittest.TestCase):
         decoded = base64.b64decode(header.split(" ", 1)[1], validate=True).decode("utf-8")
         self.assertEqual(decoded, "mautrix:resolver-secret-long-value")
 
+    def test_captcha_code_is_not_rendered_as_secret(self):
+        field = {"id": "captcha_code", "type": "text"}
+        step = {"step_id": "fi.mau.meta.messengerlite.captcha"}
+        self.assertFalse(module._field_is_secret(field, step))
+
+    def test_password_and_otp_remain_secret(self):
+        self.assertTrue(module._field_is_secret(
+            {"id": "password", "type": "password"},
+            {"step_id": "fi.mau.meta.messengerlite.email_password"},
+        ))
+        self.assertTrue(module._field_is_secret(
+            {"id": "verification_code", "type": "2fa_code"},
+            {"step_id": "fi.mau.meta.messengerlite.two_factor"},
+        ))
+
+    def test_managed_meta_page_renders_inline_user_input_images(self):
+        import inspect
+        source = inspect.getsource(module.meta_onboarding_page)
+        self.assertIn('f"data:{mimetype};base64,{content}"', source)
+        self.assertIn("Imagen de verificación", source)
+        self.assertIn("Escribe en el campo de abajo", source)
+
     def test_nicegui_runtime_is_selected(self):
         self.assertTrue(callable(module.run))
         self.assertEqual(module.legacy.SESSION_SECRET, "session-secret-long-enough-for-nicegui-tests")
