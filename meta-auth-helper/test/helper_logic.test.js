@@ -78,6 +78,8 @@ test("challenge navigation allows Meta and known reCAPTCHA origins only", () => 
   for (const url of [
     "https://google.com.evil.example/recaptcha",
     "https://evil.example/captcha",
+    "https://www.google.com/",
+    "https://www.fbsbx.com/",
   ]) assert.equal(allowedMetaNavigation(url), false, url);
 });
 
