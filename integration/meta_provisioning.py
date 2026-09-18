@@ -29,6 +29,18 @@ MAX_LOGIN_IMAGE_BYTES = 512 * 1024
 ALLOWED_LOGIN_IMAGE_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 
+def _detected_image_mimetype(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
 def _safe_id(value: str) -> str:
     """Return a non-reversible short correlation token for temporary IDs."""
     raw = str(value or "")
@@ -251,12 +263,15 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             if not decoded or len(decoded) > MAX_LOGIN_IMAGE_BYTES:
                 continue
+            detected_mimetype = _detected_image_mimetype(decoded)
+            if detected_mimetype not in ALLOWED_LOGIN_IMAGE_MIME:
+                continue
             attachments.append({
                 "type": "m.image",
                 "content": content,
                 "filename": filename[:255],
                 "info": {
-                    "mimetype": mimetype,
+                    "mimetype": detected_mimetype,
                     "size": len(decoded),
                     "w": int(info.get("w") or 0),
                     "h": int(info.get("h") or 0),
