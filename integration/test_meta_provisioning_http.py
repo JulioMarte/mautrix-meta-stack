@@ -1,6 +1,8 @@
+import io
 import json
 import threading
 import unittest
+from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -157,6 +159,31 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 401)
         self.assertEqual(ctx.exception.errcode, "M_UNKNOWN_TOKEN")
         self.assertNotIn("wrong-secret-long-enough", str(ctx.exception))
+
+    def test_debug_logging_redacts_payload_secrets_and_temporary_ids(self):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            mp.provisioning_debug(
+                "test",
+                path="/v3/login/step/raw-login-id/raw-step-id/user_input",
+                login_id="raw-login-id",
+                txn_id="raw-txn-id",
+                payload={"password": "super-secret-password"},
+                values={"otp": "123456"},
+                authorization="Bearer super-secret-token",
+                status_code=401,
+                errcode="M_FORBIDDEN",
+            )
+        output = stream.getvalue()
+        self.assertIn("META_LOGIN_DEBUG", output)
+        self.assertIn("/v3/login/step/{login_id}/{step_id}/user_input", output)
+        self.assertIn('"status_code":401', output)
+        self.assertIn('"errcode":"M_FORBIDDEN"', output)
+        for secret in (
+            "raw-login-id", "raw-step-id", "raw-txn-id", "super-secret-password",
+            "123456", "super-secret-token",
+        ):
+            self.assertNotIn(secret, output)
 
     def test_whoami_and_logins_over_real_socket(self):
         self.assertEqual(self.client.whoami()["network"]["display_name"], "Meta")
