@@ -387,12 +387,22 @@ class NiceGUIAdminTests(unittest.TestCase):
             {"step_id": "fi.mau.meta.messengerlite.two_factor"},
         ))
 
-    def test_managed_meta_page_renders_inline_user_input_images(self):
+    def test_managed_meta_page_renders_captcha_image_and_audio(self):
         import inspect
         source = inspect.getsource(module.meta_onboarding_page)
-        self.assertIn('f"data:{mimetype};base64,{content}"', source)
+        self.assertIn('image_src = f"data:{mimetype};base64,{content}"', source)
+        self.assertIn("html.img(", source)
+        self.assertIn('alt="Facebook CAPTCHA"', source)
         self.assertIn("Imagen de verificación", source)
-        self.assertIn("Escribe en el campo de abajo", source)
+        self.assertIn("ui.audio(", source)
+        self.assertIn("audio alternativo", source)
+
+    def test_managed_meta_page_routes_interactive_recaptcha_to_helper(self):
+        import inspect
+        source = inspect.getsource(module.meta_onboarding_page)
+        self.assertIn("fi.mau.meta.messengerlite.recaptcha", source)
+        self.assertIn("reCAPTCHA interactivo", source)
+        self.assertIn("ventana segura del helper", source)
 
     def test_nicegui_runtime_is_selected(self):
         self.assertTrue(callable(module.run))

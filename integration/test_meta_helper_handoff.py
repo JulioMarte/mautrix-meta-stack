@@ -28,6 +28,7 @@ class HandoffRegistryTests(unittest.TestCase):
         self.assertNotIn(token, repr(item))
         fetched = registry.get(item.handoff_id, token)
         self.assertEqual(fetched.login_id, "process-1")
+        self.assertEqual(fetched.metadata["step_id"], "fi.mau.meta.cookies")
         consumed = registry.get(item.handoff_id, token, consume=True)
         self.assertIsNotNone(consumed.used_at)
         with self.assertRaisesRegex(HandoffError, "already used"):

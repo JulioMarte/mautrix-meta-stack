@@ -24,6 +24,24 @@ STEP = {
     },
 }
 
+RECAPTCHA_STEP = {
+    "type": "cookies",
+    "login_id": "process-recaptcha",
+    "step_id": "fi.mau.meta.messengerlite.recaptcha",
+    "txn_id": "txn-recaptcha",
+    "instructions": "Complete the Google reCAPTCHA challenge.",
+    "cookies": {
+        "url": "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
+        "fields": [{
+            "id": "recaptcha_token",
+            "required": True,
+            "sources": [{"type": "special", "name": "recaptcha_token"}],
+        }],
+        "extract_js": "new Promise(resolve => resolve({recaptcha_token: 'token'}))",
+    },
+}
+
+
 
 class FakeProvisioning:
     def __init__(self):
@@ -72,6 +90,36 @@ class HelperRoutesTests(unittest.TestCase):
         self.assertNotIn(token, response.text)
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["pragma"], "no-cache")
+
+    def test_recaptcha_descriptor_contains_step_identity_and_extract_contract(self):
+        item, token = routes.registry.create(RECAPTCHA_STEP)
+        response = self.client.get(
+            f"/api/meta/helper/{item.handoff_id}",
+            headers=self.headers(token),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        step = response.json()["step"]
+        self.assertEqual(step["step_id"], "fi.mau.meta.messengerlite.recaptcha")
+        self.assertEqual(
+            step["cookies"]["fields"][0]["sources"],
+            [{"type": "special", "name": "recaptcha_token"}],
+        )
+        self.assertIn("recaptcha_token", step["cookies"]["extract_js"])
+
+    def test_special_recaptcha_value_submission_reaches_provisioning(self):
+        item, token = routes.registry.create(RECAPTCHA_STEP)
+        response = self.client.post(
+            f"/api/meta/helper/{item.handoff_id}",
+            headers=self.headers(token),
+            json={"values": {"recaptcha_token": "challenge-result", "unexpected": "drop-me"}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(self.fake.calls), 1)
+        login_id, step_id, values, txn_id = self.fake.calls[0]
+        self.assertEqual(login_id, "process-recaptcha")
+        self.assertEqual(step_id, "fi.mau.meta.messengerlite.recaptcha")
+        self.assertEqual(txn_id, "txn-recaptcha")
+        self.assertEqual(values, {"recaptcha_token": "challenge-result"})
 
     def test_complete_cookie_submission_is_one_time(self):
         handoff_id, token = self.pair()

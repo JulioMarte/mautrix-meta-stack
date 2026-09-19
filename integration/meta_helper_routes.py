@@ -105,14 +105,18 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
         except Exception:
             event("helper_submission_rejected", trace_id=trace_id, handoff_id=handoff_id, reason="invalid_json")
             return _json({"error": "Invalid JSON payload", "trace_id": trace_id}, 400)
-        cookies = payload.get("cookies") if isinstance(payload, dict) else None
-        if not isinstance(cookies, dict):
-            event("helper_submission_rejected", trace_id=trace_id, handoff_id=handoff_id, reason="missing_cookie_object")
-            return _json({"error": "Cookie payload is required", "trace_id": trace_id}, 400)
+        values = None
+        if isinstance(payload, dict):
+            values = payload.get("values")
+            if values is None:
+                values = payload.get("cookies")  # backward-compatible helper payload
+        if not isinstance(values, dict):
+            event("helper_submission_rejected", trace_id=trace_id, handoff_id=handoff_id, reason="missing_value_object")
+            return _json({"error": "Authentication field payload is required", "trace_id": trace_id}, 400)
 
         allowed = set(_required_cookie_ids(item.metadata))
         clean: dict[str, str] = {}
-        for key, value in cookies.items():
+        for key, value in values.items():
             key = str(key)
             if key not in allowed or not isinstance(value, str):
                 continue
@@ -123,13 +127,13 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
         missing = sorted(allowed - set(clean))
         if missing:
             event("helper_submission_rejected", trace_id=trace_id, handoff_id=handoff_id, reason="required_fields_missing", missing=missing)
-            return _json({"error": "Required Meta cookies were not captured", "missing": missing, "trace_id": trace_id}, 400)
+            return _json({"error": "Required Meta authentication fields were not captured", "missing": missing, "trace_id": trace_id}, 400)
 
         try:
             item = registry.get(handoff_id, token, consume=True)
         except HandoffError:
             clean.clear()
-            cookies.clear()
+            values.clear()
             event("helper_submission_rejected", trace_id=trace_id, handoff_id=handoff_id, reason="replay_race")
             return _json({"error": "Invalid, expired, or already used helper pairing", "trace_id": trace_id}, 401)
 
@@ -169,7 +173,7 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
             return _json({"error": "Meta authentication could not be completed", "trace_id": trace_id}, 400)
         finally:
             clean.clear()
-            cookies.clear()
+            values.clear()
 
         event(
             "helper_submission_complete",

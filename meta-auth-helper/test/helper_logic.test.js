@@ -1,14 +1,20 @@
 "use strict";
 
 const test = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
 const assert = require("node:assert/strict");
 
 const {
+  RECAPTCHA_EXTRACT_JS,
   findProtocolUrl,
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  allowedRecaptchaNavigation,
   completionPattern,
+  isMessengerLiteRecaptchaStep,
+  sanitizeExtractedValues,
 } = require("../helper_logic");
 
 test("deep link accepts HTTPS integration origin", () => {
@@ -55,6 +61,14 @@ test("Meta navigation allowlist blocks lookalike and non-HTTPS domains", () => {
   ]) assert.equal(allowedMetaNavigation(url), false, url);
 });
 
+test("reCAPTCHA navigation is isolated from normal Meta navigation", () => {
+  const challenge = "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US";
+  assert.equal(allowedMetaNavigation(challenge), false);
+  assert.equal(allowedRecaptchaNavigation(challenge), true);
+  assert.equal(allowedRecaptchaNavigation("https://www.fbsbx.com/not-a-recaptcha"), false);
+  assert.equal(allowedRecaptchaNavigation("https://evil.example/captcha/recaptcha/iframe/"), false);
+});
+
 test("cookie field normalization ignores malformed entries", () => {
   assert.deepEqual(cookieFields({ cookies: { fields: [
     { id: "c_user", required: true },
@@ -63,6 +77,70 @@ test("cookie field normalization ignores malformed entries", () => {
     { name: "missing id" },
     { id: "xs", required: true },
   ] } }).map((f) => f.id), ["c_user", "xs"]);
+});
+
+test("Messenger Lite interactive reCAPTCHA contract is recognized narrowly", () => {
+  const step = {
+    type: "cookies",
+    step_id: "fi.mau.meta.messengerlite.recaptcha",
+    cookies: {
+      url: "https://www.fbsbx.com/captcha/recaptcha/iframe/?locale=en_US",
+      fields: [{
+        id: "recaptcha_token",
+        required: true,
+        sources: [{ type: "special", name: "recaptcha_token" }],
+      }],
+      extract_js: RECAPTCHA_EXTRACT_JS,
+    },
+  };
+  assert.equal(isMessengerLiteRecaptchaStep(step), true);
+  assert.equal(isMessengerLiteRecaptchaStep({ ...step, step_id: "other" }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: { ...step.cookies, url: "https://evil.example/" },
+  }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: { ...step.cookies, url: "https://www.fbsbx.com/not-a-recaptcha" },
+  }), false);
+  assert.equal(isMessengerLiteRecaptchaStep({
+    ...step,
+    cookies: {
+      ...step.cookies,
+      extract_js: RECAPTCHA_EXTRACT_JS + "; fetch('https://evil.example/')",
+    },
+  }), false);
+});
+
+test("special challenge values are filtered to declared fields", () => {
+  const step = {
+    cookies: {
+      fields: [{ id: "recaptcha_token", required: true }],
+    },
+  };
+  assert.deepEqual(
+    sanitizeExtractedValues(step, { recaptcha_token: "token-123", unexpected: "drop-me" }),
+    { recaptcha_token: "token-123" },
+  );
+  assert.throws(() => sanitizeExtractedValues(step, {}), /required fields/);
+});
+
+test("Electron auth window keeps hardened remote-content settings", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  for (const expected of [
+    "nodeIntegration: false",
+    "contextIsolation: true",
+    "sandbox: true",
+    "webSecurity: true",
+    "devTools: false",
+    "setPermissionCheckHandler(() => false)",
+    "setPermissionRequestHandler",
+    'setWindowOpenHandler(() => ({ action: "deny" }))',
+    "recaptchaWatcherRunning",
+    "executeJavaScript(RECAPTCHA_EXTRACT_JS, true)",
+  ]) {
+    assert.equal(source.includes(expected), true, expected);
+  }
 });
 
 test("completion regex is compiled and invalid patterns fail closed", () => {

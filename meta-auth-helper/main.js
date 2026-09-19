@@ -3,11 +3,15 @@
 const { app, BrowserWindow } = require("electron");
 const {
   PROTOCOL,
+  RECAPTCHA_EXTRACT_JS,
   findProtocolUrl,
   validatePairingUrl,
   cookieFields,
   allowedMetaNavigation,
+  allowedRecaptchaNavigation,
   completionPattern,
+  isMessengerLiteRecaptchaStep,
+  sanitizeExtractedValues,
 } = require("./helper_logic");
 
 let statusWindow = null;
@@ -84,11 +88,14 @@ async function beginCookieLogin(pairing, descriptor) {
   const step = descriptor.step || {};
   const params = step.cookies || {};
   const authUrl = String(params.url || "");
-  if (!allowedMetaNavigation(authUrl)) throw new Error("The bridge returned an unexpected authentication origin");
+  const interactiveRecaptcha = isMessengerLiteRecaptchaStep(step);
+  if (!(allowedMetaNavigation(authUrl) || (interactiveRecaptcha && allowedRecaptchaNavigation(authUrl)))) {
+    throw new Error("The bridge returned an unexpected authentication origin");
+  }
 
-  const completionRegex = completionPattern(params.wait_for_url_pattern);
+  const completionRegex = interactiveRecaptcha ? null : completionPattern(params.wait_for_url_pattern);
   const fields = cookieFields(step);
-  if (!fields.length) throw new Error("The bridge did not specify the required Meta cookies");
+  if (!fields.length) throw new Error("The bridge did not specify the required authentication fields");
 
   if (authWindow && !authWindow.isDestroyed()) authWindow.destroy();
   const partition = `meta-auth-${pairing.id}-${Date.now()}`; // no persist: prefix => in-memory session
@@ -107,26 +114,29 @@ async function beginCookieLogin(pairing, descriptor) {
     },
   });
   const ses = authWindow.webContents.session;
+  ses.setPermissionCheckHandler(() => false);
   ses.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   authWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  const allowedTopLevelNavigation = (url) => (
+    allowedMetaNavigation(url) || (interactiveRecaptcha && allowedRecaptchaNavigation(url))
+  );
   authWindow.webContents.on("will-navigate", (event, url) => {
-    if (!allowedMetaNavigation(url)) event.preventDefault();
+    if (!allowedTopLevelNavigation(url)) event.preventDefault();
   });
   authWindow.webContents.on("will-redirect", (event, url) => {
-    if (!allowedMetaNavigation(url)) event.preventDefault();
+    if (!allowedTopLevelNavigation(url)) event.preventDefault();
   });
   if (params.user_agent) authWindow.webContents.setUserAgent(String(params.user_agent));
 
   let submitting = false;
-  const maybeComplete = async (url) => {
-    if (submitting || !completionRegex.test(url)) return;
-    const captured = await collectRequiredCookies(ses, authUrl, fields);
-    if (captured.missing.length) return;
+
+  const submitValues = async (values) => {
+    if (submitting) return;
     submitting = true;
-    setStatus("Validando la sesión", "Facebook terminó el acceso. Estamos entregando la sesión directamente al bridge.");
+    setStatus("Validando el acceso", "El desafío terminó. Estamos entregando únicamente el resultado requerido al bridge.");
     try {
-      const result = await helperRequest(pairing, "POST", { cookies: captured.values });
-      for (const key of Object.keys(captured.values)) captured.values[key] = "";
+      const result = await helperRequest(pairing, "POST", { values });
+      for (const key of Object.keys(values)) values[key] = "";
       if (result.complete) {
         setStatus("Cuenta conectada", "La sesión fue aceptada. Puedes volver al panel de administración.");
         if (authWindow && !authWindow.isDestroyed()) authWindow.close();
@@ -135,17 +145,47 @@ async function beginCookieLogin(pairing, descriptor) {
         if (authWindow && !authWindow.isDestroyed()) authWindow.close();
       }
     } catch (error) {
-      for (const key of Object.keys(captured.values)) captured.values[key] = "";
+      for (const key of Object.keys(values)) values[key] = "";
+      submitting = false;
       setStatus("No se pudo completar el acceso", error.message || String(error), true);
-      if (authWindow && !authWindow.isDestroyed()) authWindow.close();
+    }
+  };
+
+  const maybeComplete = async (url) => {
+    if (interactiveRecaptcha || submitting || !completionRegex.test(url)) return;
+    const captured = await collectRequiredCookies(ses, authUrl, fields);
+    if (captured.missing.length) return;
+    await submitValues(captured.values);
+  };
+
+  let recaptchaWatcherRunning = false;
+  const waitForInteractiveRecaptcha = async () => {
+    if (!interactiveRecaptcha || submitting || recaptchaWatcherRunning) return;
+    recaptchaWatcherRunning = true;
+    try {
+      const raw = await authWindow.webContents.executeJavaScript(RECAPTCHA_EXTRACT_JS, true);
+      const values = sanitizeExtractedValues(step, raw);
+      await submitValues(values);
+    } catch (error) {
+      recaptchaWatcherRunning = false;
+      if (!submitting) {
+        setStatus("No se pudo completar el reCAPTCHA", error.message || String(error), true);
+      }
     }
   };
 
   authWindow.webContents.on("did-navigate", (_event, url) => { void maybeComplete(url); });
   authWindow.webContents.on("did-navigate-in-page", (_event, url) => { void maybeComplete(url); });
+  authWindow.webContents.on("did-finish-load", () => {
+    if (interactiveRecaptcha) void waitForInteractiveRecaptcha();
+  });
   authWindow.on("closed", () => { authWindow = null; });
 
-  setStatus("Inicia sesión en Facebook", "Completa el acceso, 2FA o cualquier checkpoint dentro de la ventana segura que acaba de abrirse.");
+  if (interactiveRecaptcha) {
+    setStatus("Completa el reCAPTCHA", "Resuelve el desafío de Google/Meta en la ventana segura. El helper enviará únicamente el token resultante al bridge.");
+  } else {
+    setStatus("Inicia sesión en Facebook", "Completa el acceso, 2FA o cualquier checkpoint dentro de la ventana segura que acaba de abrirse.");
+  }
   await authWindow.loadURL(authUrl);
   authWindow.show();
 }
