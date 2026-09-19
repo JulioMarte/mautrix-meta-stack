@@ -196,6 +196,24 @@ class DeleteRecorder(BaseHTTPRequestHandler):
     requests_seen: "queue.Queue[str]" = queue.Queue()
     response_code = 204
 
+    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler contract
+        expected = f"/api/v1/accounts/{ACCOUNT_ID}/inboxes/{INBOX_ID}"
+        if self.path != expected:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps({
+            "id": INBOX_ID,
+            "name": "CI API inbox",
+            "channel_type": "Channel::Api",
+            "identifier": "ci-delete-journey-api",
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_DELETE(self):  # noqa: N802 - BaseHTTPRequestHandler contract
         self.__class__.requests_seen.put(self.path)
         self.send_response(self.__class__.response_code)
