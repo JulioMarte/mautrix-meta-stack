@@ -306,6 +306,10 @@ jobs:
           [ "$(docker inspect -f '{{.State.Health.Status}}' "$cid")" = "healthy" ]
           docker compose -f compose.yaml exec -T integration python /app/smoke_persistence.py
 
+      - name: Clear persistence smoke target before live journeys
+        run: |
+          docker compose -f compose.yaml exec -T integration python -c "import app; app.set_setting('chatwoot_base_url',''); app.set_setting('chatwoot_account_id',''); app.set_setting('chatwoot_inbox_id',''); app.set_setting('chatwoot_api_token','')"
+
       - name: Verify mautrix policy and authenticated proxy resolver
         run: |
           docker compose -f compose.yaml run --rm --entrypoint sh mautrix-configure -c '
