@@ -284,6 +284,86 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             )
 
 
+    def test_remote_event_delivery_accepts_realistic_chatwoot_shapes(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        self._seed_identity_projection(binding, conversation_id=77)
+        payloads = [
+            [{"id": 1, "content_attributes": {"matrix_event_id": "$event"}}],
+            {"payload": [{"id": 2, "content_attributes": {"matrix_event_id": "$event"}}]},
+            {"payload": {"messages": [{"id": 3, "content_attributes": "{\"matrix_event_id\": \"$event\"}"}]}},
+            {"messages": [{"id": 4, "content_attributes": {"matrix_event_id": "$event"}}]},
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload), patch.object(bindings, "_request", return_value=payload):
+                row = bindings._remote_event_delivery(77, "$event")
+                self.assertIsNotNone(row)
+
+    def test_text_retry_reuses_remote_message_instead_of_posting_duplicate(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        self._seed_identity_projection(binding, conversation_id=77)
+        bindings._base_post_text = Mock()
+        existing = {
+            "id": 9001,
+            "content": "already committed",
+            "content_attributes": {"matrix_event_id": "$event"},
+        }
+        with patch.object(bindings, "_remote_event_delivery", return_value=existing):
+            result = bindings.post_text(
+                77,
+                body="already committed",
+                direction="incoming",
+                event_id="$event",
+                history=False,
+            )
+        self.assertEqual(result["id"], 9001)
+        bindings._base_post_text.assert_not_called()
+
+    def test_media_retry_reuses_remote_message_instead_of_posting_duplicate(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        self._seed_identity_projection(binding, conversation_id=77)
+        bindings._base_post_media = Mock()
+        existing = {
+            "id": 9002,
+            "content_attributes": {"matrix_event_id": "$media"},
+        }
+        with patch.object(bindings, "_remote_event_delivery", return_value=existing):
+            result = bindings.post_media(
+                77,
+                data=b"png",
+                filename="photo.png",
+                mimetype="image/png",
+                caption="",
+                direction="incoming",
+                event_id="$media",
+            )
+        self.assertEqual(result["id"], 9002)
+        bindings._base_post_media.assert_not_called()
+
+    def test_remote_dedupe_404_rebinds_once_then_delivers(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        self._seed_identity_projection(binding, conversation_id=77)
+        bindings._base_post_text = Mock(return_value={"id": 9010})
+        error = requests.HTTPError("404")
+        error.response = FakeResponse(status=404)
+        rebound = {"conversation_id": 88}
+        with patch.object(
+            bindings,
+            "_remote_event_delivery",
+            side_effect=[error, None],
+        ), patch.object(bindings, "_recover_404", return_value=rebound) as recover:
+            result = bindings.post_text(
+                77,
+                body="hello",
+                direction="incoming",
+                event_id="$event",
+                history=False,
+            )
+        self.assertEqual(result["id"], 9010)
+        recover.assert_called_once_with(77)
+        bindings._base_post_text.assert_called_once()
+        self.assertEqual(bindings._base_post_text.call_args.args[0], 88)
+
+
     def test_404_without_tombstone_marks_projection_stale(self):
         binding = bindings.activate_target(self._target(), "initial")
         projection_id = self._seed_identity_projection(binding)
