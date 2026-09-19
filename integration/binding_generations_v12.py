@@ -40,6 +40,7 @@ _base_post_media = None
 _base_context_sync = None
 _base_mirror = None
 _base_reconcile = None
+_base_import_history = None
 _base_lifecycle_start = None
 _base_lifecycle_delete = None
 
@@ -182,6 +183,10 @@ def ensure_schema():
               error TEXT NOT NULL DEFAULT ''
             );
             """
+        )
+        _ensure_column(
+            conn, "conversation_bindings", "history_repair_checked_at",
+            "INTEGER NOT NULL DEFAULT 0",
         )
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_deletions'"
@@ -666,6 +671,9 @@ def _create_projection(binding, external, identity, sender):
             )
     if status != "ACTIVE":
         raise BindingChanged("binding changed after conversation creation")
+    _clear_binding_dedupe_for_room(
+        binding_id, identity["matrix_room_id"], "fresh_conversation_projection"
+    )
     print(
         f"event=conversation_projection_created binding_id={binding_id} generation={generation} "
         f"room={identity['matrix_room_id']} portal_id={identity['portal_id']} "
@@ -708,11 +716,21 @@ def _adopt_legacy(binding, external, identity):
                 now, int(link["created_at"]), now,
             ),
         )
-        return conn.execute(
+        adopted = conn.execute(
             "SELECT * FROM conversation_bindings WHERE chatwoot_binding_id=? "
             "AND external_identity_id=?",
             (int(binding["id"]), int(external["id"])),
         ).fetchone()
+    migrated = _migrate_legacy_dedupe_for_room(
+        int(binding["id"]), identity["matrix_room_id"]
+    )
+    if migrated:
+        print(
+            f"event=legacy_room_dedupe_migrated binding_id={int(binding['id'])} "
+            f"room={identity['matrix_room_id']} events={migrated}",
+            flush=True,
+        )
+    return adopted
 
 
 def ensure_room_link(room_id, sender, force_verify=False):
@@ -909,28 +927,122 @@ def mark_event(event_id, direction):
     _base_mark_event(event_id, direction)
 
 
-def _seed_dedupe():
-    binding = _active_binding()
-    if not binding:
-        return
+def _room_event_ids(room_id):
+    return rebuild._room_meta_event_ids(room_id)
+
+
+def _migrate_legacy_dedupe_for_room(binding_id, room_id):
+    """Copy legacy dedupe only for a room whose old Chatwoot conversation was adopted."""
+    event_ids = _room_event_ids(room_id)
+    if not event_ids:
+        return 0
+    now = _now()
+    migrated = 0
     with legacy.db() as conn:
-        if conn.execute(
-            "SELECT 1 FROM event_deliveries WHERE chatwoot_binding_id=? LIMIT 1",
-            (int(binding["id"]),),
-        ).fetchone():
-            return
-        for row in conn.execute(
-            "SELECT event_id,direction,created_at FROM processed_events"
-        ).fetchall():
-            conn.execute(
+        for event_id in event_ids:
+            row = conn.execute(
+                "SELECT direction,created_at FROM processed_events WHERE event_id=? LIMIT 1",
+                (event_id,),
+            ).fetchone()
+            if not row:
+                continue
+            cursor = conn.execute(
                 "INSERT OR IGNORE INTO event_deliveries"
                 "(event_id,chatwoot_binding_id,direction,status,created_at,delivered_at) "
                 "VALUES(?,?,?,'DELIVERED',?,?)",
                 (
-                    str(row["event_id"]), int(binding["id"]), str(row["direction"]),
-                    int(row["created_at"]), int(row["created_at"]),
+                    event_id, int(binding_id), str(row["direction"]),
+                    int(row["created_at"] or now), int(row["created_at"] or now),
                 ),
             )
+            migrated += max(0, int(cursor.rowcount or 0))
+    return migrated
+
+
+def _clear_binding_dedupe_for_room(binding_id, room_id, reason):
+    event_ids = _room_event_ids(room_id)
+    if not event_ids:
+        return 0
+    removed = 0
+    with legacy.db() as conn:
+        for event_id in event_ids:
+            cursor = conn.execute(
+                "DELETE FROM event_deliveries WHERE event_id=? AND chatwoot_binding_id=?",
+                (event_id, int(binding_id)),
+            )
+            removed += max(0, int(cursor.rowcount or 0))
+    if removed:
+        print(
+            f"event=binding_room_dedupe_reset binding_id={int(binding_id)} "
+            f"room={room_id} events={removed} reason={reason}",
+            flush=True,
+        )
+    return removed
+
+
+def _substantive_chatwoot_messages(payload):
+    if not isinstance(payload, dict):
+        return []
+    messages = payload.get("payload")
+    if isinstance(messages, dict):
+        messages = messages.get("messages")
+    if not isinstance(messages, list):
+        messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return []
+    substantive = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        message_type = item.get("message_type")
+        if message_type in (0, 1, "incoming", "outgoing") and item.get("private") is not True:
+            substantive.append(item)
+    return substantive
+
+
+def _repair_empty_projection_dedupe(room_id):
+    """Repair the v12 rollout bug that inherited old global dedupe into fresh projections."""
+    cid = _active_conversation_id(room_id)
+    if cid is None:
+        return 0
+    projection = _projection_by_conversation(cid, active_only=True)
+    if not projection or int(projection["history_repair_checked_at"] or 0):
+        return 0
+    binding = _binding(int(projection["chatwoot_binding_id"]))
+    if not binding:
+        return 0
+
+    data = _request(
+        binding,
+        "GET",
+        f"/api/v1/accounts/{int(binding['account_id'])}/conversations/{cid}/messages",
+    )
+    substantive = _substantive_chatwoot_messages(data)
+    removed = 0
+    if not substantive:
+        removed = _clear_binding_dedupe_for_room(
+            int(binding["id"]), room_id, "empty_projection_history_repair"
+        )
+    with legacy.db() as conn:
+        conn.execute(
+            "UPDATE conversation_bindings SET history_repair_checked_at=?,updated_at=? WHERE id=?",
+            (_now(), _now(), int(projection["id"])),
+        )
+    return removed
+
+
+def _seed_dedupe():
+    """Do not globally inherit pre-generation processed_events into a new binding.
+
+    Legacy dedupe is migrated per room only when that exact legacy conversation is
+    adopted by _adopt_legacy(). A fresh projection must be eligible for history import.
+    """
+    return 0
+
+
+def import_recent_history(room_id):
+    _repair_empty_projection_dedupe(room_id)
+    return _base_import_history(room_id)
 
 
 def mirror_matrix_event(room_id, event, history=False):
@@ -1111,7 +1223,7 @@ def reconcile_meta_portals():
 
 def install():
     global _INSTALLED, _base_save_configuration, _base_post_text, _base_post_media
-    global _base_context_sync, _base_mirror, _base_reconcile
+    global _base_context_sync, _base_mirror, _base_reconcile, _base_import_history
     global _base_lifecycle_start, _base_lifecycle_delete
     if _INSTALLED:
         return
@@ -1132,6 +1244,7 @@ def install():
     _base_context_sync = media.sync_conversation_context
     _base_mirror = media.mirror_matrix_event
     _base_reconcile = portal_reconcile.reconcile_meta_portals
+    _base_import_history = enhancements.import_recent_history
     _base_lifecycle_start = lifecycle._start_operation
     _base_lifecycle_delete = lifecycle._delete_chatwoot_conversation
 
@@ -1145,6 +1258,7 @@ def install():
     runtime._reset_chatwoot_target_state = reset_target_state
 
     enhancements.repair_deleted_conversation = repair_deleted_conversation
+    enhancements.import_recent_history = import_recent_history
     rebuild.repair_deleted_conversation = repair_deleted_conversation
     media._post_chatwoot_text = post_text
     media.post_chatwoot_media = post_media
