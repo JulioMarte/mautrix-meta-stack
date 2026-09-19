@@ -1,8 +1,8 @@
 """Production NiceGUI entrypoint.
 
 Import the complete existing app first so all routes/runtime guards are installed.
-The proven cookie-first Meta page is registered as the primary production path;
-the newer managed onboarding at /admin/meta remains available for testing.
+The managed BridgeV2 onboarding at /admin/meta is the primary production path.
+The cookie-first page remains registered as a recovery fallback.
 """
 from __future__ import annotations
 
