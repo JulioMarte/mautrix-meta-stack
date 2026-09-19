@@ -159,7 +159,7 @@ def meta_runtime_state() -> dict[str, Any]:
             "status": "error",
             "connected": False,
             "logins": [],
-            "error": str(exc),
+            "error": operator_error_message(exc),
             "network": "Meta",
         }
 
@@ -264,7 +264,8 @@ def meta_onboarding_page():
                     description = str(flow.get("description") or "")
                     flow_options[flow_id] = product_label or (f"{name} — {description}" if description else name)
             except Exception as exc:
-                ui.label(f"No se pudieron cargar los métodos de acceso: {exc}").classes("text-red-700 mt-2")
+                _record_meta_failure(exc, operation="list_flows")
+                ui.label(f"No se pudieron cargar los métodos de acceso: {operator_error_message(exc)}").classes("text-red-700 mt-2")
 
             async def start_login(event):
                 selected = str(event.value or "").strip()
@@ -280,6 +281,7 @@ def meta_onboarding_page():
                     _record_meta_failure(exc, operation="start_login", trace_id=trace_id)
                     provisioning_debug(
                         "ui_start_failed",
+                        trace_id=trace_id,
                         flow_id=selected,
                         error_type=type(exc).__name__,
                         status_code=getattr(exc, "status_code", 0),
@@ -288,13 +290,22 @@ def meta_onboarding_page():
                     ui.notify(f"No se pudo iniciar la conexión: {operator_error_message(exc)}", type="negative", close_button=True)
 
             async def disconnect_all():
+                trace_id = new_trace_id()
                 try:
-                    await asyncio.to_thread(_prov_client().logout, "all")
+                    await asyncio.to_thread(_prov_client(trace_id).logout, "all")
                     _clear_meta_step()
                     ui.notify("Cuenta Meta desconectada", type="positive")
                     ui.navigate.to("/admin/meta")
                 except Exception as exc:
-                    ui.notify(f"No se pudo desconectar: {exc}", type="negative", close_button=True)
+                    _record_meta_failure(exc, operation="logout", trace_id=trace_id)
+                    provisioning_debug(
+                        "ui_logout_failed",
+                        trace_id=trace_id,
+                        error_type=type(exc).__name__,
+                        status_code=getattr(exc, "status_code", 0),
+                        errcode=getattr(exc, "errcode", ""),
+                    )
+                    ui.notify(f"No se pudo desconectar: {operator_error_message(exc)}", type="negative", close_button=True)
 
             if saved_step:
                 ui.label(
@@ -460,6 +471,7 @@ def meta_onboarding_page():
                                 return
                             provisioning_debug(
                                 "ui_submit_failed",
+                                trace_id=_meta_trace_id(),
                                 operation="submit_user_input",
                                 login_id=str(saved_step.get("login_id") or ""),
                                 step_id=str(saved_step.get("step_id") or ""),
@@ -508,6 +520,7 @@ def meta_onboarding_page():
                                 return
                             provisioning_debug(
                                 "ui_submit_failed",
+                                trace_id=_meta_trace_id(),
                                 operation="display_and_wait",
                                 login_id=str(saved_step.get("login_id") or ""),
                                 step_id=str(saved_step.get("step_id") or ""),
