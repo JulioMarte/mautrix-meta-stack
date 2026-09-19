@@ -504,6 +504,86 @@ async def health():
     }
 
 
+def readiness_state(*, deep: bool = False) -> dict:
+    """Return product readiness without exposing credentials or remote payloads.
+
+    Docker liveness intentionally remains on /health. This diagnostic may report
+    not-ready during an external/internal dependency outage without causing the
+    integration container itself to restart.
+    """
+    state = setup_state()
+    checks = {
+        "database": False,
+        "chatwoot_configured": bool(state["chatwoot_ready"]),
+        "proxy_configured": bool(state["proxy_ready"]),
+        "synapse": False,
+        "mautrix_provisioning": False,
+        "meta_connected": False,
+    }
+    details = {
+        "chatwoot_verified_at": state.get("chatwoot_verified_at") or "",
+        "proxy_verified_at": state.get("proxy_verified_at") or "",
+        "webhook_registration_verified_at": state.get("webhook_registration_verified_at") or "",
+        "webhook_delivery_verified_at": state.get("webhook_delivery_verified_at") or "",
+    }
+
+    try:
+        with legacy.db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["database"] = True
+    except Exception:
+        pass
+
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                legacy.MATRIX_HOMESERVER.rstrip("/") + "/health",
+                timeout=3,
+                allow_redirects=False,
+            )
+            checks["synapse"] = response.status_code == 200
+    except requests.RequestException:
+        pass
+
+    try:
+        from meta_provisioning import MautrixProvisioningClient, connection_summary
+        whoami = MautrixProvisioningClient().whoami()
+        checks["mautrix_provisioning"] = True
+        meta = connection_summary(whoami)
+        checks["meta_connected"] = bool(meta.get("connected"))
+        details["meta_status"] = str(meta.get("status") or "")
+    except Exception as exc:
+        details["meta_status"] = "unavailable"
+        details["meta_error_type"] = type(exc).__name__
+
+    if deep:
+        checks["chatwoot_live"] = False
+        if checks["chatwoot_configured"]:
+            try:
+                verify_chatwoot()
+                checks["chatwoot_live"] = True
+                details["chatwoot_verified_at"] = legacy.get_setting("chatwoot_verified_at")
+            except Exception as exc:
+                details["chatwoot_error_type"] = type(exc).__name__
+
+    ready = all(checks.values())
+    return {
+        "ok": ready,
+        "ready": ready,
+        "deep": bool(deep),
+        "checks": checks,
+        "details": details,
+    }
+
+
+@app.get("/ready")
+async def ready(request: Request):
+    deep = str(request.query_params.get("deep") or "").lower() in {"1", "true", "yes"}
+    payload = readiness_state(deep=deep)
+    return JSONResponse(payload, status_code=200 if payload["ready"] else 503)
+
+
 @app.get("/internal/proxy")
 async def internal_proxy(request: Request):
     auth = request.headers.get("authorization", "")
