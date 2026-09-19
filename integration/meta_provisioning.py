@@ -554,17 +554,28 @@ class MautrixProvisioningClient:
         flow_id = (flow_id or "").strip()
         if not flow_id:
             raise ValueError("A Meta login flow must be selected")
-        provisioning_debug("login_start", flow_id=flow_id, existing_login=bool(existing_login_id))
+        provisioning_debug(
+            "login_start",
+            trace_id=self.trace_id,
+            flow_id=flow_id,
+            existing_login=bool(existing_login_id),
+        )
         data = self._request(
             "POST",
             f"/v3/login/start/{quote(flow_id, safe='')}",
             params={"login_id": existing_login_id or None},
         )
         if not isinstance(data, dict):
-            provisioning_debug("invalid_login_step", flow_id=flow_id, response_type=type(data).__name__)
+            provisioning_debug(
+                "invalid_login_step",
+                trace_id=self.trace_id,
+                flow_id=flow_id,
+                response_type=type(data).__name__,
+            )
             raise ProvisioningError("Mautrix returned an invalid login step")
         provisioning_debug(
             "login_step",
+            trace_id=self.trace_id,
             flow_id=flow_id,
             step_type=str(data.get("type") or ""),
             step_id=str(data.get("step_id") or ""),
@@ -576,6 +587,7 @@ class MautrixProvisioningClient:
     def submit_user_input(self, login_id: str, step_id: str, values: dict[str, str], *, txn_id: str = "") -> dict[str, Any]:
         provisioning_debug(
             "user_input_submit",
+            trace_id=self.trace_id,
             login_id=login_id,
             txn_id=txn_id,
             step_id=step_id,
@@ -591,6 +603,7 @@ class MautrixProvisioningClient:
         if isinstance(data, dict):
             provisioning_debug(
                 "login_step",
+                trace_id=self.trace_id,
                 step_type=str(data.get("type") or ""),
                 step_id=str(data.get("step_id") or ""),
                 login_id=str(data.get("login_id") or login_id),
