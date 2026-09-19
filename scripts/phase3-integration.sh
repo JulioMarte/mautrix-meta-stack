@@ -9,7 +9,15 @@ base_dc=(docker compose -f compose.yaml -f compose.control-plane.yaml -f compose
 phase3_dc=(docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml -f compose.phase3.yaml)
 
 cleanup() {
+  local rc=$?
+  if (( rc != 0 )); then
+    echo "--- Phase 3 failure diagnostics ---" >&2
+    "${phase3_dc[@]}" ps -a >&2 || true
+    "${phase3_dc[@]}" logs --no-color control-plane synapse integration mautrix-meta >&2 || true
+  fi
   "${phase3_dc[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  trap - EXIT
+  exit "$rc"
 }
 trap cleanup EXIT
 
