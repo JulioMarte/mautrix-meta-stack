@@ -1,5 +1,6 @@
 import importlib
 import os
+import sqlite3
 import tempfile
 import unittest
 
@@ -37,6 +38,14 @@ class IntegrationAdminTests(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         with self.client.session_transaction() as sess:
             return sess["csrf"]
+
+    def test_db_context_closes_underlying_connection(self):
+        captured = None
+        with module.db() as conn:
+            captured = conn
+            self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            captured.execute("SELECT 1")
 
     def test_admin_requires_login(self):
         response = self.client.get("/admin")

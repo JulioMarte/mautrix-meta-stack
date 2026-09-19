@@ -69,20 +69,35 @@ def matrix_request(method: str, path: str, token: str, *, user_id: str | None = 
 
 
 def admin_login() -> str:
-    response = requests.post(
-        MATRIX + "/_matrix/client/v3/login",
-        json={
-            "type": "m.login.password",
-            "identifier": {"type": "m.id.user", "user": ADMIN_MXID},
-            "password": ADMIN_PASSWORD,
-        },
-        timeout=10,
+    """Login robustly without making the journey depend on previous CI login timing."""
+    last = None
+    for attempt in range(6):
+        response = requests.post(
+            MATRIX + "/_matrix/client/v3/login",
+            json={
+                "type": "m.login.password",
+                "identifier": {"type": "m.id.user", "user": ADMIN_MXID},
+                "password": ADMIN_PASSWORD,
+            },
+            timeout=10,
+        )
+        last = response
+        if response.status_code != 429:
+            response.raise_for_status()
+            token = str((response.json() or {}).get("access_token") or "")
+            if not token:
+                fail("Synapse login did not return an access token")
+            return token
+        retry_ms = 1000
+        try:
+            retry_ms = int((response.json() or {}).get("retry_after_ms") or retry_ms)
+        except (TypeError, ValueError):
+            pass
+        time.sleep(max(0.25, retry_ms / 1000.0) + attempt * 0.25)
+    fail(
+        "Synapse login remained rate-limited after bounded retries: "
+        f"{getattr(last, 'status_code', 'unknown')}"
     )
-    response.raise_for_status()
-    token = str((response.json() or {}).get("access_token") or "")
-    if not token:
-        fail("Synapse login did not return an access token")
-    return token
 
 
 def appservice_identity() -> tuple[str, str]:
@@ -321,7 +336,6 @@ def run_meta_to_chatwoot(admin_token: str, as_token: str, bot: str, conversation
 
 
 def main() -> None:
-    configure_integration()
     admin_token = admin_login()
     as_token, bot = appservice_identity()
 
@@ -339,6 +353,10 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        # Bring the local Chatwoot double up before switching persisted settings.
+        # Background workers read these settings dynamically, so this ordering
+        # avoids a transient connection-refused window during the E2E handoff.
+        configure_integration()
         suffix = int(time.time()) % 100000
         run_chatwoot_to_meta(admin_token, as_token, bot, 800000 + suffix)
         run_meta_to_chatwoot(admin_token, as_token, bot, 900000 + suffix)
