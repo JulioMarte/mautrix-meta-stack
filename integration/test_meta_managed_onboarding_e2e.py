@@ -90,11 +90,10 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         return dict(step)
 
     def test_cookie_first_product_path_and_managed_helper_fallback_complete_end_to_end(self):
-        # The proven manual browser-cookie flow is the primary production path.
-        # The managed BridgeV2/helper flow remains intentionally available as a
-        # separate test path rather than replacing the known-good workflow.
-        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"), self.patch.NAV_ITEMS)
-        self.assertIn(("meta_test", "Facebook login (prueba)", "science", "/admin/meta"), self.patch.NAV_ITEMS)
+        # The managed BridgeV2 flow is now the supported production path after
+        # real-provider validation. Cookie extraction remains an explicit fallback.
+        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), self.patch.NAV_ITEMS)
+        self.assertIn(("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie"), self.patch.NAV_ITEMS)
 
         cookie_source = importlib.import_module("inspect").getsource(self.cookie_page.meta_cookie_page)
         self.assertIn("Copy as cURL", cookie_source)
