@@ -15,6 +15,7 @@ import conversation_lifecycle_hardening_v11
 import conversation_lifecycle_callback_v10
 import chatwoot_target_guard_v11
 import meta_debug_observability
+import binding_generations_v12
 from db_connection_safety import install as install_db_connection_safety
 
 # sqlite3.Connection's native context manager commits/rolls back but does not
@@ -30,6 +31,10 @@ conversation_lifecycle_hardening_v11.install()
 conversation_lifecycle_callback_v10.install()
 chatwoot_target_guard_v11.install()
 meta_debug_observability.install()
+
+# Install generation-scoped identity last so it wraps the final production
+# lifecycle, callback, media, reconciliation and target-guard handlers.
+binding_generations_v12.install()
 
 
 if __name__ in {"__main__", "__mp_main__"}:
