@@ -8,6 +8,8 @@ import uuid
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
+
+from db_connection_safety import ClosingConnectionProxy
 from flask import Flask, abort, redirect, render_template_string, request, session, url_for
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -34,10 +36,23 @@ app.config.update(
 
 
 def db():
+    """Return a connection that is actually released after context-manager use.
+
+    sqlite3.Connection commits/rolls back on context exit but does not close.
+    Most of this integration uses `with db() as conn` and historically assumed
+    exit released the handle. Make that contract true at the source so tests,
+    helper scripts and production imports are equally safe, even before
+    runtime_entrypoint installs its defensive compatibility wrapper.
+    """
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return ClosingConnectionProxy(conn)
+
+
+# db_connection_safety.install() is retained as a compatibility guard for alternate
+# legacy modules, but this module is natively safe and must not be double-wrapped.
+_db_connection_safety_installed = True
 
 
 def init_db():
