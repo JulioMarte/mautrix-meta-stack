@@ -33,6 +33,7 @@ COOKIE_STEP = {
 class FakeBridgeV2:
     def __init__(self):
         self.received = []
+        self.trace_id = ""
 
     def submit_cookies_trusted(self, login_id, step_id, cookies, *, txn_id=""):
         self.received.append({
@@ -40,6 +41,7 @@ class FakeBridgeV2:
             "step_id": step_id,
             "cookie_names": sorted(cookies),
             "txn_id": txn_id,
+            "trace_id": self.trace_id,
         })
         return {
             "type": "complete",
@@ -158,6 +160,7 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
             self.bridge.received[0]["cookie_names"],
             ["c_user", "datr", "sb", "xs"],
         )
+        self.assertEqual(self.bridge.received[0]["trace_id"], "journey-e2e-001")
         self.assertEqual(self.stored[-1]["type"], "complete")
 
         joined_logs = "\n".join(captured.output)
