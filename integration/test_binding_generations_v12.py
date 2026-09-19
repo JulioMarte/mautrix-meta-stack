@@ -137,6 +137,70 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             # Audit/dedupe history is no longer destructively wiped.
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM processed_events").fetchone()[0], 1)
 
+    def test_projection_creation_uses_runtime_contact_identity_and_persists_mapping(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        now = int(time.time())
+        with legacy.db() as conn:
+            integration_id = bindings._integration_id(conn)
+            cursor = conn.execute(
+                "INSERT INTO external_identities"
+                "(integration_id,bridge_id,remote_account_id,portal_id,portal_receiver,"
+                "matrix_room_id,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    integration_id, "meta", "account-1", "thread-1", "receiver-1",
+                    "!room:example.com", now, now,
+                ),
+            )
+            external = conn.execute(
+                "SELECT * FROM external_identities WHERE id=?", (int(cursor.lastrowid),)
+            ).fetchone()
+
+        identity = {
+            "bridge_id": "meta",
+            "remote_account_id": "account-1",
+            "portal_id": "thread-1",
+            "portal_receiver": "receiver-1",
+            "matrix_room_id": "!room:example.com",
+        }
+
+        def fake_request(_binding, method, path, **kwargs):
+            self.assertEqual(method, "POST")
+            if path.endswith("/contacts"):
+                self.assertEqual(kwargs["json"]["name"], "Customer Name")
+                return {"id": 5}
+            if path.endswith("/contact_inboxes"):
+                return {"source_id": "source-1"}
+            if path.endswith("/conversations"):
+                return {"id": 77, "display_id": 12}
+            self.fail(f"unexpected Chatwoot request: {method} {path}")
+
+        with patch.object(
+            bindings.enhancements,
+            "contact_identity",
+            return_value={"name": "Customer Name", "avatar_url": ""},
+        ) as contact_identity, patch.object(
+            bindings, "_request", side_effect=fake_request
+        ), patch.object(
+            bindings.prod, "contact_object", side_effect=lambda payload: payload
+        ), patch.object(
+            bindings.prod, "contact_source_id", return_value=""
+        ), patch.object(
+            bindings, "_clear_binding_dedupe_for_room", return_value=0
+        ):
+            projection = bindings._create_projection(
+                binding, external, identity, "@meta_customer:matrix.example.com"
+            )
+
+        contact_identity.assert_called_once_with("@meta_customer:matrix.example.com")
+        self.assertEqual(int(projection["chatwoot_conversation_id"]), 77)
+        self.assertEqual(str(projection["status"]), "ACTIVE")
+        with legacy.db() as conn:
+            room_link = conn.execute(
+                "SELECT * FROM room_links WHERE room_id='!room:example.com'"
+            ).fetchone()
+        self.assertIsNotNone(room_link)
+        self.assertEqual(int(room_link["conversation_id"]), 77)
+
     def test_same_target_does_not_create_generation(self):
         first = bindings.activate_target(self._target(), "initial")
         second = bindings.activate_target(self._target(), "health_verified", force_new=False)
