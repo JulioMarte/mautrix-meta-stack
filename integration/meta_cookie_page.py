@@ -15,6 +15,7 @@ from nicegui import ui
 import admin_v2
 import nicegui_app
 from meta_cookie_auth import CookieInputError, login_with_browser_cookies
+from meta_onboarding_diagnostics import new_trace_id
 from meta_provisioning import ProvisioningError, operator_error_message, provisioning_debug
 
 
@@ -143,9 +144,10 @@ def meta_cookie_page():
 
                 result_label.text = "Conectando con la sesión del navegador…"
                 result_label.classes(replace="text-sm mt-3 text-blue-700 font-medium")
+                trace_id = new_trace_id()
                 try:
-                    step = await asyncio.to_thread(login_with_browser_cookies, nicegui_app._prov_client(), raw)
-                    safe = nicegui_app._store_meta_step(step)
+                    step = await asyncio.to_thread(login_with_browser_cookies, nicegui_app._prov_client(trace_id), raw)
+                    safe = nicegui_app._store_meta_step(step, trace_id=trace_id)
                     if str(safe.get("type") or "") != "complete":
                         raise RuntimeError(f"mautrix-meta devolvió un paso inesperado: {safe.get('type') or 'desconocido'}")
                     result_label.text = str(safe.get("instructions") or "Cuenta conectada correctamente.")
@@ -156,6 +158,7 @@ def meta_cookie_page():
                     result_label.text = str(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except ProvisioningError as exc:
+                    nicegui_app._record_meta_failure(exc, operation="cookie_fallback", trace_id=trace_id)
                     provisioning_debug(
                         "cookie_ui_login_failed",
                         trace_id=exc.trace_id,
@@ -168,6 +171,7 @@ def meta_cookie_page():
                     result_label.text = operator_error_message(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except Exception as exc:
+                    nicegui_app._record_meta_failure(exc, operation="cookie_fallback", trace_id=trace_id)
                     provisioning_debug(
                         "cookie_ui_login_failed",
                         error_type=type(exc).__name__,
