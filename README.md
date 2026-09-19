@@ -117,7 +117,7 @@ The integration volume contains its SQLite database and NiceGUI server-side user
 
 - The integration container has a read-only root filesystem, `no-new-privileges`, and all Linux capabilities dropped.
 - NiceGUI storage is explicitly written to `/data/nicegui` because `/app` is read-only.
-- New Chatwoot webhooks use the canonical `/webhooks/chatwoot` endpoint with timestamped HMAC verification. The secret-in-path endpoint is migration-only.
+- Chatwoot agent replies use the selected API Inbox callback at `/webhooks/chatwoot/inbox` with timestamped HMAC verification. Account-level `/webhooks/chatwoot` delivery is migration-only and should be removed after callback acceptance.
 - The Meta proxy resolver requires internal HTTP Basic authentication and returns 404 when unauthenticated.
 - Residential proxy credentials belong in `META_PROXY_URL` in Coolify, not in Git.
 - Matrix-side portal encryption is disabled because the Chatwoot sidecar does not implement Matrix crypto. This does not disable Meta/Messenger E2EE handled by mautrix-meta.
