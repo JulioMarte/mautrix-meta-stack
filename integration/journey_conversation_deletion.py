@@ -321,7 +321,6 @@ def run_meta_to_chatwoot(admin_token: str, as_token: str, bot: str, conversation
 
 
 def main() -> None:
-    configure_integration()
     admin_token = admin_login()
     as_token, bot = appservice_identity()
 
@@ -339,6 +338,10 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        # Bring the local Chatwoot double up before switching persisted settings.
+        # Background workers read these settings dynamically, so this ordering
+        # avoids a transient connection-refused window during the E2E handoff.
+        configure_integration()
         suffix = int(time.time()) % 100000
         run_chatwoot_to_meta(admin_token, as_token, bot, 800000 + suffix)
         run_meta_to_chatwoot(admin_token, as_token, bot, 900000 + suffix)
