@@ -23,7 +23,7 @@ from meta_provisioning import ProvisioningError, operator_error_message, provisi
 def meta_cookie_page():
     if not admin_v2._require_auth():
         return
-    admin_v2._admin_chrome("meta")
+    admin_v2._admin_chrome("meta_fallback")
 
     runtime = nicegui_app.meta_runtime_state()
 
