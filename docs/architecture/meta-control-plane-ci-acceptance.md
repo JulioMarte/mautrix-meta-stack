@@ -274,6 +274,60 @@ no protected path reaches direct-egress sentinel
 no synthetic secret appears in captured logs/UI responses
 ```
 
+## 8.1 Layered CI execution map
+
+The repository must turn the existing phase test assets into actual CI evidence. The following automated layers are required whenever their owned paths change:
+
+```text
+control-plane quality
+  -> locked Bun install
+  -> TypeScript typecheck
+  -> complete control-plane unit/contract suite
+  -> production image build
+
+phase 3 integration
+  -> patched mautrix runtime
+  -> authenticated control-plane resolver
+  -> account-aware egress wiring
+  -> secret-leakage scan
+
+phase 4 integration
+  -> Matrix event ingestion
+  -> real HTTP Chatwoot protocol double
+  -> attachments
+  -> duplicate suppression
+  -> ambiguous post-commit recovery
+  -> restart persistence
+
+phase 5 integration
+  -> signed Chatwoot webhook
+  -> real HTTP Matrix protocol double
+  -> attachments
+  -> cross-inbox rejection
+  -> ambiguous Matrix send recovery
+  -> duplicate suppression
+
+phase 6 integration
+  -> two simultaneous tenants
+  -> two Chatwoot routes
+  -> two egress assignments
+  -> bidirectional delivery
+  -> direct-egress sentinel
+  -> proxy outage
+  -> timeout/retry behavior
+  -> restart persistence
+  -> event identity conflict handling
+```
+
+A script or Compose topology stored in the repository but not executed by CI is documentation/test infrastructure, not acceptance evidence.
+
+Production Python runtime composition is a separate contract from container topology. CI must exercise both:
+
+- a fast production-entrypoint composition test that detects cross-module monkey-patch/install wiring regressions; and
+- a real HTTP boundary contract that lets the production runtime serialize and send requests over a socket to a protocol double without monkey-patching the HTTP client.
+
+Broad workflows should not repeatedly execute specialized suites simply to increase the number of green checks. A named check should own a distinct property; stack smoke validation should focus on assembled-container startup, persistence and runtime journeys.
+
 ## 9. Required-check semantics
 
 The final PR to `main` must not be merged on the basis of an aggregate "tests passed" message alone.

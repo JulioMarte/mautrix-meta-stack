@@ -9,7 +9,15 @@ base_dc=(docker compose -f compose.yaml -f compose.control-plane.yaml -f compose
 phase3_dc=(docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml -f compose.phase3.yaml)
 
 cleanup() {
+  local rc=$?
+  if (( rc != 0 )); then
+    echo "--- Phase 3 failure diagnostics ---" >&2
+    "${phase3_dc[@]}" ps -a >&2 || true
+    "${phase3_dc[@]}" logs --no-color control-plane synapse integration mautrix-meta >&2 || true
+  fi
   "${phase3_dc[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  trap - EXIT
+  exit "$rc"
 }
 trap cleanup EXIT
 
@@ -17,22 +25,14 @@ trap cleanup EXIT
 # intentionally still exercised against the pinned release contract.
 docker compose -f compose.yaml up --abort-on-container-exit --exit-code-from synapse-check-config synapse-check-config
 
-# Configure only this integration topology for dynamic account-aware egress.
-# Messenger Lite is intentionally disabled: on the pinned upstream it performs
-# network I/O before a stable account identity exists, so dynamic egress cannot
-# safely bind that first request yet.
-docker compose -f compose.yaml run --rm --no-deps --entrypoint /bin/sh mautrix-configure -c '
-  set -eu
-  yq -i '\''
-    .network.get_proxy_from = "http://control-plane:3000/internal/v1/egress/resolve" |
-    .network.proxy_other = true |
-    .network.proxy_media = true |
-    .network.proxy_e2ee = true |
-    .network.proxy_messenger_lite = false
-  '\'' /data/config.yaml
-'
-
+# Start the Phase 3 topology. The phase3-mautrix-configure one-shot service
+# runs after the normal stack bootstrap and replaces only the legacy resolver
+# fields with the account-aware Control Plane contract before mautrix starts.
 "${phase3_dc[@]}" up -d control-plane synapse mautrix-meta
+
+resolver_url="$("${phase3_dc[@]}" run --rm --no-deps --entrypoint /bin/sh phase3-mautrix-configure -c 'yq -r ".network.get_proxy_from" /data/config.yaml')"
+echo "Phase 3 resolver URL: $resolver_url"
+test "$resolver_url" = "http://control-plane:3000/internal/v1/egress/resolve"
 
 wait_healthy() {
   local service="$1" timeout="$2" cid status end

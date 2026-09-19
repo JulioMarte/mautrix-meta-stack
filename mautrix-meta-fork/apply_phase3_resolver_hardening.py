@@ -58,7 +58,7 @@ def main() -> None:
     replace_once(
         config,
         '''\tif m.Config.GetProxyFrom != "" {\n\t\tif m.Config.Proxy != "" {\n''',
-        '''\tif m.Config.GetProxyFrom != "" {\n\t\tresolverURL, err := url.Parse(m.Config.GetProxyFrom)\n\t\tif err != nil || resolverURL.Host == "" || (resolverURL.Scheme != "http" && resolverURL.Scheme != "https") || resolverURL.User != nil || resolverURL.RawQuery != "" || resolverURL.Fragment != "" {\n\t\t\treturn fmt.Errorf("dynamic egress resolver URL must be an http(s) URL without userinfo, query or fragment")\n\t\t}\n\t\tif m.Config.Proxy != "" {\n''',
+        '''\tif m.Config.GetProxyFrom != "" {\n\t\tresolverURL, err := url.Parse(strings.TrimSpace(m.Config.GetProxyFrom))\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf("dynamic egress resolver URL %q cannot be parsed: %w", m.Config.GetProxyFrom, err)\n\t\t}\n\t\tif resolverURL.Host == "" || (resolverURL.Scheme != "http" && resolverURL.Scheme != "https") || resolverURL.User != nil || resolverURL.RawQuery != "" || resolverURL.Fragment != "" {\n\t\t\treturn fmt.Errorf("dynamic egress resolver URL %q must be an http(s) URL without userinfo, query or fragment (scheme=%q host=%q userinfo=%t query=%q fragment=%q)", m.Config.GetProxyFrom, resolverURL.Scheme, resolverURL.Host, resolverURL.User != nil, resolverURL.RawQuery, resolverURL.Fragment)\n\t\t}\n\t\tif m.Config.Proxy != "" {\n''',
     )
 
     replace_once(
@@ -133,6 +133,19 @@ func TestResolverRejectsMalformedOrUnsupportedProxyURLs(t *testing.T) {
                 t.Fatalf("expected resolver proxy URL %q to fail closed", returned)
             }
         })
+    }
+}
+
+func TestDynamicEgressConfigAcceptsInternalResolverURL(t *testing.T) {
+    conn := &MetaConnector{}
+    conn.Config.RawMode = "facebook"
+    conn.Config.Mode = types.Facebook
+    conn.Config.GetProxyFrom = "http://control-plane:3000/internal/v1/egress/resolve"
+    conn.Config.ProxyOther = true
+    conn.Config.ProxyMedia = true
+    conn.Config.ProxyE2EE = true
+    if err := conn.ValidateConfig(); err != nil {
+        t.Fatalf("expected internal resolver URL to be accepted: %v", err)
     }
 }
 

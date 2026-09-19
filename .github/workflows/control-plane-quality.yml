@@ -1,0 +1,34 @@
+name: Control plane quality
+
+on:
+  pull_request:
+    paths:
+      - 'control-plane/**'
+      - '.github/workflows/control-plane-quality.yml'
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - 'control-plane/**'
+      - '.github/workflows/control-plane-quality.yml'
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install locked dependencies, typecheck and run all control-plane tests
+        run: |
+          docker volume create control-plane-node-modules >/dev/null
+          docker run --rm \
+            -v "$PWD/control-plane:/app" \
+            -v control-plane-node-modules:/app/node_modules \
+            -w /app \
+            oven/bun:1.4.2 \
+            sh -lc 'bun install --frozen-lockfile && bun run typecheck && bun test'
+
+      - name: Build production control-plane image
+        run: docker build -t meta-control-plane-ci ./control-plane

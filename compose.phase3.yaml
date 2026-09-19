@@ -1,8 +1,40 @@
 services:
+  phase3-mautrix-configure:
+    image: ${YQ_IMAGE:-mikefarah/yq:4.47.2}
+    user: "0:0"
+    restart: "no"
+    depends_on:
+      mautrix-configure:
+        condition: service_completed_successfully
+    volumes:
+      - mautrix-meta-data-v2:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        test -s /data/config.yaml
+        yq -i '
+          .network.proxy = "" |
+          .network.get_proxy_from = "http://control-plane:3000/internal/v1/egress/resolve" |
+          .network.proxy_other = true |
+          .network.proxy_media = true |
+          .network.proxy_e2ee = true |
+          .network.proxy_messenger_lite = false
+        ' /data/config.yaml
+        test "$(yq -r '.network.get_proxy_from' /data/config.yaml)" = "http://control-plane:3000/internal/v1/egress/resolve"
+        test "$(yq -r '.network.proxy_other' /data/config.yaml)" = "true"
+        test "$(yq -r '.network.proxy_media' /data/config.yaml)" = "true"
+        test "$(yq -r '.network.proxy_e2ee' /data/config.yaml)" = "true"
+        test "$(yq -r '.network.proxy_messenger_lite' /data/config.yaml)" = "false"
+        echo "Phase 3 mautrix dynamic egress configuration applied"
+
   mautrix-meta:
     image: mautrix-meta:phase3-local
     build:
       context: .
       dockerfile: mautrix-meta-fork/Dockerfile
+    depends_on:
+      phase3-mautrix-configure:
+        condition: service_completed_successfully
     environment:
       MAUTRIX_META_EGRESS_TOKEN: ${CONTROL_PLANE_INTERNAL_TOKEN:?CONTROL_PLANE_INTERNAL_TOKEN is required}

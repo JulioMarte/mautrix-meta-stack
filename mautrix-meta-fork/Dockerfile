@@ -48,6 +48,7 @@ RUN python3 /patch/apply_patch.py /src/mautrix-meta \
         pkg/msgconv/mediadl/download.go \
         pkg/msgconv/mediadl/proxy_context_test.go \
     && git diff --check \
+    && go test ./pkg/connector -run 'TestDynamicEgressConfigAcceptsInternalResolverURL|TestDynamicEgressConfigRejectsUnsafeResolverURLs' -count=1 \
     && ./build.sh
 
 FROM alpine:3.24
