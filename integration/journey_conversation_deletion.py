@@ -69,20 +69,35 @@ def matrix_request(method: str, path: str, token: str, *, user_id: str | None = 
 
 
 def admin_login() -> str:
-    response = requests.post(
-        MATRIX + "/_matrix/client/v3/login",
-        json={
-            "type": "m.login.password",
-            "identifier": {"type": "m.id.user", "user": ADMIN_MXID},
-            "password": ADMIN_PASSWORD,
-        },
-        timeout=10,
+    """Login robustly without making the journey depend on previous CI login timing."""
+    last = None
+    for attempt in range(6):
+        response = requests.post(
+            MATRIX + "/_matrix/client/v3/login",
+            json={
+                "type": "m.login.password",
+                "identifier": {"type": "m.id.user", "user": ADMIN_MXID},
+                "password": ADMIN_PASSWORD,
+            },
+            timeout=10,
+        )
+        last = response
+        if response.status_code != 429:
+            response.raise_for_status()
+            token = str((response.json() or {}).get("access_token") or "")
+            if not token:
+                fail("Synapse login did not return an access token")
+            return token
+        retry_ms = 1000
+        try:
+            retry_ms = int((response.json() or {}).get("retry_after_ms") or retry_ms)
+        except (TypeError, ValueError):
+            pass
+        time.sleep(max(0.25, retry_ms / 1000.0) + attempt * 0.25)
+    fail(
+        "Synapse login remained rate-limited after bounded retries: "
+        f"{getattr(last, 'status_code', 'unknown')}"
     )
-    response.raise_for_status()
-    token = str((response.json() or {}).get("access_token") or "")
-    if not token:
-        fail("Synapse login did not return an access token")
-    return token
 
 
 def appservice_identity() -> tuple[str, str]:
