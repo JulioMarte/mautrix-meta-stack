@@ -89,6 +89,23 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.stored.append(dict(step))
         return dict(step)
 
+    def test_persisted_login_failure_is_secret_safe_and_traceable(self):
+        sensitive = "do-not-persist-this-value"
+        exc = self.managed.ProvisioningError(
+            f"provider rejected sensitive value {sensitive}",
+            errcode="M_FORBIDDEN",
+            status_code=400,
+            trace_id="attempt-safe-001",
+        )
+        self.managed._record_meta_failure(exc, operation="submit_user_input")
+        stored = self.managed._legacy_ui.legacy.get_setting(self.managed.META_LAST_FAILURE_KEY)
+        self.assertNotIn(sensitive, stored)
+        payload = json.loads(stored)
+        self.assertEqual(payload["trace_id"], "attempt-safe-001")
+        self.assertEqual(payload["code"], "META_LOGIN_REJECTED")
+        self.assertEqual(payload["operation"], "submit_user_input")
+        self.assertEqual(payload["status_code"], 400)
+
     def test_cookie_first_product_path_and_managed_helper_fallback_complete_end_to_end(self):
         # The managed BridgeV2 flow is now the supported production path after
         # real-provider validation. Cookie extraction remains an explicit fallback.
