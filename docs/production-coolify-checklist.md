@@ -108,7 +108,25 @@ The named volumes contain credentials and state and must be backed up before rea
 - `mautrix-meta-data-v2`
 - `integration-data-v1`
 
-Backups must be stored off the VPS, access-controlled and restorable. A backup is not valid until a restore into clean volumes has been tested.
+Backups must be stored off the VPS, access-controlled and restorable. A backup is not valid until a restore has been tested.
+
+The repository includes cold-backup helpers for the current single-client stack:
+
+```bash
+BACKUP_ROOT=/secure/backups ./scripts/backup-current-stack.sh
+```
+
+The backup stops the three state owners while archiving their named volumes, writes SHA-256 checksums and restarts the stack. The resulting directory contains secrets/state and must be encrypted or otherwise strongly access-controlled when moved off the VPS.
+
+Restore is deliberately destructive and requires an explicit confirmation value:
+
+```bash
+BACKUP_DIR=/secure/backups/<timestamp> \
+CONFIRM_RESTORE=RESTORE \
+./scripts/restore-current-stack.sh
+```
+
+After restore, require `/health`, `/ready`, Meta login state and the full bidirectional message acceptance checks before reopening production traffic.
 
 ## Upgrade policy
 
