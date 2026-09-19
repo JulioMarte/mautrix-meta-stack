@@ -16,7 +16,7 @@ jobs:
       - name: Build integration sidecar
         run: docker build -t meta-chatwoot-integration ./integration
 
-      - name: Exercise production-installed message path
+      - name: Exercise production-installed module composition
         run: |
           docker run --rm \
             -e DATA_DIR=/tmp/integration-runtime-composition-test \
@@ -29,6 +29,19 @@ jobs:
             -e INTEGRATION_COOKIE_SECURE=false \
             -e START_MATRIX_SYNC=false \
             -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest \
-              test_runtime_composition_contract.py \
-              test_runtime_http_contract.py
+            meta-chatwoot-integration python -m unittest test_runtime_composition_contract.py
+
+      - name: Exercise production runtime over a real HTTP socket
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-runtime-http-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-runtime-http-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_runtime_http_contract.py
