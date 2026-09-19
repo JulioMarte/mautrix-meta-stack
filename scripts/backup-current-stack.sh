@@ -43,11 +43,13 @@ for service in synapse mautrix-meta integration; do
   archive="$DEST/$service.tgz"
   volume="${VOLUMES[$service]}"
   echo "Backing up $service from volume $volume"
+  # Stream the archive through stdout so the host shell creates the file.
+  # This avoids Docker-root ownership on bind-mounted backup directories and
+  # makes the script work on rootless/hosted runners as well as normal VPSes.
   docker run --rm \
     -v "$volume:/source:ro" \
-    -v "$DEST:/backup" \
     "$BACKUP_IMAGE" \
-    sh -eu -c "tar -C /source -czf /backup/$service.tgz ."
+    sh -eu -c "tar -C /source -czf - ." > "$archive"
   [[ -s "$archive" ]] || { echo "Backup archive is empty: $archive" >&2; exit 1; }
   chmod 600 "$archive"
 done
