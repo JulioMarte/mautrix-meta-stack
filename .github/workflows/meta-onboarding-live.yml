@@ -20,6 +20,10 @@ on:
       - '.github/workflows/meta-onboarding-live.yml'
       - '.github/workflows/meta-onboarding.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   live-provisioning-contract:
     runs-on: ubuntu-latest
