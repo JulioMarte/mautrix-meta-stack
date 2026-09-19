@@ -7,6 +7,10 @@ on:
       - main
       - dev
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   compose:
     runs-on: ubuntu-latest
@@ -36,6 +40,8 @@ jobs:
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
+          bash -n scripts/backup-current-stack.sh
+          bash -n scripts/restore-current-stack.sh
 
       - name: Build integration sidecar
         run: docker build -t meta-chatwoot-integration ./integration
@@ -330,6 +336,53 @@ jobs:
 
       - name: Run bidirectional conversation deletion journey
         run: docker compose -f compose.yaml exec -T integration python /app/journey_conversation_deletion.py
+
+      - name: Prove current-stack cold backup and destructive restore
+        run: |
+          set -eu
+          docker compose -f compose.yaml exec -T integration sh -c 'printf before-backup > /data/backup-ci-marker'
+          docker compose -f compose.yaml exec -T synapse sh -c 'printf before-backup > /data/backup-ci-marker'
+          docker compose -f compose.yaml exec -T mautrix-meta sh -c 'printf before-backup > /data/backup-ci-marker'
+
+          export BACKUP_ROOT="$RUNNER_TEMP/current-stack-backups"
+          export BACKUP_STAMP="ci-current-stack"
+          bash scripts/backup-current-stack.sh
+
+          docker compose -f compose.yaml exec -T integration sh -c 'printf after-backup > /data/backup-ci-marker'
+          docker compose -f compose.yaml exec -T synapse sh -c 'printf after-backup > /data/backup-ci-marker'
+          docker compose -f compose.yaml exec -T mautrix-meta sh -c 'printf after-backup > /data/backup-ci-marker'
+
+          export BACKUP_DIR="$BACKUP_ROOT/$BACKUP_STAMP"
+          export CONFIRM_RESTORE=RESTORE
+          bash scripts/restore-current-stack.sh
+
+          wait_healthy() {
+            service="$1"
+            timeout="$2"
+            cid="$(docker compose -f compose.yaml ps -q "$service")"
+            test -n "$cid"
+            end=$((SECONDS + timeout))
+            while [ "$SECONDS" -lt "$end" ]; do
+              status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")"
+              echo "$service after restore: $status"
+              [ "$status" = "healthy" ] && return 0
+              [ "$status" = "unhealthy" ] || [ "$status" = "exited" ] || [ "$status" = "dead" ] && return 1
+              sleep 3
+            done
+            return 1
+          }
+
+          wait_healthy synapse 120
+          wait_healthy integration 120
+          wait_healthy mautrix-meta 120
+
+          test "$(docker compose -f compose.yaml exec -T integration cat /data/backup-ci-marker)" = "before-backup"
+          test "$(docker compose -f compose.yaml exec -T synapse cat /data/backup-ci-marker)" = "before-backup"
+          test "$(docker compose -f compose.yaml exec -T mautrix-meta cat /data/backup-ci-marker)" = "before-backup"
+
+          docker compose -f compose.yaml exec -T synapse curl -fSs http://localhost:8008/health
+          docker compose -f compose.yaml exec -T mautrix-meta curl -fSs http://127.0.0.1:29319/_matrix/mau/ready
+          docker compose -f compose.yaml exec -T integration python -c "import json,urllib.request; d=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert d['ok'] is True"
 
       - name: Dump stack logs on failure
         if: failure()

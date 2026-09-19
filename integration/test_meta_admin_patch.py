@@ -33,8 +33,10 @@ class MetaAdminPatchTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_cookie_meta_is_first_class_admin_navigation_item(self):
-        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"), patch_module.NAV_ITEMS)
+    def test_managed_meta_is_primary_and_cookie_flow_is_fallback_navigation(self):
+        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), patch_module.NAV_ITEMS)
+        self.assertIn(("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie"), patch_module.NAV_ITEMS)
+        self.assertNotIn(("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"), patch_module.NAV_ITEMS)
 
     def test_runtime_entrypoint_installs_native_admin_chrome(self):
         self.assertIs(admin_v2._admin_chrome, patch_module.admin_chrome)
@@ -45,16 +47,18 @@ class MetaAdminPatchTests(unittest.TestCase):
         self.assertIn('RedirectResponse("/admin/basic"', redirect_source)
         self.assertIn("/admin/meta-cookie", {item[3] for item in patch_module.NAV_ITEMS})
 
-    def test_cookie_meta_page_is_supported_primary_surface(self):
+    def test_cookie_meta_page_is_supported_recovery_fallback(self):
         source = inspect.getsource(cookie_page.meta_cookie_page)
-        self.assertIn('admin_v2._admin_chrome("meta")', source)
+        self.assertIn('admin_v2._admin_chrome("meta_fallback")', source)
+        self.assertIn("Fallback de recuperación", source)
         self.assertIn("Copy as cURL", source)
         self.assertIn("Network / Red", source)
         self.assertIn("login_with_browser_cookies", source)
 
-    def test_managed_meta_page_remains_available_for_testing(self):
+    def test_managed_meta_page_is_supported_primary_surface(self):
         source = inspect.getsource(managed_page.meta_onboarding_page)
         self.assertIn('_admin_v2._admin_chrome("meta")', source)
+        self.assertIn("Messenger Android", source)
         self.assertIn("create_pairing(saved_step)", source)
         self.assertIn("Abrir helper de Facebook", source)
 

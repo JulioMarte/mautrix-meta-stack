@@ -1,6 +1,6 @@
 # Managed Meta onboarding for the single-client stack
 
-Status: accepted product direction; implementation pending
+Status: implemented production path; live deployment acceptance still required
 Date: 2026-09-15
 Applies to: current single-client `main` deployment line
 
@@ -8,16 +8,18 @@ Applies to: current single-client `main` deployment line
 
 The customer-facing Facebook Messenger / Marketplace onboarding flow belongs in the existing NiceGUI admin surface exposed by the `integration` service. Matrix, Synapse, mautrix-meta, bridge management rooms, Element, appservice registration, and bridge-internal identifiers are infrastructure and must not appear in the normal customer workflow.
 
-The target experience is:
+The production experience is:
 
 ```text
-/admin
+/admin/meta
   -> Facebook Messenger
-  -> Connect account
-  -> complete the authentication steps required by mautrix-meta
+  -> Messenger Android (recommended)
+  -> complete the BridgeV2 user_input steps in the authenticated admin
   -> Connected
   -> Messenger / Marketplace sync starts
 ```
+
+The browser-cookie flow at `/admin/meta-cookie` is retained as a recovery fallback only. It is not the normal customer onboarding path.
 
 The normal user must not need Element, Matrix IDs, bot commands, developer tools, manual room acceptance, appservice knowledge, or direct access to `mautrix-meta:29319`.
 
@@ -181,9 +183,19 @@ For the current one-stack-per-customer product:
 
 If the product later returns to a shared multi-tenant bridge, this ADR must be revisited rather than silently stretching the single-client model.
 
-## Implementation plan
+## Implemented architecture
 
-### Phase 1 - provisioning adapter inside `integration`
+The server-side provisioning adapter, managed NiceGUI onboarding state machine,
+replay-resistant helper handoff, login-process recovery, secret-safe structured
+diagnostics, and production navigation are implemented in `integration`.
+
+The pinned runtime currently exposes `messenger-lite-android` as a browser-safe
+`user_input` flow. That flow is the supported happy path. Repository CI covers
+its BridgeV2 HTTP contract, and real-provider validation has confirmed that the
+flow can complete against Meta. CI still cannot prove future Meta checkpoints or
+provider-side behavior, so live acceptance remains mandatory after deployment.
+
+### Provisioning adapter inside `integration`
 
 Add a small server-side adapter for the pinned bridge's provisioning API.
 
@@ -202,7 +214,7 @@ Minimum capabilities:
 
 The adapter must be integration-tested against the exact pinned mautrix-meta image rather than only mocked from an upstream schema.
 
-### Phase 2 - NiceGUI onboarding UI
+### NiceGUI onboarding UI
 
 Extend `/admin` with the Facebook Messenger integration card and login state machine.
 
@@ -215,11 +227,11 @@ The UI should:
 - never render raw session cookies or bridge secrets;
 - show a useful final account identity when the bridge exposes one.
 
-### Phase 3 - privileged auth helper only if required
+### Privileged auth helper / cookie fallback
 
 Test the actual v26.08.1 Facebook/Messenger login flows first.
 
-If the bridge returns a cookie/webview step that cannot be satisfied safely inside the normal browser, implement or package a trusted helper modeled on mautrix-manager. Do not build this helper preemptively if the selected upstream flow can be completed without it.
+When an upstream web flow returns a cookie/webview step that cannot be satisfied safely inside the normal browser, the existing trusted helper/cookie fallback may be used. It must remain secondary to Messenger Android and must never become an excuse to expose provisioning secrets or log raw Meta session material.
 
 Helper requirements include:
 
@@ -231,7 +243,7 @@ Helper requirements include:
 - no analytics or logs containing authentication material;
 - signed/reproducible builds where practical.
 
-### Phase 4 - production acceptance
+### Production acceptance
 
 Before calling managed onboarding complete, prove on the exact deployed revision:
 

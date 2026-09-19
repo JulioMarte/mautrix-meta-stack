@@ -1,8 +1,8 @@
 """Native admin-v2 integration for Meta onboarding.
 
-The proven browser-cookie flow is the primary production path. The newer managed
-BridgeV2/helper onboarding remains available at /admin/meta for controlled testing
-without replacing the known-good cookie workflow.
+The managed BridgeV2 Messenger Android flow is the primary production path.
+The browser-cookie workflow remains available only as a recovery fallback for
+upstream/web-flow compatibility.
 """
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import admin_v2
 
 NAV_ITEMS = [
     ("basic", "Basic setup", "tune", "/admin/basic"),
-    ("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"),
-    ("meta_test", "Facebook login (prueba)", "science", "/admin/meta"),
+    ("meta", "Facebook Messenger", "forum", "/admin/meta"),
+    ("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie"),
     ("advanced", "Advanced", "settings", "/admin/advanced"),
     ("status", "Status & tests", "monitor_heart", "/admin/status"),
 ]

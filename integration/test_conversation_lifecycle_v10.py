@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from db_connection_safety import ClosingConnectionProxy
+
 
 class LegacyStub:
     MATRIX_ADMIN_MXID = "@admin:matrix.example.com"
@@ -24,7 +26,7 @@ class LegacyStub:
     def db(self):
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        return conn
+        return ClosingConnectionProxy(conn)
 
     def get_setting(self, key, default=""):
         return self.settings.get(key, default)

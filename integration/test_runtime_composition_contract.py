@@ -194,6 +194,24 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
             self.fail(f"unexpected requests.request call: {method} {url}")
 
         def fake_get(url, **kwargs):
+            if url.endswith("/custom_attribute_definitions"):
+                # The production runtime performs fail-soft Marketplace schema
+                # reconciliation. Model an already-converged Chatwoot schema so
+                # the contract tests production composition without emitting
+                # unrelated network-error noise.
+                return FakeResponse({"payload": [
+                    {"id": 1, "attribute_key": "marketplace_listing_title"},
+                    {"id": 2, "attribute_key": "facebook_profile_url"},
+                    {"id": 3, "attribute_key": "marketplace_listing_url"},
+                ]})
+            if url.endswith("/labels"):
+                return FakeResponse({"payload": [
+                    {
+                        "id": 10,
+                        "title": "marketplace",
+                        "description": "Facebook Marketplace conversation",
+                    }
+                ]})
             if url.endswith("/conversations/77"):
                 return FakeResponse(
                     {

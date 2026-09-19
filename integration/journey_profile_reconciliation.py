@@ -37,6 +37,7 @@ CONTACT_ID = 803
 CONVERSATION_ID = 804
 PORT = 8092
 AVATAR_BYTES = b"ci-avatar-bytes-profile-reconciliation"
+SHARED_ADMIN_TOKEN_FILE = os.environ.get("CI_MATRIX_ADMIN_TOKEN_FILE", "/tmp/ci-matrix-admin-token")
 
 
 def fail(message: str) -> None:
@@ -222,6 +223,12 @@ def main() -> None:
         )
 
         admin_token = admin_login()
+        # The deletion journey runs immediately after this one in the same
+        # integration container. Reuse this already-authenticated session rather
+        # than performing a second password login and tripping Synapse rate limits.
+        fd = os.open(SHARED_ADMIN_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(admin_token)
         mxc = upload_avatar(admin_token)
         encoded_admin = quote(ADMIN_MXID, safe="")
         matrix_put(

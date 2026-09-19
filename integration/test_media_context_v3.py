@@ -84,6 +84,13 @@ class MediaContextV3Tests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
+        # This suite tests media/delivery mechanics. The production-composed
+        # Marketplace context wrapper is covered elsewhere; disable it here so
+        # these unit tests cannot leak DNS/HTTP traffic to the configured fake
+        # Chatwoot target.
+        self._context_patcher = patch.object(module, "sync_conversation_context", return_value=None)
+        self._context_patcher.start()
+
         with legacy.db() as conn:
             conn.execute("DELETE FROM settings")
             conn.execute("DELETE FROM room_links")
@@ -109,6 +116,9 @@ class MediaContextV3Tests(unittest.TestCase):
                 "VALUES(?, ?, ?, ?, ?, ?, ?)",
                 ("meta", "555", "111", "!market:matrix.example.com", "999", "Marketplace chat", json.dumps({"thread_type": 5})),
             )
+
+    def tearDown(self):
+        self._context_patcher.stop()
 
     def add_message(self, mxid, sender_id, sender_mxid, timestamp=2_000_000_000_000):
         with ClosingConnectionProxy(sqlite3.connect(module.META_DB_PATH)) as conn:

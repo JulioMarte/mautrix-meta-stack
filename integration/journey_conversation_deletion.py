@@ -33,6 +33,7 @@ REGISTRATION = os.environ.get("MAUTRIX_REGISTRATION_PATH", "/mautrix/registratio
 CALLBACK_SECRET = "journey-delete-secret"
 ACCOUNT_ID = 701
 INBOX_ID = 702
+SHARED_ADMIN_TOKEN_FILE = os.environ.get("CI_MATRIX_ADMIN_TOKEN_FILE", "/tmp/ci-matrix-admin-token")
 
 
 def fail(message: str) -> None:
@@ -69,7 +70,21 @@ def matrix_request(method: str, path: str, token: str, *, user_id: str | None = 
 
 
 def admin_login() -> str:
-    """Login robustly without making the journey depend on previous CI login timing."""
+    """Reuse the prior live-journey Matrix session; login only as a fallback."""
+    try:
+        with open(SHARED_ADMIN_TOKEN_FILE, "r", encoding="utf-8") as handle:
+            token = handle.read().strip()
+        if token:
+            try:
+                os.unlink(SHARED_ADMIN_TOKEN_FILE)
+            except FileNotFoundError:
+                pass
+            return token
+    except FileNotFoundError:
+        pass
+
+    # Standalone execution fallback. Keep retries bounded so CI cannot hang on a
+    # long Retry-After value, while preserving real Synapse throttling behavior.
     last = None
     for attempt in range(6):
         response = requests.post(
@@ -93,7 +108,8 @@ def admin_login() -> str:
             retry_ms = int((response.json() or {}).get("retry_after_ms") or retry_ms)
         except (TypeError, ValueError):
             pass
-        time.sleep(max(0.25, retry_ms / 1000.0) + attempt * 0.25)
+        retry_seconds = min(5.0, max(0.25, retry_ms / 1000.0))
+        time.sleep(retry_seconds + attempt * 0.25)
     fail(
         "Synapse login remained rate-limited after bounded retries: "
         f"{getattr(last, 'status_code', 'unknown')}"

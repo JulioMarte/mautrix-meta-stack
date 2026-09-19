@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import hashlib
 import hmac
@@ -237,6 +238,36 @@ class RuntimeEnhancementTests(unittest.TestCase):
         request_call.assert_called_once()
         self.assertIn("verified", result)
         self.assertEqual(legacy.get_setting("chatwoot_api_inbox_signing_secret"), "api-secret")
+
+    def test_legacy_api_inbox_route_does_not_mark_ignored_callback_as_delivered(self):
+        secret = "api-inbox-secret"
+        legacy.set_setting("chatwoot_api_inbox_signing_secret", secret)
+        payload = {
+            "event": "message_created",
+            "id": 998,
+            "message_type": "outgoing",
+            "private": False,
+            "content": "hello",
+            "conversation": {"id": 123, "inbox_id": 9},
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        timestamp = str(int(time.time()))
+        signature = "sha256=" + hmac.new(
+            secret.encode(), timestamp.encode() + b"." + raw, hashlib.sha256
+        ).hexdigest()
+
+        class RequestStub:
+            headers = {
+                "X-Chatwoot-Signature": signature,
+                "X-Chatwoot-Timestamp": timestamp,
+            }
+
+            async def body(self):
+                return raw
+
+        response = asyncio.run(module.api_inbox_webhook(RequestStub()))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(legacy.get_setting("api_inbox_delivery_verified_at"), "")
 
     def test_outgoing_callback_deduplicates_same_chatwoot_message(self):
         room = self.insert_link(conversation=123)

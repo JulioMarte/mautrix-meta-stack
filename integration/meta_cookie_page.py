@@ -1,4 +1,4 @@
-"""Simple cookie-first Meta onboarding page.
+"""Recovery fallback for cookie-based Meta onboarding.
 
 This intentionally avoids reproducing Facebook authentication. The operator logs
 in on facebook.com with the normal browser flow (including MFA/passkeys), then
@@ -15,14 +15,15 @@ from nicegui import ui
 import admin_v2
 import nicegui_app
 from meta_cookie_auth import CookieInputError, login_with_browser_cookies
-from meta_provisioning import ProvisioningError
+from meta_onboarding_diagnostics import new_trace_id
+from meta_provisioning import ProvisioningError, operator_error_message, provisioning_debug
 
 
 @ui.page("/admin/meta-cookie")
 def meta_cookie_page():
     if not admin_v2._require_auth():
         return
-    admin_v2._admin_chrome("meta")
+    admin_v2._admin_chrome("meta_fallback")
 
     runtime = nicegui_app.meta_runtime_state()
 
@@ -30,7 +31,7 @@ def meta_cookie_page():
         with ui.row().classes("items-center justify-between w-full"):
             with ui.column().classes("gap-0"):
                 ui.label("Facebook Messenger").classes("text-2xl font-semibold")
-                ui.label("Conecta Facebook usando la sesión que ya funciona en tu navegador.").classes("text-sm text-slate-500")
+                ui.label("Fallback de recuperación: conecta usando una sesión de navegador existente.").classes("text-sm text-slate-500")
             ui.button("Actualizar", icon="refresh", on_click=lambda: ui.navigate.to("/admin/meta-cookie")).props("flat no-caps")
 
         with ui.card().classes("w-full p-6"):
@@ -70,9 +71,9 @@ def meta_cookie_page():
                 ui.button("Desconectar cuenta", icon="link_off", on_click=disconnect_all).props("outline color=negative").classes("mt-3")
 
         with ui.card().classes("w-full p-6 border border-blue-100"):
-            ui.label("Cómo conectarlo — 4 pasos").classes("text-xl font-semibold")
+            ui.label("Fallback web — 4 pasos").classes("text-xl font-semibold")
             ui.label(
-                "No necesitas Element, instalar nada ni escribir tu contraseña en este panel. Inicia sesión directamente en Facebook y copia una petición ya autenticada."
+                "Usa este método solo si el flujo recomendado Messenger Android no puede completarse. Inicia sesión directamente en Facebook y copia una petición ya autenticada."
             ).classes("text-slate-600 mb-2")
 
             with ui.column().classes("gap-4 mt-2"):
@@ -143,9 +144,10 @@ def meta_cookie_page():
 
                 result_label.text = "Conectando con la sesión del navegador…"
                 result_label.classes(replace="text-sm mt-3 text-blue-700 font-medium")
+                trace_id = new_trace_id()
                 try:
-                    step = await asyncio.to_thread(login_with_browser_cookies, nicegui_app._prov_client(), raw)
-                    safe = nicegui_app._store_meta_step(step)
+                    step = await asyncio.to_thread(login_with_browser_cookies, nicegui_app._prov_client(trace_id), raw)
+                    safe = nicegui_app._store_meta_step(step, trace_id=trace_id)
                     if str(safe.get("type") or "") != "complete":
                         raise RuntimeError(f"mautrix-meta devolvió un paso inesperado: {safe.get('type') or 'desconocido'}")
                     result_label.text = str(safe.get("instructions") or "Cuenta conectada correctamente.")
@@ -156,11 +158,29 @@ def meta_cookie_page():
                     result_label.text = str(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except ProvisioningError as exc:
-                    suffix = f" [{exc.errcode}]" if exc.errcode else ""
-                    result_label.text = f"Facebook/mautrix rechazó la sesión: {exc}{suffix}"
+                    nicegui_app._record_meta_failure(exc, operation="cookie_fallback", trace_id=trace_id)
+                    provisioning_debug(
+                        "cookie_ui_login_failed",
+                        trace_id=exc.trace_id,
+                        error_type=type(exc).__name__,
+                        status_code=exc.status_code,
+                        errcode=exc.errcode,
+                        failure_code=exc.failure_code,
+                        retryable=exc.retryable,
+                    )
+                    result_label.text = operator_error_message(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except Exception as exc:
-                    result_label.text = f"No se pudo conectar: {exc}"
+                    nicegui_app._record_meta_failure(exc, operation="cookie_fallback", trace_id=trace_id)
+                    provisioning_debug(
+                        "cookie_ui_login_failed",
+                        error_type=type(exc).__name__,
+                        failure_code="META_LOGIN_UNEXPECTED",
+                    )
+                    result_label.text = (
+                        "No se pudo completar el acceso por un error inesperado del panel. "
+                        "Revisa los logs META_LOGIN_DEBUG del mismo momento."
+                    )
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 finally:
                     cookie_text.value = ""

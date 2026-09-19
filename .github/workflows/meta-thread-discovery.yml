@@ -50,6 +50,10 @@ on:
       - 'mautrix-meta-fork/**'
       - '.github/workflows/meta-thread-discovery.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest

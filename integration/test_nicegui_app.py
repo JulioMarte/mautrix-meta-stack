@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 class NiceGUIAdminTests(unittest.TestCase):
@@ -198,6 +198,71 @@ class NiceGUIAdminTests(unittest.TestCase):
         self.assertNotIn("chatwoot_webhook_signing_secret", state)
         self.assertNotIn("super-secret-token", repr(state))
         self.assertNotIn("signing-secret-value", repr(state))
+
+    def test_readiness_state_reports_internal_dependencies_without_secrets(self):
+        self.save_minimal()
+        legacy.set_setting("api_inbox_callback_verified_at", "2026-09-19 18:00:00 UTC")
+        legacy.set_setting("api_inbox_delivery_verified_at", "2026-09-19 18:01:00 UTC")
+        legacy.set_setting("chatwoot_api_inbox_signing_secret", "api-inbox-secret-not-exposed")
+        response = Mock(status_code=200)
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        session.trust_env = True
+        session.get.return_value = response
+
+        client = Mock()
+        client.whoami.return_value = {
+            "logins": [{
+                "id": "private-login-id",
+                "name": "Meta account",
+                "state": {"state_event": "CONNECTED", "message": "ok"},
+            }]
+        }
+        with patch.object(module.requests, "Session", return_value=session), \
+             patch("meta_provisioning.MautrixProvisioningClient", return_value=client):
+            result = module.readiness_state()
+
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["checks"]["database"])
+        self.assertTrue(result["checks"]["synapse"])
+        self.assertTrue(result["checks"]["mautrix_provisioning"])
+        self.assertTrue(result["checks"]["meta_connected"])
+        self.assertTrue(result["checks"]["api_inbox_callback_verified"])
+        self.assertTrue(result["checks"]["api_inbox_hmac_secret_saved"])
+        self.assertTrue(result["checks"]["api_inbox_delivery_verified"])
+        self.assertNotIn("private-login-id", repr(result))
+        self.assertNotIn("api-inbox-secret-not-exposed", repr(result))
+        self.assertFalse(session.trust_env)
+
+    def test_deep_readiness_verifies_selected_api_inbox_callback(self):
+        self.save_minimal()
+        legacy.set_setting("api_inbox_callback_verified_at", "2026-09-19 18:00:00 UTC")
+        legacy.set_setting("api_inbox_delivery_verified_at", "2026-09-19 18:01:00 UTC")
+        legacy.set_setting("chatwoot_api_inbox_signing_secret", "api-inbox-secret-not-exposed")
+        response = Mock(status_code=200)
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
+        session.get.return_value = response
+        client = Mock()
+        client.whoami.return_value = {
+            "logins": [{"state": {"state_event": "CONNECTED"}}]
+        }
+        inbox = {
+            "id": 2,
+            "channel_type": "Channel::Api",
+            "webhook_url": "https://bridge.example.com/webhooks/chatwoot/inbox",
+            "hmac_token": "must-not-appear",
+        }
+        with patch.object(module.requests, "Session", return_value=session), \
+             patch("meta_provisioning.MautrixProvisioningClient", return_value=client), \
+             patch.object(module.prod, "cw_get", return_value=inbox):
+            result = module.readiness_state(deep=True)
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["checks"]["chatwoot_api_inbox_live"])
+        self.assertTrue(result["checks"]["api_inbox_callback_live"])
+        self.assertNotIn("must-not-appear", repr(result))
 
     def test_setup_state_counts_linked_conversations(self):
         self.save_minimal()
