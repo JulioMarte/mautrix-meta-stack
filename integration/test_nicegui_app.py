@@ -199,6 +199,35 @@ class NiceGUIAdminTests(unittest.TestCase):
         self.assertNotIn("super-secret-token", repr(state))
         self.assertNotIn("signing-secret-value", repr(state))
 
+    def test_readiness_state_reports_internal_dependencies_without_secrets(self):
+        self.save_minimal()
+        response = Mock(status_code=200)
+        session = Mock()
+        session.__enter__ = Mock(return_value=session)
+        session.__exit__ = Mock(return_value=False)
+        session.trust_env = True
+        session.get.return_value = response
+
+        client = Mock()
+        client.whoami.return_value = {
+            "logins": [{
+                "id": "private-login-id",
+                "name": "Meta account",
+                "state": {"state_event": "CONNECTED", "message": "ok"},
+            }]
+        }
+        with patch.object(module.requests, "Session", return_value=session), \
+             patch("meta_provisioning.MautrixProvisioningClient", return_value=client):
+            result = module.readiness_state()
+
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["checks"]["database"])
+        self.assertTrue(result["checks"]["synapse"])
+        self.assertTrue(result["checks"]["mautrix_provisioning"])
+        self.assertTrue(result["checks"]["meta_connected"])
+        self.assertNotIn("private-login-id", repr(result))
+        self.assertFalse(session.trust_env)
+
     def test_setup_state_counts_linked_conversations(self):
         self.save_minimal()
         with legacy.db() as conn:
