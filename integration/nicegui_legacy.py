@@ -515,6 +515,9 @@ def readiness_state(*, deep: bool = False) -> dict:
     checks = {
         "database": False,
         "chatwoot_configured": bool(state["chatwoot_ready"]),
+        "api_inbox_callback_verified": bool(legacy.get_setting("api_inbox_callback_verified_at")),
+        "api_inbox_hmac_secret_saved": bool(legacy.get_setting("chatwoot_api_inbox_signing_secret")),
+        "api_inbox_delivery_verified": bool(legacy.get_setting("api_inbox_delivery_verified_at")),
         "proxy_configured": bool(state["proxy_ready"]),
         "synapse": False,
         "mautrix_provisioning": False,
@@ -523,8 +526,10 @@ def readiness_state(*, deep: bool = False) -> dict:
     details = {
         "chatwoot_verified_at": state.get("chatwoot_verified_at") or "",
         "proxy_verified_at": state.get("proxy_verified_at") or "",
-        "webhook_registration_verified_at": state.get("webhook_registration_verified_at") or "",
-        "webhook_delivery_verified_at": state.get("webhook_delivery_verified_at") or "",
+        "api_inbox_callback_verified_at": legacy.get_setting("api_inbox_callback_verified_at"),
+        "api_inbox_delivery_verified_at": legacy.get_setting("api_inbox_delivery_verified_at"),
+        "last_chatwoot_matrix_delivery_at": legacy.get_setting("last_chatwoot_matrix_delivery_at"),
+        "last_chatwoot_matrix_acknowledged": bool(legacy.get_setting("last_chatwoot_matrix_event_id")),
     }
 
     try:
@@ -558,12 +563,18 @@ def readiness_state(*, deep: bool = False) -> dict:
         details["meta_error_type"] = type(exc).__name__
 
     if deep:
-        checks["chatwoot_live"] = False
+        checks["chatwoot_api_inbox_live"] = False
+        checks["api_inbox_callback_live"] = False
         if checks["chatwoot_configured"]:
             try:
-                verify_chatwoot()
-                checks["chatwoot_live"] = True
-                details["chatwoot_verified_at"] = legacy.get_setting("chatwoot_verified_at")
+                account_id = int(legacy.get_setting("chatwoot_account_id"))
+                inbox_id = int(legacy.get_setting("chatwoot_inbox_id"))
+                inbox = prod.cw_get(f"/api/v1/accounts/{account_id}/inboxes/{inbox_id}")
+                if isinstance(inbox, dict) and str(inbox.get("channel_type") or "") == "Channel::Api":
+                    checks["chatwoot_api_inbox_live"] = True
+                    callback = str(inbox.get("webhook_url") or inbox.get("callback_webhook_url") or "").rstrip("/")
+                    checks["api_inbox_callback_live"] = callback.endswith("/webhooks/chatwoot/inbox")
+                    details["chatwoot_verified_at"] = _now_utc()
             except Exception as exc:
                 details["chatwoot_error_type"] = type(exc).__name__
 
