@@ -50,23 +50,30 @@ The resolver secret is not the residential proxy password and must not be reused
 
 ## Chatwoot setup
 
-In `/admin`, configure:
+The production outbound path is a **Chatwoot API Inbox callback**, not an
+account-level webhook.
 
-1. Chatwoot HTTPS base URL.
-2. Account ID.
-3. Inbox ID.
-4. User API access token with access to that account/inbox.
-5. Run **Test Chatwoot** and require success.
+In `/admin/basic`:
 
-Configure a Chatwoot `message_created` webhook to the canonical signed endpoint:
+1. Configure the Chatwoot HTTPS base URL and Personal Access Token.
+2. Detect the account and select a numeric inbox whose `channel_type` is `Channel::Api`.
+3. Save and run the Chatwoot API test.
+4. Apply and verify the API Inbox callback. The required callback URL is:
 
 ```text
-https://<integration-domain>/webhooks/chatwoot
+https://<integration-domain>/webhooks/chatwoot/inbox
 ```
 
-Then use **Verify webhook & import secret** in `/admin`. When Chatwoot exposes the webhook signing secret through its API, the panel imports it into the private integration volume and invalidates any previous delivery verification. If the Chatwoot version does not expose it, paste the webhook signing secret in the authenticated admin.
+5. The panel verifies that Chatwoot stored that exact callback and imports the
+   API Inbox HMAC token into the private integration volume.
+6. Send a real agent reply and require a verified callback delivery plus a
+   positively acknowledged Matrix event in **Status & tests**.
 
-New deployments must use signed webhook headers and the canonical path. The legacy `/webhooks/chatwoot/<secret>` route exists only for migration compatibility and should not be configured for a new production deployment.
+The callback rejects stale timestamps and invalid `X-Chatwoot-Signature` HMACs.
+New deployments should not create an account-level Settings → Integrations →
+Webhook for this connector. The old `/webhooks/chatwoot` path remains only for
+migration; after the API Inbox callback and a real reply test pass, remove legacy
+account-level hooks to avoid two outbound delivery paths.
 
 ## Meta onboarding
 
