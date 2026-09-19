@@ -321,6 +321,9 @@ jobs:
             test "$(yq ".backfill.max_catchup_messages" /data/config.yaml)" = "500"
           '
 
+      - name: Run live profile and sync-policy reconciliation journey
+        run: docker compose -f compose.yaml exec -T integration python /app/journey_profile_reconciliation.py
+
       - name: Run bidirectional conversation deletion journey
         run: docker compose -f compose.yaml exec -T integration python /app/journey_conversation_deletion.py
 
