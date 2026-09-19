@@ -24,8 +24,8 @@ import requests
 os.environ["START_MATRIX_SYNC"] = "false"
 import runtime_entrypoint  # noqa: F401,E402
 import binding_generations_v12 as bindings  # noqa: E402
-import delivery_history_v2 as history  # noqa: E402
 import final_app as runtime  # noqa: E402
+import runtime_enhancements as enhancements  # noqa: E402
 
 legacy = runtime.legacy
 MATRIX = os.environ.get("MATRIX_HOMESERVER", "http://synapse:8008").rstrip("/")
@@ -207,7 +207,7 @@ def main() -> None:
         legacy.set_setting("chatwoot_api_token", "journey-profile-token")
         legacy.set_setting("sync_contact_profiles", "1")
         legacy.set_setting("import_history_on_join", "1")
-        legacy.set_setting("history_import_days", "30")
+        legacy.set_setting("history_import_days", "14")
 
         binding = bindings.activate_target(
             bindings.BindingTarget(
@@ -280,20 +280,20 @@ def main() -> None:
         # on only for the explicit request; importing runtime_entrypoint above did
         # not create a second /sync owner.
         os.environ["START_MATRIX_SYNC"] = "true"
-        history.save_operations_settings_days(
+        enhancements.save_operations_settings(
             auto_join=True,
             import_history=True,
-            history_limit=45,
+            history_limit=30,
             sync_profiles=True,
             repair_deleted=False,
         )
         if legacy.get_setting("sync_policy_revision") != "1":
             fail(
-                "history-days change did not create sync policy revision 1: "
+                "production history-days change did not create sync policy revision 1: "
                 + legacy.get_setting("sync_policy_revision")
             )
         reason = legacy.get_setting("sync_reconcile_requested_reason")
-        if "history_days:30->45" not in reason:
+        if "history_days:14->30" not in reason:
             fail(f"history-days reconcile reason missing: {reason!r}")
         wait_until(
             lambda: legacy.get_setting("sync_reconcile_completed_at"),
