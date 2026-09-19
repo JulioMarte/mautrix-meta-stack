@@ -40,6 +40,10 @@ docker compose -f compose.yaml run --rm --no-deps --entrypoint /bin/sh mautrix-c
   '\'' /data/config.yaml
 '
 
+resolver_url="$(docker compose -f compose.yaml run --rm --no-deps --entrypoint /bin/sh mautrix-configure -c 'yq -r ".network.get_proxy_from" /data/config.yaml')"
+echo "Phase 3 resolver URL: $resolver_url"
+test "$resolver_url" = "http://control-plane:3000/internal/v1/egress/resolve"
+
 "${phase3_dc[@]}" up -d control-plane synapse mautrix-meta
 
 wait_healthy() {
