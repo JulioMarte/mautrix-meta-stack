@@ -36,6 +36,8 @@ jobs:
         run: |
           bash -n scripts/bootstrap.sh
           bash -n scripts/check-config.sh
+          bash -n scripts/backup-current-stack.sh
+          bash -n scripts/restore-current-stack.sh
 
       - name: Build integration sidecar
         run: docker build -t meta-chatwoot-integration ./integration
