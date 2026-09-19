@@ -45,11 +45,13 @@ for service in synapse mautrix-meta integration; do
   volume="${VOLUMES[$service]}"
   archive="$service.tgz"
   echo "Restoring $service into volume $volume"
-  docker run --rm \
+  # Feed the archive over stdin instead of bind-mounting the backup path.
+  # This mirrors backup streaming and avoids host/container ownership quirks.
+  docker run --rm -i \
     -v "$volume:/target" \
-    -v "$BACKUP_DIR:/backup:ro" \
     "$BACKUP_IMAGE" \
-    sh -eu -c "find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar -C /target -xzf /backup/$archive"
+    sh -eu -c "find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar -C /target -xzf -" \
+    < "$BACKUP_DIR/$archive"
 done
 
 "${DC[@]}" up -d
