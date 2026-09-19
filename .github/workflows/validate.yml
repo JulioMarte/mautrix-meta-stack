@@ -114,6 +114,21 @@ jobs:
             -e ALLOW_INSECURE_CHATWOOT=true \
             meta-chatwoot-integration python -m unittest test_binding_generations_v12.py
 
+      - name: Run production runtime composition contract
+        run: |
+          docker run --rm \
+            -e DATA_DIR=/tmp/integration-runtime-composition-test \
+            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
+            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
+            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
+            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
+            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-runtime-composition-tests \
+            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
+            -e INTEGRATION_COOKIE_SECURE=false \
+            -e START_MATRIX_SYNC=false \
+            -e ALLOW_INSECURE_CHATWOOT=true \
+            meta-chatwoot-integration python -m unittest test_runtime_composition_contract.py
+
       - name: Run conversation lifecycle tests
         run: |
           docker run --rm \
@@ -150,21 +165,6 @@ jobs:
 
       - name: Validate Chatwoot deletion extension contract
         run: sh chatwoot-extension/run_contract_test.sh
-
-      - name: Run binding generation tests
-        run: |
-          docker run --rm \
-            -e DATA_DIR=/tmp/integration-binding-test \
-            -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
-            -e MATRIX_ADMIN_PASSWORD=matrix-password-long-value \
-            -e INTEGRATION_ADMIN_PASSWORD=admin-password-long-value \
-            -e CHATWOOT_WEBHOOK_SECRET=webhook-secret-long-value \
-            -e INTEGRATION_SESSION_SECRET=session-secret-long-enough-for-binding-tests \
-            -e META_PROXY_RESOLVER_SECRET=resolver-secret-long-value \
-            -e INTEGRATION_COOKIE_SECURE=false \
-            -e START_MATRIX_SYNC=false \
-            -e ALLOW_INSECURE_CHATWOOT=true \
-            meta-chatwoot-integration python -m unittest test_binding_generations_v12.py
 
       - name: Run sync integrity tests
         run: |
