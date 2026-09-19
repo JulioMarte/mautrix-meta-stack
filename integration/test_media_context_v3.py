@@ -1,4 +1,5 @@
 import importlib
+from contextlib import closing
 import json
 import os
 import sqlite3
@@ -38,7 +39,7 @@ class MediaContextV3Tests(unittest.TestCase):
                 },
             }, fh, sort_keys=False)
 
-        with sqlite3.connect(os.environ["MAUTRIX_META_DB_PATH"]) as conn:
+        with closing(sqlite3.connect(os.environ["MAUTRIX_META_DB_PATH"])) as conn:
             conn.executescript("""
                 CREATE TABLE user_login (
                     bridge_id TEXT NOT NULL,
@@ -94,7 +95,7 @@ class MediaContextV3Tests(unittest.TestCase):
         legacy.set_setting("history_import_days", "30")
         legacy.set_setting("chatwoot_enabled_at_ms", "1")
 
-        with sqlite3.connect(module.META_DB_PATH) as conn:
+        with closing(sqlite3.connect(module.META_DB_PATH)) as conn:
             conn.execute("DELETE FROM message")
             conn.execute("DELETE FROM portal")
             conn.execute("DELETE FROM user_login")
@@ -109,7 +110,7 @@ class MediaContextV3Tests(unittest.TestCase):
             )
 
     def add_message(self, mxid, sender_id, sender_mxid, timestamp=2_000_000_000_000):
-        with sqlite3.connect(module.META_DB_PATH) as conn:
+        with closing(sqlite3.connect(module.META_DB_PATH)) as conn:
             conn.execute(
                 "INSERT INTO message(bridge_id,id,part_id,mxid,room_id,room_receiver,sender_id,sender_mxid,timestamp) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
