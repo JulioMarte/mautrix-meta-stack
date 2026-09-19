@@ -182,6 +182,12 @@ def collect_once(*, force_rooms: bool = False) -> dict:
         "chatwoot_configured": bool(legacy.configured()),
         "history_import_enabled": enhancements.setting_bool("import_history_on_join", True),
         "history_import_limit": enhancements.setting_int("history_import_limit", enhancements.DEFAULT_HISTORY_LIMIT),
+        "history_import_days": enhancements.setting_int("history_import_days", 30, 0, 3650),
+        "sync_policy_revision": enhancements.setting_int("sync_policy_revision", 0, 0, 2_000_000_000),
+        "sync_reconcile_requested_at": legacy.get_setting("sync_reconcile_requested_at"),
+        "sync_reconcile_completed_at": legacy.get_setting("sync_reconcile_completed_at"),
+        "runtime_reconcile_pending": legacy.get_setting("runtime_reconcile_pending"),
+        "runtime_reconcile_version": legacy.get_setting("runtime_reconcile_version"),
         "mautrix_config": config,
         "errors": errors[:10],
     }
