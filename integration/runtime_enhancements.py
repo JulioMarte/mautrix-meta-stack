@@ -450,9 +450,14 @@ async def api_inbox_webhook(request: Request):
         payload = json.loads(raw.decode("utf-8"))
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-    legacy.set_setting("api_inbox_delivery_verified_at", now_utc())
     try:
-        return JSONResponse(handle_chatwoot_outgoing(payload))
+        result = handle_chatwoot_outgoing(payload)
+        # The production middleware performs stronger Matrix event verification
+        # before setting this marker. Keep the legacy route conservative too:
+        # merely receiving a valid callback must never count as delivery.
+        if result.get("ok") and not result.get("ignored") and not result.get("duplicate"):
+            legacy.set_setting("api_inbox_delivery_verified_at", now_utc())
+        return JSONResponse(result)
     except Exception as exc:
         print(f"API inbox outgoing delivery failed: {exc}", flush=True)
         return JSONResponse({"error": "delivery failed"}, status_code=502)
