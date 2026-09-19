@@ -180,6 +180,9 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
                 return FakeResponse({"id": 5, "contact_inboxes": []})
             if method == "POST" and url.endswith("/contacts/5/contact_inboxes"):
                 return FakeResponse({"source_id": "source-5"})
+            if method == "PUT" and url.endswith("/contacts/5"):
+                self.assertEqual(kwargs["json"]["name"], "Customer Name")
+                return FakeResponse({})
             if method == "POST" and url.endswith("/conversations"):
                 return FakeResponse({"id": 77, "display_id": 12})
             if method == "GET" and url.endswith("/conversations/77/messages"):
@@ -236,7 +239,8 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
 
         with legacy.db() as conn:
             projection = conn.execute(
-                "SELECT cb.chatwoot_conversation_id,cb.status,b.generation,b.status "
+                "SELECT cb.chatwoot_conversation_id,cb.status,b.generation,b.status,"
+                "cb.profile_sync_version,cb.profile_synced_at,cb.profile_sync_error "
                 "FROM conversation_bindings cb "
                 "JOIN chatwoot_bindings b ON b.id=cb.chatwoot_binding_id "
                 "WHERE cb.matrix_room_id=?",
@@ -256,6 +260,9 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
         self.assertEqual(str(projection[1]), "ACTIVE")
         self.assertEqual(int(projection[2]), 1)
         self.assertEqual(str(projection[3]), "ACTIVE")
+        self.assertEqual(int(projection[4]), bindings.PROFILE_SYNC_VERSION)
+        self.assertGreater(int(projection[5]), 0)
+        self.assertEqual(str(projection[6]), "")
         self.assertEqual(int(room_link[0]), 77)
         self.assertEqual(str(delivery[0]), "DELIVERED")
         self.assertEqual(str(delivery[1]), "matrix_to_chatwoot")
@@ -263,6 +270,9 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
         created_paths = [url for method, url, _ in request_calls if method == "POST"]
         self.assertTrue(any(path.endswith("/contacts") for path in created_paths))
         self.assertTrue(any(path.endswith("/conversations") for path in created_paths))
+        self.assertTrue(
+            any(method == "PUT" and url.endswith("/contacts/5") for method, url, _ in request_calls)
+        )
 
 
 if __name__ == "__main__":
