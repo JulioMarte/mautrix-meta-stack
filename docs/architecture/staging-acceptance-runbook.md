@@ -1,276 +1,359 @@
 # Controlled Staging Acceptance Runbook
 
-Status: normative human-evidence checklist for the final pre-production evaluation of the Meta Control Plane.
+Status: normative human-evidence checklist for the current single-client production stack.
 
-This runbook covers the assertions that repository CI cannot honestly prove with fixtures: real Meta account acceptance, real residential egress, public exit identity, Coolify/DNS/TLS behavior, and real backup operations. It does not authorize promotion to `main`.
+This runbook covers what repository CI cannot prove honestly: the real Meta provider, the target Chatwoot instance, Coolify/TLS/ingress behavior, persistence across real redeploys and off-host recovery.
+
+Passing this runbook does not by itself promote `dev` to `main`.
 
 ## Entry conditions
 
-Do not begin staging unless all of the following are true:
+Before staging:
 
-- the exact `dev` candidate SHA is recorded before the test starts;
-- the complete required repository acceptance matrix for that SHA is green;
-- the candidate contains no uncommitted or out-of-band production changes;
-- at least two disposable Meta/Facebook test accounts are available;
-- at least two distinct approved egress endpoints are available and each has a known expected public IP and country;
-- separate tenant, Matrix, Meta connection and Chatwoot identities are prepared for A and B;
-- secrets are supplied only through Coolify/environment or the approved runtime secret mechanism;
-- the operator has a rollback target and a current backup of the staging state before destructive/restart tests.
+- record the exact green `dev` candidate SHA;
+- confirm all required current-head repository checks are green;
+- ensure no uncommitted/out-of-band runtime changes exist;
+- have one controlled Meta/Facebook account suitable for real Messenger testing and, when relevant, Marketplace;
+- have a second Facebook account/persona capable of sending test inbound messages;
+- configure a dedicated Chatwoot `Channel::Api` inbox for the candidate;
+- have an off-host backup destination;
+- know the current rollback target;
+- ensure secrets exist only in Coolify/environment/private runtime state.
 
-Record the candidate as:
+Record:
 
 ```text
 candidate_sha=<exact dev SHA>
 started_at=<UTC timestamp>
 operator=<human operator>
-environment=<staging environment identifier>
+environment=<staging identifier>
+chatwoot_instance=<non-secret identifier>
 ```
 
-If the SHA changes, stop. Evidence collected against different commits must not be combined into one acceptance result.
+If the candidate SHA changes, stop and start a new evidence record.
 
 ## Required topology
-
-The staging deployment must exercise the real intended boundaries:
 
 ```text
 public HTTPS
    |
-   +-> Synapse
-   +-> protected control-plane public surface
-   +-> Chatwoot webhook ingress
+   +-> integration admin + Chatwoot API Inbox callback
 
 private application network
    |
-   +-> mautrix-meta
-   +-> control-plane internal API / egress resolver
-   +-> persistent control-plane data volume
+   +-> integration:8080
+   +-> synapse:8008
+   +-> mautrix-meta:29319
 
-Meta connection A -> residential egress A
-Meta connection B -> residential egress B
+persistent state
+   |
+   +-> integration-data-v1
+   +-> synapse-data-v2
+   +-> mautrix-meta-data-v2
+   +-> isolated provisioning-secret volume
 ```
 
-The internal egress resolver and bridge-management endpoints must not be reachable from the public Internet.
+Do not publish Synapse internal port 8008, mautrix appservice/provisioning port 29319, or the internal proxy resolver directly to the Internet.
 
-## Evidence record
+## Evidence format
 
-For every required check, record:
+For every check record:
 
 ```text
 check_id
 candidate_sha
-started_at / finished_at
+started_at
+finished_at
 result = PASS | FAIL | NOT_RUN
 observable evidence
-relevant tenant_id / connection_id when applicable
-expected egress identity
-observed egress identity
 log/artifact reference with secrets removed
 operator notes
 ```
 
-Do not paste Meta cookies, access tokens, proxy passwords, Chatwoot tokens, complete credential-bearing proxy URIs, or other raw secrets into the evidence record.
+Never copy Meta passwords, OTPs, cookies, Chatwoot tokens, HMAC tokens, Matrix passwords or provisioning secrets into the evidence.
 
-## Stage A — deployment and exposure
+## Stage A — deployment and security boundary
 
 ### STG-01 Candidate identity
 
-Prove the running control-plane and patched mautrix artifacts came from the recorded candidate SHA. Record image/tag/digest or build provenance sufficient to identify the deployed artifact.
+Deploy the exact candidate through the normal Coolify/repository path.
 
-Pass condition: deployed artifacts are attributable to exactly the candidate under evaluation.
+Pass when the running deployment can be tied to the exact recorded SHA and no manual SSH code/config patch was required.
 
-### STG-02 Public/private boundary
+### STG-02 Public exposure
 
-From an external network, verify:
+From an external network verify:
 
-- Synapse is reachable only through the intended public route;
-- public control-plane routes are protected as designed;
-- Chatwoot webhook ingress is reachable only where intended;
-- `/internal/v1/*`, the egress resolver and mautrix bridge-management paths are not Internet-accessible;
-- mautrix application-service port is not directly published.
+- the admin is reachable only through intended HTTPS;
+- direct container ports are not publicly reachable;
+- mautrix provisioning/appservice endpoints are not public;
+- the internal proxy resolver is not public;
+- HTTP is redirected/rejected according to the deployment policy.
 
-Pass condition: no internal-only route is externally reachable.
+Pass when only intended HTTPS surfaces are reachable.
 
-### STG-03 Fresh/redeploy startup
+### STG-03 Admin security
 
-Perform a normal Coolify deploy/redeploy using repository-controlled initialization. Do not repair state by ad-hoc SSH mutation.
+Verify:
 
-Pass condition: migrations/startup complete normally, liveness becomes healthy, readiness becomes healthy only after local invariants hold, and persisted identities survive redeploy.
+- `INTEGRATION_COOKIE_SECURE=true`;
+- invalid admin passwords are rejected;
+- ingress rate limiting is enabled for the admin/login origin;
+- successful logout removes the authenticated admin state;
+- browser responses do not expose stored tokens/secrets.
 
-## Stage B — real egress isolation
+### STG-04 Liveness versus readiness
 
-Use two distinct real connections A and B with `proxy_required`.
+Verify:
 
-### STG-10 Initial login egress
+- `/health` returns healthy while the integration process is functional;
+- `/ready` clearly reports missing product prerequisites instead of crashing;
+- after full acceptance `/ready` returns ready;
+- `/ready?deep=1` succeeds and reveals no secrets.
 
-For each connection, begin a real Meta login while observing the public exit at the controlled proxy boundary.
+## Stage B — Chatwoot API Inbox
 
-Pass conditions:
+### STG-10 API Inbox identity
 
-- A's first provider-bound traffic exits through egress A;
-- B's first provider-bound traffic exits through egress B;
-- neither performs provider-bound traffic through the host/Contabo public IP.
+In `/admin/basic`, discover/select the real Chatwoot inbox.
 
-### STG-11 Connected messaging/reconnect egress
+Pass when the selected inbox is numeric, is `Channel::Api`, and the API test passes.
 
-After successful login, exercise connect, disconnect/reconnect and normal message traffic for A and B.
+### STG-11 Callback configuration
 
-Pass conditions:
+Apply/verify the callback from the admin.
 
-- A remains on egress A;
-- B remains on egress B;
-- reconnect does not rotate assignments;
-- no direct-host fallback is observed.
+Expected URL:
 
-### STG-12 Media/avatar traffic
+```text
+https://<integration-domain>/webhooks/chatwoot/inbox
+```
 
-Exercise provider operations that fetch or upload media/avatar content for both connections.
+Pass when Chatwoot reports the exact URL and the integration has a valid API-Inbox signing secret/HMAC token when that Chatwoot version exposes it.
 
-Pass condition: observable network traffic for each account continues through its assigned egress with no cross-account or direct-host leakage.
+### STG-12 Legacy webhook cleanup
 
-### STG-13 E2EE-relevant traffic
+Inspect account-level Chatwoot webhooks.
 
-Exercise the available E2EE-relevant provider path for both controlled accounts.
+Pass when no obsolete connector account webhook remains after the API-Inbox callback has been accepted. A temporary legacy hook is allowed only during migration testing and must be removed before production sign-off.
 
-Pass condition: the path uses the assigned account egress or fails closed; it must not bypass to the host network.
+## Stage C — Meta onboarding
 
-### STG-14 Assigned-proxy failure
+### STG-20 Primary Messenger Android login
 
-Make egress A unavailable while connection A remains `proxy_required`. Keep direct host connectivity otherwise possible so fallback would be observable.
+Open `/admin/meta` and select **Messenger Android — recomendado**.
 
-Pass conditions:
+Complete real provider steps shown by the BridgeV2 `user_input` flow.
 
-- A fails/degrades/blocks rather than reaching Meta directly;
-- B remains isolated on egress B;
-- restoring A's assigned egress allows recovery without changing the persisted assignment unless an operator explicitly reassigns it.
+Pass when:
 
-## Stage C — real multi-tenant routing
+- no Element/bot-command/devtools workflow is needed;
+- credentials/OTP/CAPTCHA are not printed in logs;
+- the panel reaches a connected Meta session;
+- any failure is represented by a stable code and correlation reference.
 
-### STG-20 Meta A -> Chatwoot A
+### STG-21 Login recovery
 
-Send a real message into Meta account A.
+Restart `integration` while Meta is connected.
 
-Pass condition: it is attributed to connection A, reaches the intended Matrix room A and creates/uses the intended Chatwoot tenant/account/inbox A route only.
+Pass when the persisted Meta session remains available through mautrix and the admin returns to a coherent connected state.
 
-### STG-21 Meta B -> Chatwoot B
+Restart `mautrix-meta` and repeat.
 
-Repeat for B while A is active.
+Pass when the integration detects/reports any transient unavailable state and recovers without corrupting bindings.
 
-Pass condition: B reaches only B destinations and no A identifiers or side effects are used.
+### STG-22 Cookie fallback isolation
 
-### STG-22 Chatwoot A -> Meta A
+Do not use the cookie flow as the normal test.
 
-Reply as a human agent in Chatwoot A.
+Verify only that `/admin/meta-cookie` is clearly labeled fallback/recovery and that the primary navigation still points to `/admin/meta`.
 
-Pass condition: the reply targets the persisted Matrix room/thread for A and reaches the correct Meta conversation through egress A exactly once.
+## Stage D — real message acceptance
 
-### STG-23 Chatwoot B -> Meta B
+### STG-30 New Messenger inbound
 
-Repeat for B in an interleaved sequence with A.
+From the second Facebook identity, send a brand-new Messenger message to the connected account.
 
-Pass condition: no cross-tenant routing, duplicate user-visible delivery or ambiguous numeric-ID routing occurs.
+Do not open Element.
 
-### STG-24 Restart persistence
+Pass when:
 
-Restart/redeploy the control plane and mautrix using the same persistent state, then repeat one inbound and one outbound message for A and B.
+- the portal is automatically joined;
+- one Chatwoot conversation appears;
+- the real contact name appears;
+- avatar synchronizes when provider/Matrix supplies one;
+- the customer message appears once;
+- no empty conversation projection is created.
 
-Pass conditions:
+### STG-31 Chatwoot reply to Meta
 
-- tenant IDs, Meta connection IDs, mautrix login bindings, Matrix room attribution, Chatwoot conversation bindings and egress assignments remain stable;
-- previously processed events are not duplicated;
-- reconnect still uses the original assigned egress.
+Reply from Chatwoot.
 
-## Stage D — migration and disable semantics
+Pass when:
 
-### STG-30 Chatwoot binding migration
+- the API Inbox callback is authenticated;
+- the integration maps the Chatwoot conversation to the correct active binding generation;
+- Matrix returns an event ID;
+- the status page records the positive Matrix acknowledgement;
+- the reply reaches the real Messenger thread exactly once.
 
-For one controlled tenant, establish an existing conversation on binding A, move the connection's current binding to B, then exercise both the historical thread and a new thread.
+A Chatwoot UI “sent” state without a verified Matrix event is a failure.
 
-Pass conditions:
+### STG-32 Duplicate callback
 
-- historical thread remains routed through its persisted binding A;
-- new thread uses current binding B;
-- a webhook on historical A can still target the original Matrix room;
-- numeric identifier collisions do not allow B or another tenant to claim A's historical conversation.
+Replay the same safe test callback/message only through a controlled mechanism that does not send a second customer-visible message.
 
-### STG-31 Historical binding disabled
+Pass when the message ID is deduplicated and no duplicate Matrix/Meta side effect occurs.
 
-Disable historical binding A and attempt new delivery for its historical thread.
+### STG-33 Media
 
-Pass condition: delivery fails terminally/fail-closed with no silent fallback to B.
+Exercise the media types required by production (at minimum one image; include file/audio when those are used operationally).
 
-### STG-32 Connection disable and egress release
+Pass when inbound and outbound behavior matches documented support without duplicate delivery or secret-bearing URLs/logs.
 
-Disable a controlled connection and verify that routing stops. If the same egress profile is then deliberately assigned to another live connection, attempt to reactivate the original connection without changing its assignment.
+### STG-34 Marketplace
 
-Pass conditions:
+If Marketplace is in production scope, create a new Marketplace conversation.
 
-- disabled connection produces no new routing;
-- released egress may be deliberately reused;
-- reactivation fails if that profile is now reserved by another live connection until an operator explicitly reassigns egress.
+Pass when it materializes in the configured Chatwoot inbox with the intended context and agent reply returns to the correct Meta thread.
 
-## Stage E — real backup and restore operations
+If Marketplace is not in production scope, record `NOT_APPLICABLE` and do not claim Marketplace support.
 
-Repository CI proves the recovery algorithm on disposable Docker volumes. Staging must prove the actual operational mechanism.
+## Stage E — lifecycle and identity
 
-### STG-40 Backup creation
+### STG-40 Chatwoot deletion then new Meta message
 
-Create an off-container/off-volume backup of the complete control-plane persistent state using the intended production mechanism.
+Delete the controlled Chatwoot conversation through the supported deletion path.
 
-Record:
+Pass when intentional-deletion state is recorded and the deleted projection is not silently reused.
 
-- actual volume/storage identifier;
-- backup destination class/location (not credentials);
-- encryption-at-rest method;
-- access-control owner/role;
+Then send a new Meta message according to the documented recreation policy.
+
+Pass when the resulting projection belongs to the active binding generation and old-generation event dedupe does not suppress the new inbound message.
+
+### STG-41 Binding target change
+
+In staging only, switch to a different disposable Chatwoot API Inbox, then switch back if needed.
+
+Pass when:
+
+- a new binding generation is created;
+- old projection IDs are never treated as authoritative for the new generation;
+- webhook/callback verification state is invalidated for the changed target;
+- new messages do not reuse stale conversation IDs.
+
+### STG-42 Restart persistence
+
+With known conversations present:
+
+1. restart `integration`;
+2. repeat one inbound/outbound test;
+3. restart `mautrix-meta`;
+4. repeat;
+5. perform a normal full redeploy without deleting volumes;
+6. repeat.
+
+Pass when bindings, dedupe state, login state and message flow survive with no user-visible replay.
+
+## Stage F — backup and restore
+
+### STG-50 Off-host backup
+
+Run:
+
+```bash
+BACKUP_ROOT=<off-host-mounted-or-secure-staging-path> \
+  bash scripts/backup-current-stack.sh
+```
+
+Copy/store the completed backup outside the VPS/source-volume failure domain.
+
+Record non-secret evidence of:
+
+- storage location class;
+- encryption/access control;
 - retention policy;
-- timestamp and backup identifier.
+- checksum file;
+- manifest/candidate SHA.
 
-Pass condition: the backup is stored outside the failure domain of the source volume and is protected according to the intended operational policy.
+### STG-51 Destructive restore drill
 
-### STG-41 Destructive restore drill
+On staging, restore with:
 
-Stop the control plane, preserve the backup evidence, destroy or replace the staging data volume, restore into a clean replacement volume, and start through the normal initialization path.
+```bash
+BACKUP_DIR=<selected-backup-directory> \
+CONFIRM_RESTORE=RESTORE \
+  bash scripts/restore-current-stack.sh
+```
 
-Pass conditions:
+Pass when checksums validate and the three authoritative volumes are restored without ad-hoc DB repair.
 
-- tenant/configuration identity is recovered;
-- Meta connection and mautrix login bindings are recovered;
-- sticky egress assignments are recovered;
-- Chatwoot/conversation bindings are recovered;
-- Matrix room attribution and sync checkpoint state are recovered;
-- processed-event/idempotency and audit history are recovered;
-- replay of a previously processed event does not create a duplicate downstream side effect.
+### STG-52 Post-restore acceptance
 
-### STG-42 Restore permissions
+After restore require:
 
-Prove the documented operator/service identity can restore without broadening runtime permissions beyond what is required.
+- `/health` healthy;
+- Meta session state coherent;
+- `/ready` healthy after product prerequisites are exercised;
+- an existing conversation still mapped correctly;
+- one new inbound message delivered exactly once;
+- one Chatwoot reply produces a verified Matrix event and reaches Meta.
 
-Pass condition: restore is operationally executable by the intended authorized role and does not require undocumented root/SSH mutation as the normal procedure.
+## Stage G — failure visibility and rollback
 
-## Stage F — secret and operational review
+### STG-60 Provider/login failure
 
-### STG-50 Secret exposure
+Induce a safe login failure or use a controlled invalid test input.
 
-Review application logs, Coolify deployment logs, captured evidence and public/admin responses generated during the run.
+Pass when the panel shows a stable failure code + correlation ref and logs contain enough non-secret context to trace it.
 
-Pass condition: no raw proxy password, Meta cookie/session material, Chatwoot token, internal resolver token or complete credential-bearing proxy URI is exposed.
+### STG-61 Chatwoot failure
 
-### STG-51 Failure visibility
+Temporarily make the staging Chatwoot target unavailable or invalid.
 
-Review at least one induced provider/proxy/routing failure.
+Pass when delivery fails visibly, no successful-delivery marker is written, and no stale target is silently used.
 
-Pass condition: operators can identify the affected tenant/connection and failure class without needing secret-bearing logs, and the failure does not masquerade as healthy routing.
+### STG-62 Matrix/mautrix failure
 
-### STG-52 Rollback/kill switch
+Temporarily stop the relevant staging service.
 
-Exercise or dry-run the documented kill switch for one connection and confirm the rollback target is compatible with the candidate's database schema/state.
+Pass when:
 
-Pass condition: routing can be stopped quickly without deleting persistent history and rollback does not require bypassing `proxy_required` or discarding newer routing/idempotency state.
+- `/health` continues to represent integration process liveness;
+- `/ready` becomes not-ready;
+- agent delivery cannot be falsely acknowledged;
+- recovery does not duplicate the message.
+
+### STG-63 Rollback
+
+Confirm the previous production candidate and its state compatibility are documented.
+
+Pass when rollback can be initiated without deleting current persistent volumes blindly and there is an explicit decision on whether state must be restored from the pre-release backup.
+
+## Stage H — release governance
+
+### STG-70 GitHub protection
+
+Verify GitHub branch protection/ruleset settings for the production branch.
+
+Pass when direct production pushes are blocked and required checks include at least:
+
+- `compose`;
+- `runtime-composition`;
+- `binding-generations`;
+- `onboarding`;
+- `live-provisioning-contract`;
+- `admin-v2`;
+- `tests`.
+
+### STG-71 Exact candidate review
+
+Confirm all PASS evidence belongs to the same candidate SHA and no subsequent commit exists in the release candidate.
 
 ## Acceptance rule
 
-The staging result is `PASS` only when every mandatory `STG-*` check above is `PASS` on the same exact candidate SHA.
+The staging result is `PASS` only when all checks applicable to the production scope are `PASS` on one exact candidate SHA.
 
-Any `FAIL` or `NOT_RUN` keeps production readiness unproven. A later successful rerun must record the new evidence explicitly; do not rewrite earlier failed evidence as if it never happened.
+Any required `FAIL` or `NOT_RUN` blocks production readiness.
 
-Passing this runbook still does not authorize a merge to `main`. After successful staging and the real backup drill, the human owner must compare the exact `dev` candidate with the current working `main` deployment and explicitly approve that exact SHA before any production-baseline change.
+After staging PASS, the human owner must explicitly approve promotion of that exact `dev` SHA to `main`.
