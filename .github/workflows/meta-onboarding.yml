@@ -82,14 +82,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assert Compose uses cookie-first production onboarding with managed fallback
+      - name: Assert Compose uses managed production onboarding with cookie fallback
         run: |
           grep -Fq 'exec python /app/runtime_entrypoint.py' compose.yaml
           if grep -Fq 'exec python /app/nicegui_app.py' compose.yaml; then
             echo 'compose.yaml bypasses runtime_entrypoint.py and disables production route registration' >&2
             exit 1
           fi
-          grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")' integration/meta_admin_patch.py
+          grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta")' integration/meta_admin_patch.py
+          grep -Fq '("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie")' integration/meta_admin_patch.py
+          if grep -Fq '("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")' integration/meta_admin_patch.py; then
+            echo 'cookie onboarding must not be the production primary path' >&2
+            exit 1
+          fi
           grep -Fq 'import meta_cookie_page' integration/runtime_entrypoint.py
           grep -Fq '@ui.page("/admin/meta")' integration/nicegui_app.py
           grep -Fq '@ui.page("/admin/meta-cookie")' integration/meta_cookie_page.py
@@ -97,7 +102,7 @@ jobs:
       - name: Build integration image
         run: docker build -t meta-onboarding-test ./integration
 
-      - name: Run cookie onboarding, managed fallback, helper security and end-to-end journey tests
+      - name: Run managed onboarding, cookie fallback, helper security and end-to-end journey tests
         run: |
           docker run --rm \
             -e MATRIX_ADMIN_MXID='@admin:matrix.example.com' \
