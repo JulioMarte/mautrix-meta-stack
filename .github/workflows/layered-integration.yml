@@ -1,0 +1,119 @@
+name: Layered integration
+
+on:
+  pull_request:
+    paths:
+      - 'compose.yaml'
+      - 'compose.control-plane.yaml'
+      - 'compose.ci.yaml'
+      - 'compose.phase3.yaml'
+      - 'compose.phase4.yaml'
+      - 'compose.phase5.yaml'
+      - 'compose.phase6.yaml'
+      - 'control-plane/**'
+      - 'mautrix-meta-fork/**'
+      - 'mautrix-meta-runtime/**'
+      - 'scripts/phase3-integration.sh'
+      - 'scripts/phase4-integration.sh'
+      - 'scripts/phase5-integration.sh'
+      - 'scripts/phase6-integration.sh'
+      - 'test-fixtures/**'
+      - '.github/workflows/layered-integration.yml'
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - 'compose.yaml'
+      - 'compose.control-plane.yaml'
+      - 'compose.ci.yaml'
+      - 'compose.phase3.yaml'
+      - 'compose.phase4.yaml'
+      - 'compose.phase5.yaml'
+      - 'compose.phase6.yaml'
+      - 'control-plane/**'
+      - 'mautrix-meta-fork/**'
+      - 'mautrix-meta-runtime/**'
+      - 'scripts/phase3-integration.sh'
+      - 'scripts/phase4-integration.sh'
+      - 'scripts/phase5-integration.sh'
+      - 'scripts/phase6-integration.sh'
+      - 'test-fixtures/**'
+      - '.github/workflows/layered-integration.yml'
+
+env:
+  MATRIX_SERVER_NAME: matrix.example.com
+  MATRIX_ADMIN_MXID: '@admin:matrix.example.com'
+  MATRIX_ADMIN_PASSWORD: ci-matrix-password-long-value
+  INTEGRATION_ADMIN_PASSWORD: ci-integration-admin-long-value
+  INTEGRATION_SESSION_SECRET: ci-session-secret-012345678901234567890123456789
+  CHATWOOT_WEBHOOK_SECRET: ci-integration-webhook-secret-long-value
+  META_PROXY_RESOLVER_SECRET: ci-resolver-secret-long-value
+  META_PROXY_ENABLED: 'false'
+  META_PROXY_URL: ''
+  INTEGRATION_COOKIE_SECURE: 'false'
+  ALLOW_INSECURE_CHATWOOT: 'true'
+  SYNAPSE_IMAGE: matrixdotorg/synapse:v1.160.0
+  MAUTRIX_META_IMAGE: dock.mau.dev/mautrix/meta:v26.08.1
+  YQ_IMAGE: mikefarah/yq:4.47.2
+  TZ: America/Santo_Domingo
+  CONTROL_PLANE_ADMIN_TOKEN: ci-control-plane-admin-token-0123456789
+  CONTROL_PLANE_INTERNAL_TOKEN: ci-control-plane-internal-token-0123456789
+  CHATWOOT_CI_TOKEN: ci-chatwoot-token-0123456789
+  MATRIX_MEDIA_CI_TOKEN: ci-matrix-media-token-0123456789
+  MATRIX_CLIENT_CI_TOKEN: ci-matrix-client-token-0123456789
+  CHATWOOT_WEBHOOK_CI_SECRET: ci-chatwoot-hook-secret-0123456789
+  CHATWOOT_WEBHOOK_PHASE6_A_SECRET: ci-phase6-hook-a-secret-0123456789
+  CHATWOOT_WEBHOOK_PHASE6_B_SECRET: ci-phase6-hook-b-secret-0123456789
+  EGRESS_PROXY_CI_PASSWORD: ci-phase3-proxy-password-0123456789
+  EGRESS_PROXY_PHASE6_A_PASSWORD: ci-phase6-proxy-a-password-0123456789
+  EGRESS_PROXY_PHASE6_B_PASSWORD: ci-phase6-proxy-b-password-0123456789
+
+jobs:
+  phase3-egress-runtime:
+    name: phase3 / mautrix egress wiring
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise patched mautrix + resolver topology
+        run: bash scripts/phase3-integration.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.ci.yaml -f compose.phase3.yaml logs --no-color || true
+
+  phase4-matrix-chatwoot:
+    name: phase4 / Matrix to Chatwoot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise real HTTP attachments, dedupe, ambiguous commit and restart
+        run: bash scripts/phase4-integration.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase4.yaml logs --no-color || true
+
+  phase5-chatwoot-matrix:
+    name: phase5 / Chatwoot to Matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise signed webhooks, attachments, route validation and retries
+        run: bash scripts/phase5-integration.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase5.yaml logs --no-color || true
+
+  phase6-multitenant-faults:
+    name: phase6 / multi-tenant fault proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise two tenants, two egresses, both directions, faults and restart
+        run: bash scripts/phase6-integration.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.control-plane.yaml -f compose.phase6.yaml logs --no-color || true
