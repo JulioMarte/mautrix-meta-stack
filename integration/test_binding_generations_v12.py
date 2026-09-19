@@ -176,6 +176,114 @@ class BindingGenerationsV12Tests(unittest.TestCase):
                 1,
             )
 
+    def test_global_legacy_dedupe_is_not_seeded_into_fresh_generation(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        with legacy.db() as conn:
+            conn.execute(
+                "INSERT INTO processed_events(event_id,direction,created_at) VALUES(?,?,?)",
+                ("$old-room-event", "matrix_to_chatwoot", int(time.time())),
+            )
+        bindings._seed_dedupe()
+        with legacy.db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM event_deliveries WHERE chatwoot_binding_id=?",
+                (int(binding["id"]),),
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_legacy_dedupe_migrates_only_for_adopted_room(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        now = int(time.time())
+        with legacy.db() as conn:
+            conn.execute(
+                "INSERT INTO processed_events(event_id,direction,created_at) VALUES(?,?,?)",
+                ("$room-a", "matrix_to_chatwoot", now),
+            )
+            conn.execute(
+                "INSERT INTO processed_events(event_id,direction,created_at) VALUES(?,?,?)",
+                ("$room-b", "matrix_to_chatwoot", now),
+            )
+        with patch.object(bindings, "_room_event_ids", return_value=["$room-a"]):
+            migrated = bindings._migrate_legacy_dedupe_for_room(
+                int(binding["id"]), "!room:example.com"
+            )
+        self.assertEqual(migrated, 1)
+        with legacy.db() as conn:
+            rows = conn.execute(
+                "SELECT event_id FROM event_deliveries WHERE chatwoot_binding_id=?",
+                (int(binding["id"]),),
+            ).fetchall()
+        self.assertEqual([str(row[0]) for row in rows], ["$room-a"])
+
+    def test_empty_projection_repair_clears_only_current_room_generation_dedupe(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        projection_id = self._seed_identity_projection(binding, conversation_id=77)
+        now = int(time.time())
+        with legacy.db() as conn:
+            conn.execute(
+                "INSERT INTO event_deliveries"
+                "(event_id,chatwoot_binding_id,direction,status,created_at,delivered_at) "
+                "VALUES(?,?,?,'DELIVERED',?,?)",
+                ("$room-event", int(binding["id"]), "matrix_to_chatwoot", now, now),
+            )
+            conn.execute(
+                "INSERT INTO event_deliveries"
+                "(event_id,chatwoot_binding_id,direction,status,created_at,delivered_at) "
+                "VALUES(?,?,?,'DELIVERED',?,?)",
+                ("$other-event", int(binding["id"]), "matrix_to_chatwoot", now, now),
+            )
+        with patch.object(bindings, "_room_event_ids", return_value=["$room-event"]), \
+             patch.object(
+                 bindings,
+                 "_request",
+                 return_value={"payload": [{"message_type": 2, "content": "label activity"}]},
+             ):
+            removed = bindings._repair_empty_projection_dedupe("!room:example.com")
+        self.assertEqual(removed, 1)
+        with legacy.db() as conn:
+            self.assertIsNone(
+                conn.execute(
+                    "SELECT 1 FROM event_deliveries WHERE event_id='$room-event'"
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM event_deliveries WHERE event_id='$other-event'"
+                ).fetchone()
+            )
+            checked = conn.execute(
+                "SELECT history_repair_checked_at FROM conversation_bindings WHERE id=?",
+                (projection_id,),
+            ).fetchone()[0]
+        self.assertGreater(int(checked), 0)
+
+    def test_nonempty_projection_keeps_generation_dedupe(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        self._seed_identity_projection(binding, conversation_id=77)
+        now = int(time.time())
+        with legacy.db() as conn:
+            conn.execute(
+                "INSERT INTO event_deliveries"
+                "(event_id,chatwoot_binding_id,direction,status,created_at,delivered_at) "
+                "VALUES(?,?,?,'DELIVERED',?,?)",
+                ("$room-event", int(binding["id"]), "matrix_to_chatwoot", now, now),
+            )
+        with patch.object(bindings, "_room_event_ids", return_value=["$room-event"]), \
+             patch.object(
+                 bindings,
+                 "_request",
+                 return_value={"payload": [{"message_type": 0, "content": "real customer message"}]},
+             ):
+            removed = bindings._repair_empty_projection_dedupe("!room:example.com")
+        self.assertEqual(removed, 0)
+        with legacy.db() as conn:
+            self.assertIsNotNone(
+                conn.execute(
+                    "SELECT 1 FROM event_deliveries WHERE event_id='$room-event'"
+                ).fetchone()
+            )
+
+
     def test_404_without_tombstone_marks_projection_stale(self):
         binding = bindings.activate_target(self._target(), "initial")
         projection_id = self._seed_identity_projection(binding)
