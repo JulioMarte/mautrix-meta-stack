@@ -408,13 +408,20 @@ def safe_step(step: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class MautrixProvisioningClient:
-    def __init__(self, config: ProvisioningConfig | None = None, session: requests.Session | None = None):
+    def __init__(
+        self,
+        config: ProvisioningConfig | None = None,
+        session: requests.Session | None = None,
+        *,
+        trace_id: str = "",
+    ):
         self.config = config or default_config()
         self.session = session or requests.Session()
         self.session.trust_env = False
+        self.trace_id = str(trace_id or "").strip()[:64]
 
     def _request(self, method: str, path: str, *, payload: Any = None, params: dict[str, Any] | None = None) -> Any:
-        trace_id = uuid.uuid4().hex[:12]
+        trace_id = self.trace_id or uuid.uuid4().hex[:12]
         started = time.monotonic()
         query = {"user_id": self.config.user_id}
         if params:
