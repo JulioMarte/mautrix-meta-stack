@@ -144,10 +144,10 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             integration_id = bindings._integration_id(conn)
             cursor = conn.execute(
                 "INSERT INTO external_identities"
-                "(integration_id,bridge_id,remote_account_id,portal_id,portal_receiver,"
-                "matrix_room_id,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?)",
+                "(integration_id,bridge_id,portal_id,portal_receiver,"
+                "matrix_room_id,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?)",
                 (
-                    integration_id, "meta", "account-1", "thread-1", "receiver-1",
+                    integration_id, "meta", "thread-1", "receiver-1",
                     "!room:example.com", now, now,
                 ),
             )
