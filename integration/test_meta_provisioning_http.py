@@ -265,6 +265,23 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
         self.assertIn('"duration_ms":', output)
         self.assertNotIn("wrong-secret-long-enough", output)
 
+    def test_one_client_trace_correlates_full_login_attempt(self):
+        client = mp.MautrixProvisioningClient(self.config, trace_id="attempt-correlation-01")
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            step = client.start("messenger-lite-android")
+            client.submit_user_input(
+                step["login_id"],
+                step["step_id"],
+                {"email": "person@example.com", "password": "secret-not-logged"},
+                txn_id=step["txn_id"],
+            )
+        lines = [line for line in stream.getvalue().splitlines() if "META_LOGIN_DEBUG" in line]
+        self.assertGreaterEqual(len(lines), 4)
+        for line in lines:
+            self.assertIn('"trace_id":"attempt-correlation-01"', line)
+            self.assertNotIn("secret-not-logged", line)
+
     def test_debug_logging_redacts_payload_secrets_and_temporary_ids(self):
         stream = io.StringIO()
         with redirect_stdout(stream):
