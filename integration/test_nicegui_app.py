@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 class NiceGUIAdminTests(unittest.TestCase):
@@ -202,9 +202,9 @@ class NiceGUIAdminTests(unittest.TestCase):
     def test_readiness_state_reports_internal_dependencies_without_secrets(self):
         self.save_minimal()
         response = Mock(status_code=200)
-        session = Mock()
-        session.__enter__ = Mock(return_value=session)
-        session.__exit__ = Mock(return_value=False)
+        session = MagicMock()
+        session.__enter__.return_value = session
+        session.__exit__.return_value = False
         session.trust_env = True
         session.get.return_value = response
 
