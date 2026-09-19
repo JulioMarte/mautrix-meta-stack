@@ -313,6 +313,12 @@ def main() -> None:
         )
     finally:
         os.environ["START_MATRIX_SYNC"] = "false"
+        # Do not leak this journey's local Chatwoot target into the next E2E.
+        # Each journey must be independently bootstrappable regardless of order.
+        legacy.set_setting("chatwoot_base_url", "")
+        legacy.set_setting("chatwoot_account_id", "")
+        legacy.set_setting("chatwoot_inbox_id", "")
+        legacy.set_setting("chatwoot_api_token", "")
         server.shutdown()
         server.server_close()
 
