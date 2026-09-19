@@ -26,6 +26,9 @@ legacy = runtime.legacy
 prod = runtime.prod
 
 VERIFY_TTL_SECONDS = 300
+PROFILE_SYNC_VERSION = 1
+PROFILE_RECONCILE_TTL_SECONDS = 900
+RUNTIME_RECONCILE_VERSION = "profile-reconcile-v1"
 _LOCK = lifecycle._RECONCILE_LOCK
 _CREATE_LOCKS_GUARD = threading.Lock()
 _CREATE_LOCKS = {}
@@ -187,6 +190,18 @@ def ensure_schema():
         _ensure_column(
             conn, "conversation_bindings", "history_repair_checked_at",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            conn, "conversation_bindings", "profile_sync_version",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            conn, "conversation_bindings", "profile_synced_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _ensure_column(
+            conn, "conversation_bindings", "profile_sync_error",
+            "TEXT NOT NULL DEFAULT ''",
         )
         if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_deletions'"
@@ -556,6 +571,91 @@ def _find_contact(binding, account_id, identifier):
     return None
 
 
+def _reconcile_projection_profile(binding, projection, sender, *, force=False):
+    """Keep Chatwoot contact presentation in sync without touching message dedupe."""
+    if not sender or not enhancements.setting_bool("sync_contact_profiles", True):
+        return False
+    now = _now()
+    current_version = int(projection["profile_sync_version"] or 0)
+    synced_at = int(projection["profile_synced_at"] or 0)
+    if (
+        not force
+        and current_version >= PROFILE_SYNC_VERSION
+        and synced_at
+        and now - synced_at < PROFILE_RECONCILE_TTL_SECONDS
+    ):
+        return False
+
+    refresh_identity = force or current_version < PROFILE_SYNC_VERSION
+    ok = enhancements.update_chatwoot_contact_profile(
+        int(binding["account_id"]),
+        int(projection["chatwoot_contact_id"]),
+        sender,
+        force_refresh=refresh_identity,
+    )
+    with legacy.db() as conn:
+        if ok:
+            conn.execute(
+                "UPDATE conversation_bindings SET profile_sync_version=?,profile_synced_at=?,"
+                "profile_sync_error='',updated_at=? WHERE id=?",
+                (PROFILE_SYNC_VERSION, now, now, int(projection["id"])),
+            )
+        else:
+            conn.execute(
+                "UPDATE conversation_bindings SET profile_sync_error=?,updated_at=? WHERE id=?",
+                ("contact_profile_sync_failed", now, int(projection["id"])),
+            )
+    print(
+        f"event=contact_profile_reconciled binding_id={int(binding['id'])} "
+        f"conversation_binding_id={int(projection['id'])} room={projection['matrix_room_id']} "
+        f"contact_id={int(projection['chatwoot_contact_id'])} success={1 if ok else 0} "
+        f"profile_version={PROFILE_SYNC_VERSION}",
+        flush=True,
+    )
+    return bool(ok)
+
+
+def reconcile_contact_profiles(*, force=False):
+    """Reconcile active-generation contact profiles, including pre-existing contacts."""
+    binding = _active_binding()
+    if not binding or not enhancements.setting_bool("sync_contact_profiles", True):
+        return {"checked": 0, "updated": 0, "failed": 0}
+    with legacy.db() as conn:
+        rows = conn.execute(
+            "SELECT cb.* FROM conversation_bindings cb "
+            "WHERE cb.chatwoot_binding_id=? AND cb.status='ACTIVE' ORDER BY cb.id",
+            (int(binding["id"]),),
+        ).fetchall()
+
+    checked = updated = failed = 0
+    for projection in rows:
+        sender = media._customer_sender_for_room(str(projection["matrix_room_id"]))
+        if not sender:
+            continue
+        checked += 1
+        before_version = int(projection["profile_sync_version"] or 0)
+        before_synced = int(projection["profile_synced_at"] or 0)
+        changed = _reconcile_projection_profile(binding, projection, sender, force=force)
+        if changed:
+            updated += 1
+        else:
+            with legacy.db() as conn:
+                current = conn.execute(
+                    "SELECT profile_sync_version,profile_synced_at,profile_sync_error "
+                    "FROM conversation_bindings WHERE id=?",
+                    (int(projection["id"]),),
+                ).fetchone()
+            if current and str(current["profile_sync_error"] or ""):
+                failed += 1
+            elif (
+                before_version < PROFILE_SYNC_VERSION
+                or not before_synced
+                or force
+            ):
+                failed += 1
+    return {"checked": checked, "updated": updated, "failed": failed}
+
+
 def _create_projection(binding, external, identity, sender):
     binding_id = int(binding["id"])
     external_id = int(external["id"])
@@ -674,6 +774,7 @@ def _create_projection(binding, external, identity, sender):
     _clear_binding_dedupe_for_room(
         binding_id, identity["matrix_room_id"], "fresh_conversation_projection"
     )
+    _reconcile_projection_profile(binding, row, sender, force=True)
     print(
         f"event=conversation_projection_created binding_id={binding_id} generation={generation} "
         f"room={identity['matrix_room_id']} portal_id={identity['portal_id']} "
@@ -746,6 +847,7 @@ def ensure_room_link(room_id, sender, force_verify=False):
             projection = _projection(binding_id, external_id)
             if projection and str(projection["status"]) == "ACTIVE":
                 if _verify_projection(binding, projection, force=force_verify):
+                    _reconcile_projection_profile(binding, projection, sender)
                     with legacy.db() as conn:
                         conn.execute(
                             "INSERT OR REPLACE INTO room_links"
@@ -767,6 +869,7 @@ def ensure_room_link(room_id, sender, force_verify=False):
             if projection is None:
                 adopted = _adopt_legacy(binding, external, identity)
                 if adopted:
+                    _reconcile_projection_profile(binding, adopted, sender, force=True)
                     with legacy.db() as conn:
                         return conn.execute(
                             "SELECT * FROM room_links WHERE room_id=?", (room_id,)
@@ -1290,8 +1393,19 @@ def reconcile_binding_health():
 def reconcile_meta_portals():
     result = _base_reconcile()
     health = reconcile_binding_health()
+    profiles = reconcile_contact_profiles()
+    successful = bool(health.get("ok")) and not (
+        isinstance(result, dict) and (result.get("errors") or [])
+    )
+    if successful:
+        legacy.set_setting("runtime_reconcile_version", RUNTIME_RECONCILE_VERSION)
+        legacy.set_setting("runtime_reconcile_pending", "0")
+        legacy.set_setting("runtime_reconcile_completed_at", str(_now()))
     if isinstance(result, dict):
         result["chatwoot_binding"] = health
+        result["contact_profiles"] = profiles
+        result["runtime_reconcile_version"] = RUNTIME_RECONCILE_VERSION
+        result["runtime_reconcile_pending"] = not successful
     return result
 
 
@@ -1303,6 +1417,19 @@ def install():
         return
 
     ensure_schema()
+    previous_reconcile_version = legacy.get_setting("runtime_reconcile_version")
+    if previous_reconcile_version != RUNTIME_RECONCILE_VERSION:
+        legacy.set_setting("runtime_reconcile_pending", "1")
+        legacy.set_setting(
+            "runtime_reconcile_reason",
+            f"runtime_upgrade:{previous_reconcile_version or 'none'}->{RUNTIME_RECONCILE_VERSION}",
+        )
+        print(
+            f"event=runtime_reconcile_requested reason=runtime_upgrade "
+            f"from_version={previous_reconcile_version or 'none'} "
+            f"to_version={RUNTIME_RECONCILE_VERSION}",
+            flush=True,
+        )
     try:
         ensure_current_binding(validate_remote=False)
     except Exception as exc:
