@@ -13,6 +13,8 @@ import hashlib
 import json
 import os
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -136,38 +138,98 @@ def provisioning_debug(event: str, **fields: Any) -> None:
 class ProvisioningError(RuntimeError):
     """A normalized mautrix provisioning failure safe to show to an operator."""
 
-    def __init__(self, message: str, *, errcode: str = "", status_code: int = 0):
+    def __init__(
+        self,
+        message: str,
+        *,
+        errcode: str = "",
+        status_code: int = 0,
+        trace_id: str = "",
+        failure_code: str = "",
+        retryable: bool = False,
+    ):
         super().__init__(message)
         self.errcode = errcode
         self.status_code = status_code
+        self.trace_id = trace_id
+        self.failure_code = failure_code
+        self.retryable = retryable
+
+
+def operator_error_code(exc: Exception) -> str:
+    """Return a stable operator-facing code suitable for dashboards and support."""
+    if isinstance(exc, ProvisioningError):
+        if exc.failure_code:
+            return exc.failure_code
+        if exc.status_code == 401:
+            return "META_PROVISIONING_AUTH"
+        if exc.status_code == 403:
+            return "META_PROVISIONING_FORBIDDEN"
+        if exc.status_code == 404 and exc.errcode == "M_NOT_FOUND":
+            return "META_LOGIN_PROCESS_EXPIRED"
+        if exc.status_code == 429:
+            return "META_RATE_LIMITED"
+        if exc.status_code >= 500:
+            return "META_PROVISIONING_UPSTREAM_5XX"
+        if exc.status_code >= 400:
+            return "META_LOGIN_REJECTED"
+    return "META_LOGIN_UNEXPECTED"
+
+
+def _operator_suffix(exc: Exception) -> str:
+    if not isinstance(exc, ProvisioningError):
+        return ""
+    code = operator_error_code(exc)
+    parts = [f"Código: {code}"]
+    if exc.trace_id:
+        parts.append(f"ref: {exc.trace_id}")
+    if exc.retryable:
+        parts.append("reintentable")
+    return " (" + "; ".join(parts) + ")"
 
 
 def operator_error_message(exc: Exception) -> str:
     """Translate provisioning failures into actionable, credential-safe UI text."""
+    message = str(exc)
     if isinstance(exc, ProvisioningError):
         if exc.status_code == 500 and exc.errcode == "M_UNKNOWN":
-            return (
+            message = (
                 "El bridge encontró un error interno mientras procesaba este paso de Facebook. "
                 "Esto suele indicar una incompatibilidad del flujo de acceso y no significa por sí "
                 "solo que el usuario o la contraseña sean incorrectos. Revisa los logs de "
-                "mautrix-meta del mismo momento del intento para ver la causa técnica exacta."
+                "mautrix-meta del mismo intento para ver la causa técnica exacta."
             )
-        if exc.status_code == 401:
-            return (
+        elif exc.status_code == 401:
+            message = (
                 "El panel no pudo autenticarse contra la API privada de provisioning de mautrix. "
                 "Verifica el shared secret y que el runtime desplegado corresponda a esta configuración."
             )
-        if exc.status_code == 403:
-            return (
+        elif exc.status_code == 403:
+            message = (
                 "mautrix rechazó este paso por permisos o alcance del usuario de provisioning. "
                 "Revisa el usuario Matrix configurado y la política del bridge."
             )
-        if exc.status_code == 404 and exc.errcode == "M_NOT_FOUND":
-            return (
+        elif exc.status_code == 404 and exc.errcode == "M_NOT_FOUND":
+            message = (
                 "Este intento de conexión ya no existe en mautrix. El bridge pudo haberse reiniciado "
                 "o el proceso expiró; inicia una conexión nueva."
             )
-    return str(exc)
+        elif exc.status_code == 429:
+            message = (
+                "mautrix o Meta limitó temporalmente los intentos de acceso. "
+                "Espera el intervalo indicado por el proveedor antes de volver a intentarlo."
+            )
+        elif exc.failure_code == "META_PROVISIONING_UNREACHABLE":
+            message = (
+                "El panel no pudo comunicarse con la API privada de provisioning de mautrix. "
+                "Revisa la salud del contenedor, la red interna y el puerto de provisioning."
+            )
+        elif exc.failure_code == "META_PROVISIONING_INVALID_JSON":
+            message = (
+                "mautrix respondió con un formato inesperado. Esto suele indicar una incompatibilidad "
+                "de versión o una respuesta intermedia dañada."
+            )
+    return message + _operator_suffix(exc)
 
 
 @dataclass(frozen=True)
@@ -352,6 +414,8 @@ class MautrixProvisioningClient:
         self.session.trust_env = False
 
     def _request(self, method: str, path: str, *, payload: Any = None, params: dict[str, Any] | None = None) -> Any:
+        trace_id = uuid.uuid4().hex[:12]
+        started = time.monotonic()
         query = {"user_id": self.config.user_id}
         if params:
             query.update({k: v for k, v in params.items() if v is not None and v != ""})
@@ -361,7 +425,7 @@ class MautrixProvisioningClient:
         }
         if payload is not None:
             headers["Content-Type"] = "application/json"
-        provisioning_debug("http_request", method=method, path=path)
+        provisioning_debug("http_request", trace_id=trace_id, method=method, path=path)
         try:
             response = self.session.request(
                 method,
@@ -373,16 +437,41 @@ class MautrixProvisioningClient:
                 allow_redirects=False,
             )
         except requests.RequestException as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
             provisioning_debug(
                 "http_transport_error",
+                trace_id=trace_id,
                 method=method,
                 path=path,
+                duration_ms=duration_ms,
                 error_type=type(exc).__name__,
+                failure_code="META_PROVISIONING_UNREACHABLE",
+                retryable=True,
             )
-            raise ProvisioningError("Could not reach the private mautrix provisioning API") from exc
+            raise ProvisioningError(
+                "Could not reach the private mautrix provisioning API",
+                trace_id=trace_id,
+                failure_code="META_PROVISIONING_UNREACHABLE",
+                retryable=True,
+            ) from exc
 
+        duration_ms = int((time.monotonic() - started) * 1000)
         if 300 <= response.status_code < 400:
-            raise ProvisioningError("Mautrix provisioning unexpectedly attempted an HTTP redirect", status_code=response.status_code)
+            provisioning_debug(
+                "http_error",
+                trace_id=trace_id,
+                method=method,
+                path=path,
+                duration_ms=duration_ms,
+                status_code=response.status_code,
+                failure_code="META_PROVISIONING_REDIRECT",
+            )
+            raise ProvisioningError(
+                "Mautrix provisioning unexpectedly attempted an HTTP redirect",
+                status_code=response.status_code,
+                trace_id=trace_id,
+                failure_code="META_PROVISIONING_REDIRECT",
+            )
         if response.status_code >= 400:
             try:
                 body = response.json()
@@ -392,22 +481,53 @@ class MautrixProvisioningClient:
             message = str(body.get("error") or "") if isinstance(body, dict) else ""
             if not message:
                 message = f"Mautrix provisioning returned HTTP {response.status_code}"
+            provisional = ProvisioningError(
+                message,
+                errcode=errcode,
+                status_code=response.status_code,
+                trace_id=trace_id,
+                retryable=response.status_code in {429, 502, 503, 504},
+            )
+            provisional.failure_code = operator_error_code(provisional)
             provisioning_debug(
                 "http_error",
+                trace_id=trace_id,
                 method=method,
                 path=path,
+                duration_ms=duration_ms,
                 status_code=response.status_code,
                 errcode=errcode,
                 error_type="ProvisioningError",
+                failure_code=provisional.failure_code,
+                retryable=provisional.retryable,
             )
-            raise ProvisioningError(message, errcode=errcode, status_code=response.status_code)
-        provisioning_debug("http_success", method=method, path=path, status_code=response.status_code)
+            raise provisional
+        provisioning_debug(
+            "http_success",
+            trace_id=trace_id,
+            method=method,
+            path=path,
+            duration_ms=duration_ms,
+            status_code=response.status_code,
+        )
         if not response.content:
             return {}
         try:
             return response.json()
         except ValueError as exc:
-            raise ProvisioningError("Mautrix provisioning returned invalid JSON") from exc
+            provisioning_debug(
+                "http_protocol_error",
+                trace_id=trace_id,
+                method=method,
+                path=path,
+                duration_ms=duration_ms,
+                failure_code="META_PROVISIONING_INVALID_JSON",
+            )
+            raise ProvisioningError(
+                "Mautrix provisioning returned invalid JSON",
+                trace_id=trace_id,
+                failure_code="META_PROVISIONING_INVALID_JSON",
+            ) from exc
 
     def whoami(self) -> dict[str, Any]:
         data = self._request("GET", "/v3/whoami")
