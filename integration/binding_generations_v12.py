@@ -569,7 +569,7 @@ def _create_projection(binding, external, identity, sender):
     source_id = "mxg-" + hashlib.sha256(
         f"{binding_id}:{identity_key}".encode()
     ).hexdigest()[:28]
-    display_name = str((media.contact_identity(sender) if sender else {}).get("name") or "Meta contact")
+    display_name = str((enhancements.contact_identity(sender) if sender else {}).get("name") or "Meta contact")
 
     current = _active_binding()
     if not current or int(current["id"]) != binding_id:
