@@ -863,30 +863,104 @@ def _recover_404(conversation_id):
     return link
 
 
+def _message_items(payload):
+    """Normalize Chatwoot conversation-message response shapes."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    value = payload.get("payload")
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        nested = value.get("messages")
+        if isinstance(nested, list):
+            return [item for item in nested if isinstance(item, dict)]
+    value = payload.get("messages")
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _matrix_event_id_from_message(message):
+    attributes = message.get("content_attributes") if isinstance(message, dict) else {}
+    if isinstance(attributes, str):
+        try:
+            import json
+            attributes = json.loads(attributes)
+        except (TypeError, ValueError):
+            attributes = {}
+    if not isinstance(attributes, dict):
+        return ""
+    return str(attributes.get("matrix_event_id") or "")
+
+
+def _remote_event_delivery(conversation_id, event_id):
+    """Return the existing Chatwoot message for a Matrix event, if present.
+
+    This closes the crash/timeout window between Chatwoot committing a POST and the
+    integration durably recording event_deliveries. A retried Matrix event first
+    checks Chatwoot's durable matrix_event_id marker and reuses the existing row.
+    """
+    if not event_id:
+        return None
+    projection = _projection_by_conversation(conversation_id, active_only=True)
+    if not projection:
+        raise BindingChanged(
+            f"conversation {conversation_id} is not in the active binding generation"
+        )
+    binding = _binding(int(projection["chatwoot_binding_id"]))
+    payload = _request(
+        binding,
+        "GET",
+        f"/api/v1/accounts/{int(binding['account_id'])}/conversations/{int(conversation_id)}/messages",
+    )
+    for message in _message_items(payload):
+        if _matrix_event_id_from_message(message) == str(event_id):
+            return message
+    return None
+
+
+def _post_idempotent(conversation_id, base_post, kwargs):
+    event_id = str(kwargs.get("event_id") or "")
+    try:
+        existing = _remote_event_delivery(conversation_id, event_id) if event_id else None
+        if existing is not None:
+            print(
+                f"event=matrix_delivery_remote_dedupe conversation_id={int(conversation_id)} "
+                f"matrix_event_id={event_id}",
+                flush=True,
+            )
+            return existing
+        return base_post(conversation_id, **kwargs)
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code != 404:
+            raise
+        link = _recover_404(conversation_id)
+        rebound_id = int(link["conversation_id"])
+        existing = _remote_event_delivery(rebound_id, event_id) if event_id else None
+        if existing is not None:
+            print(
+                f"event=matrix_delivery_remote_dedupe conversation_id={rebound_id} "
+                f"matrix_event_id={event_id} after_rebind=1",
+                flush=True,
+            )
+            return existing
+        return base_post(rebound_id, **kwargs)
+
+
 def post_text(conversation_id, **kwargs):
     with _LOCK:
         if not _projection_by_conversation(conversation_id, active_only=True):
             raise BindingChanged("refusing text send through an old binding generation")
-        try:
-            return _base_post_text(conversation_id, **kwargs)
-        except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                raise
-            link = _recover_404(conversation_id)
-            return _base_post_text(int(link["conversation_id"]), **kwargs)
+        return _post_idempotent(conversation_id, _base_post_text, kwargs)
 
 
 def post_media(conversation_id, **kwargs):
     with _LOCK:
         if not _projection_by_conversation(conversation_id, active_only=True):
             raise BindingChanged("refusing media send through an old binding generation")
-        try:
-            return _base_post_media(conversation_id, **kwargs)
-        except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                raise
-            link = _recover_404(conversation_id)
-            return _base_post_media(int(link["conversation_id"]), **kwargs)
+        return _post_idempotent(conversation_id, _base_post_media, kwargs)
 
 
 def sync_conversation_context(room_id, link):
