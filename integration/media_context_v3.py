@@ -23,6 +23,8 @@ from urllib.parse import quote, urlparse
 
 import requests
 
+from db_connection_safety import ClosingConnectionProxy
+
 import final_app as runtime
 import runtime_enhancements as enhancements
 import delivery_history_v2 as delivery
@@ -38,7 +40,9 @@ SUPPORTED_MEDIA_MSGTYPES = {"m.image", "m.video", "m.audio", "m.file", "m.sticke
 
 
 def _meta_db():
-    return sqlite3.connect(f"file:{META_DB_PATH}?mode=ro", uri=True, timeout=5)
+    """Open mautrix-meta read-only state with deterministic connection release."""
+    conn = sqlite3.connect(f"file:{META_DB_PATH}?mode=ro", uri=True, timeout=5)
+    return ClosingConnectionProxy(conn)
 
 
 def _json_object(raw) -> dict:
