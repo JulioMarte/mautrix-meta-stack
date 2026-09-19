@@ -24,6 +24,7 @@ from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
     connection_summary,
+    operator_error_code,
     operator_error_message,
     provisioning_debug,
     safe_step,
@@ -86,7 +87,7 @@ def _record_meta_failure(exc: Exception, *, operation: str, trace_id: str = "") 
     payload = {
         "at": _legacy_ui._now_utc(),
         "operation": str(operation)[:64],
-        "code": str(getattr(exc, "failure_code", "") or "META_LOGIN_UNEXPECTED")[:80],
+        "code": str(operator_error_code(exc))[:80],
         "trace_id": trace,
         "status_code": int(getattr(exc, "status_code", 0) or 0),
         "errcode": str(getattr(exc, "errcode", "") or "")[:80],
