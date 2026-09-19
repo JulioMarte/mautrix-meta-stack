@@ -80,6 +80,19 @@ class DeliveryHistoryV2Tests(unittest.TestCase):
             sync_profiles=True, repair_deleted=True,
         )
         self.assertEqual(legacy.get_setting("history_import_days"), "45")
+        self.assertEqual(legacy.get_setting("sync_policy_revision"), "1")
+        self.assertIn(
+            "history_days:14->45",
+            legacy.get_setting("sync_reconcile_requested_reason"),
+        )
+        self.assertTrue(legacy.get_setting("sync_reconcile_requested_at"))
+
+    def test_unchanged_sync_policy_does_not_request_reconcile(self):
+        module.save_operations_settings_days(
+            auto_join=True, import_history=True, history_limit=30,
+            sync_profiles=True, repair_deleted=True,
+        )
+        self.assertEqual(legacy.get_setting("sync_policy_revision"), "")
 
     def test_history_paginates_until_day_cutoff_and_imports_oldest_first(self):
         now = 2_000_000_000

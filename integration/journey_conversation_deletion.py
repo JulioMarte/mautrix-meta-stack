@@ -196,6 +196,24 @@ class DeleteRecorder(BaseHTTPRequestHandler):
     requests_seen: "queue.Queue[str]" = queue.Queue()
     response_code = 204
 
+    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler contract
+        expected = f"/api/v1/accounts/{ACCOUNT_ID}/inboxes/{INBOX_ID}"
+        if self.path != expected:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps({
+            "id": INBOX_ID,
+            "name": "CI API inbox",
+            "channel_type": "Channel::Api",
+            "identifier": "ci-delete-journey-api",
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_DELETE(self):  # noqa: N802 - BaseHTTPRequestHandler contract
         self.__class__.requests_seen.put(self.path)
         self.send_response(self.__class__.response_code)
@@ -263,8 +281,25 @@ def run_chatwoot_to_meta(admin_token: str, as_token: str, bot: str, conversation
 
 
 def run_meta_to_chatwoot(admin_token: str, as_token: str, bot: str, conversation_id: int) -> None:
+    cursor_before = legacy.get_setting("matrix_next_batch")
     room_id = create_portal_room(admin_token, as_token, bot)
     seed_link(room_id, conversation_id)
+
+    # Ensure the production /sync owner has observed activity after this room was
+    # created before generating the terminal leave. Without this barrier a fast CI
+    # runner can create+join+leave between two /sync responses and Synapse may only
+    # expose the terminal membership transition, making this journey racy rather
+    # than testing the lifecycle contract.
+    wait_until(
+        lambda: (
+            current
+            if (current := legacy.get_setting("matrix_next_batch"))
+            and current != cursor_before
+            else None
+        ),
+        "integration Matrix sync cursor did not advance for Meta-origin room",
+        timeout=40.0,
+    )
     bridge_kick_admin(room_id, as_token, bot)
 
     path = wait_until(

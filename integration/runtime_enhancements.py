@@ -91,10 +91,10 @@ def _matrix_post(path: str, payload=None, timeout=20):
     return response
 
 
-def matrix_profile(mxid: str) -> dict:
+def matrix_profile(mxid: str, *, force_refresh: bool = False) -> dict:
     now = time.time()
     cached = _profile_cache.get(mxid)
-    if cached and now - cached[0] < PROFILE_CACHE_SECONDS:
+    if cached and not force_refresh and now - cached[0] < PROFILE_CACHE_SECONDS:
         return dict(cached[1])
     response = _matrix_get(f"/_matrix/client/v3/profile/{quote(mxid, safe='')}")
     data = response.json() if response.content else {}
@@ -128,11 +128,11 @@ def fallback_display_name(sender: str) -> str:
     return sender.split(":", 1)[0].lstrip("@").replace("_", " ").strip() or "Meta contact"
 
 
-def contact_identity(sender: str) -> dict:
+def contact_identity(sender: str, *, force_refresh: bool = False) -> dict:
     if not setting_bool("sync_contact_profiles", True):
         return {"name": fallback_display_name(sender), "avatar_url": ""}
     try:
-        profile = matrix_profile(sender)
+        profile = matrix_profile(sender, force_refresh=force_refresh)
     except Exception as exc:
         print(f"matrix profile lookup failed sender={sender}: {exc}", flush=True)
         profile = {}
@@ -151,10 +151,17 @@ def chatwoot_request(method: str, path: str, **kwargs):
     return response.json()
 
 
-def update_chatwoot_contact_profile(account_id: int, contact_id: int, sender: str) -> None:
+def update_chatwoot_contact_profile(
+    account_id: int, contact_id: int, sender: str, *, force_refresh: bool = False
+) -> bool:
+    """Reconcile the mutable Chatwoot contact profile from Matrix.
+
+    Contact/conversation identity is durable elsewhere. This function only updates
+    mutable presentation data (name/avatar), so it is safe to call repeatedly.
+    """
     if not setting_bool("sync_contact_profiles", True):
-        return
-    identity = contact_identity(sender)
+        return False
+    identity = contact_identity(sender, force_refresh=force_refresh)
     try:
         avatar = matrix_avatar_bytes(identity["avatar_url"]) if identity.get("avatar_url") else None
         if avatar:
@@ -168,8 +175,10 @@ def update_chatwoot_contact_profile(account_id: int, contact_id: int, sender: st
                 "PUT", f"/api/v1/accounts/{account_id}/contacts/{contact_id}",
                 json={"name": identity["name"]}, headers={"Content-Type": "application/json"},
             )
+        return True
     except Exception as exc:
         print(f"chatwoot contact profile sync failed contact={contact_id}: {exc}", flush=True)
+        return False
 
 
 def existing_room_link(room_id: str):

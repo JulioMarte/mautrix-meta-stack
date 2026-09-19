@@ -179,6 +179,10 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             "contact_identity",
             return_value={"name": "Customer Name", "avatar_url": ""},
         ) as contact_identity, patch.object(
+            bindings.enhancements,
+            "update_chatwoot_contact_profile",
+            return_value=True,
+        ) as update_profile, patch.object(
             bindings, "_request", side_effect=fake_request
         ), patch.object(
             bindings.prod, "contact_object", side_effect=lambda payload: payload
@@ -192,6 +196,9 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             )
 
         contact_identity.assert_called_once_with("@meta_customer:matrix.example.com")
+        update_profile.assert_called_once_with(
+            1, 5, "@meta_customer:matrix.example.com", force_refresh=True
+        )
         self.assertEqual(int(projection["chatwoot_conversation_id"]), 77)
         self.assertEqual(str(projection["status"]), "ACTIVE")
         with legacy.db() as conn:
@@ -200,6 +207,99 @@ class BindingGenerationsV12Tests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(room_link)
         self.assertEqual(int(room_link["conversation_id"]), 77)
+        with legacy.db() as conn:
+            profile = conn.execute(
+                "SELECT profile_sync_version,profile_synced_at,profile_sync_error "
+                "FROM conversation_bindings WHERE id=?",
+                (int(projection["id"]),),
+            ).fetchone()
+        self.assertEqual(int(profile["profile_sync_version"]), bindings.PROFILE_SYNC_VERSION)
+        self.assertGreater(int(profile["profile_synced_at"]), 0)
+        self.assertEqual(str(profile["profile_sync_error"]), "")
+
+    def test_existing_active_projection_profile_is_reconciled_without_message_replay(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        projection_id = self._seed_identity_projection(binding, conversation_id=77)
+        with legacy.db() as conn:
+            projection = conn.execute(
+                "SELECT * FROM conversation_bindings WHERE id=?", (projection_id,)
+            ).fetchone()
+
+        with patch.object(
+            bindings.enhancements, "update_chatwoot_contact_profile", return_value=True
+        ) as update_profile:
+            changed = bindings._reconcile_projection_profile(
+                binding, projection, "@meta_customer:matrix.example.com"
+            )
+
+        self.assertTrue(changed)
+        update_profile.assert_called_once_with(
+            1, 5, "@meta_customer:matrix.example.com", force_refresh=True
+        )
+        with legacy.db() as conn:
+            refreshed = conn.execute(
+                "SELECT profile_sync_version,profile_synced_at FROM conversation_bindings WHERE id=?",
+                (projection_id,),
+            ).fetchone()
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM event_deliveries").fetchone()[0], 0
+            )
+        self.assertEqual(
+            int(refreshed["profile_sync_version"]), bindings.PROFILE_SYNC_VERSION
+        )
+        self.assertGreater(int(refreshed["profile_synced_at"]), 0)
+
+    def test_profile_reconcile_sweep_repairs_preexisting_active_contacts(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        projection_id = self._seed_identity_projection(binding, conversation_id=77)
+        with patch.object(
+            bindings.media,
+            "_customer_sender_for_room",
+            return_value="@meta_customer:matrix.example.com",
+        ), patch.object(
+            bindings.enhancements,
+            "update_chatwoot_contact_profile",
+            return_value=True,
+        ) as update_profile:
+            result = bindings.reconcile_contact_profiles()
+
+        self.assertEqual(result, {"checked": 1, "updated": 1, "failed": 0})
+        update_profile.assert_called_once_with(
+            1, 5, "@meta_customer:matrix.example.com", force_refresh=True
+        )
+        with legacy.db() as conn:
+            row = conn.execute(
+                "SELECT profile_sync_version,profile_sync_error FROM conversation_bindings WHERE id=?",
+                (projection_id,),
+            ).fetchone()
+        self.assertEqual(int(row["profile_sync_version"]), bindings.PROFILE_SYNC_VERSION)
+        self.assertEqual(str(row["profile_sync_error"]), "")
+
+    def test_profile_reconcile_failure_is_not_marked_synced(self):
+        binding = bindings.activate_target(self._target(), "initial")
+        projection_id = self._seed_identity_projection(binding, conversation_id=77)
+        with legacy.db() as conn:
+            projection = conn.execute(
+                "SELECT * FROM conversation_bindings WHERE id=?", (projection_id,)
+            ).fetchone()
+
+        with patch.object(
+            bindings.enhancements, "update_chatwoot_contact_profile", return_value=False
+        ):
+            changed = bindings._reconcile_projection_profile(
+                binding, projection, "@meta_customer:matrix.example.com"
+            )
+
+        self.assertFalse(changed)
+        with legacy.db() as conn:
+            row = conn.execute(
+                "SELECT profile_sync_version,profile_synced_at,profile_sync_error "
+                "FROM conversation_bindings WHERE id=?",
+                (projection_id,),
+            ).fetchone()
+        self.assertEqual(int(row["profile_sync_version"]), 0)
+        self.assertEqual(int(row["profile_synced_at"]), 0)
+        self.assertEqual(str(row["profile_sync_error"]), "contact_profile_sync_failed")
 
     def test_same_target_does_not_create_generation(self):
         first = bindings.activate_target(self._target(), "initial")

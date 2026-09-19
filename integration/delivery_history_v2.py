@@ -16,6 +16,8 @@ agent messages to Meta.
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from urllib.parse import quote
 
@@ -34,6 +36,7 @@ DEFAULT_HISTORY_DAYS = 30
 MAX_HISTORY_DAYS = 3650
 MATRIX_PAGE_SIZE = 100
 HISTORY_MARKER = "matrix_history_import"
+_POLICY_RECONCILE_THREAD = "sync-policy-reconcile"
 
 _original_operations_state = enhancements.operations_state
 _original_save_operations_settings = enhancements.save_operations_settings
@@ -275,8 +278,53 @@ def operations_state_days() -> dict:
     return state
 
 
+def _request_policy_reconcile(reason: str) -> None:
+    revision = enhancements.setting_int("sync_policy_revision", 0, 0, 2_000_000_000) + 1
+    legacy.set_setting("sync_policy_revision", str(revision))
+    legacy.set_setting("sync_reconcile_requested_at", _now_utc())
+    legacy.set_setting("sync_reconcile_requested_reason", reason)
+    print(
+        f"event=sync_reconcile_requested revision={revision} reason={reason}",
+        flush=True,
+    )
+
+    # Production performs the reconciliation asynchronously so an operator save
+    # never blocks on every historical room. Unit tests and offline tooling keep
+    # START_MATRIX_SYNC=false and therefore only persist the request.
+    if os.getenv("START_MATRIX_SYNC", "true").lower() != "true":
+        return
+    if any(t.name == _POLICY_RECONCILE_THREAD and t.is_alive() for t in threading.enumerate()):
+        return
+
+    def run():
+        try:
+            import meta_portal_reconcile
+            result = meta_portal_reconcile.reconcile_meta_portals()
+            legacy.set_setting("sync_reconcile_completed_at", _now_utc())
+            legacy.set_setting("sync_reconcile_last_error", "")
+            print(
+                f"event=sync_reconcile_completed revision={revision} "
+                f"errors={len((result or {}).get('errors') or []) if isinstance(result, dict) else 0}",
+                flush=True,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            legacy.set_setting("sync_reconcile_last_error", error[:1000])
+            print(
+                f"event=sync_reconcile_failed revision={revision} error={error}",
+                flush=True,
+            )
+
+    threading.Thread(target=run, name=_POLICY_RECONCILE_THREAD, daemon=True).start()
+
+
 def save_operations_settings_days(*, auto_join: bool, import_history: bool, history_limit: int,
                                   sync_profiles: bool, repair_deleted: bool) -> None:
+    previous = (
+        history_days(),
+        enhancements.setting_bool("import_history_on_join", True),
+        enhancements.setting_bool("sync_contact_profiles", True),
+    )
     days = max(0, min(MAX_HISTORY_DAYS, int(history_limit)))
     _original_save_operations_settings(
         auto_join=True,
@@ -286,6 +334,16 @@ def save_operations_settings_days(*, auto_join: bool, import_history: bool, hist
         repair_deleted=repair_deleted,
     )
     legacy.set_setting("history_import_days", str(days))
+    current = (days, bool(import_history), bool(sync_profiles))
+    if current != previous:
+        reasons = []
+        if days != previous[0]:
+            reasons.append(f"history_days:{previous[0]}->{days}")
+        if bool(import_history) != previous[1]:
+            reasons.append(f"history_import:{int(previous[1])}->{int(bool(import_history))}")
+        if bool(sync_profiles) != previous[2]:
+            reasons.append(f"profile_sync:{int(previous[2])}->{int(bool(sync_profiles))}")
+        _request_policy_reconcile(",".join(reasons) or "operations_policy_changed")
 
 
 def _trusted_customer_sender(events: list[dict]) -> str:
