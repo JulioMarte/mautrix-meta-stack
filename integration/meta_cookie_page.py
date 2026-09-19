@@ -1,4 +1,4 @@
-"""Simple cookie-first Meta onboarding page.
+"""Recovery fallback for cookie-based Meta onboarding.
 
 This intentionally avoids reproducing Facebook authentication. The operator logs
 in on facebook.com with the normal browser flow (including MFA/passkeys), then
@@ -30,7 +30,7 @@ def meta_cookie_page():
         with ui.row().classes("items-center justify-between w-full"):
             with ui.column().classes("gap-0"):
                 ui.label("Facebook Messenger").classes("text-2xl font-semibold")
-                ui.label("Conecta Facebook usando la sesión que ya funciona en tu navegador.").classes("text-sm text-slate-500")
+                ui.label("Fallback de recuperación: conecta usando una sesión de navegador existente.").classes("text-sm text-slate-500")
             ui.button("Actualizar", icon="refresh", on_click=lambda: ui.navigate.to("/admin/meta-cookie")).props("flat no-caps")
 
         with ui.card().classes("w-full p-6"):
@@ -70,9 +70,9 @@ def meta_cookie_page():
                 ui.button("Desconectar cuenta", icon="link_off", on_click=disconnect_all).props("outline color=negative").classes("mt-3")
 
         with ui.card().classes("w-full p-6 border border-blue-100"):
-            ui.label("Cómo conectarlo — 4 pasos").classes("text-xl font-semibold")
+            ui.label("Fallback web — 4 pasos").classes("text-xl font-semibold")
             ui.label(
-                "No necesitas Element, instalar nada ni escribir tu contraseña en este panel. Inicia sesión directamente en Facebook y copia una petición ya autenticada."
+                "Usa este método solo si el flujo recomendado Messenger Android no puede completarse. Inicia sesión directamente en Facebook y copia una petición ya autenticada."
             ).classes("text-slate-600 mb-2")
 
             with ui.column().classes("gap-4 mt-2"):
