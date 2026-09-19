@@ -66,15 +66,17 @@ https://<integration-domain>/webhooks/chatwoot/<CHATWOOT_WEBHOOK_SECRET>
 
 Treat the webhook URL as sensitive because the path contains the deployment secret.
 
-## Meta / Matrix setup
+## Meta onboarding
 
-1. Confirm Synapse is healthy.
-2. Log in to Matrix with `MATRIX_ADMIN_MXID`.
-3. Start a management room with the mautrix-meta bot.
-4. Complete the Facebook/Messenger login.
-5. Confirm new Meta portal rooms are unencrypted on Matrix. This is required because the Chatwoot sidecar intentionally does not implement Matrix E2EE.
+1. Confirm `/health` returns 200 and use `/ready` for product readiness diagnostics.
+2. Open `/admin/meta`.
+3. Choose **Messenger Android — recomendado**.
+4. Complete every Meta credential, checkpoint, OTP/CAPTCHA or follow-up step shown by the managed BridgeV2 flow.
+5. Require the admin to show an actual connected Meta login before continuing.
+6. Use `/admin/meta-cookie` only as a recovery fallback if the recommended upstream flow is unavailable.
+7. Confirm new Meta portal rooms are unencrypted on Matrix. This is required because the Chatwoot sidecar intentionally does not implement Matrix E2EE.
 
-Meta's own Messenger E2EE is separate and remains supported by mautrix-meta; its network traffic is configured to use the same Meta proxy hook.
+Normal onboarding must not require Element, Matrix management rooms or bridge bot commands. Element remains an internal diagnostic tool only. Meta's own Messenger E2EE is separate and remains supported by mautrix-meta; its network traffic is configured to use the same Meta proxy hook.
 
 ## Mandatory live acceptance before production traffic
 
@@ -82,7 +84,9 @@ Repository CI cannot substitute for these tests because the residential proxy on
 
 Require all of the following on the exact deployed revision:
 
-- `/admin` loads through HTTPS, the NiceGUI WebSocket remains connected and login succeeds.
+- `/admin` loads through HTTPS, the NiceGUI WebSocket remains connected and admin login succeeds.
+- `/ready` reports DB, Chatwoot configuration, proxy configuration, Synapse, mautrix provisioning and Meta connection state without exposing secrets.
+- The recommended `messenger-lite-android` login succeeds from `/admin/meta` without Element or browser developer tools.
 - Saving Chatwoot configuration from the NiceGUI panel survives an `integration` restart.
 - Chatwoot connection test succeeds for the configured inbox.
 - Proxy egress test succeeds and the observed IP is not the VPS IP.
@@ -90,7 +94,7 @@ Require all of the following on the exact deployed revision:
 - A new inbound Meta text message reaches the correct Chatwoot conversation once.
 - An agent reply in Chatwoot reaches the correct Meta conversation once.
 - An ordinary non-bridge Matrix room is not forwarded to Chatwoot.
-- Restart/redeploy the stack without deleting volumes; Meta login state, Matrix state, NiceGUI user storage and Chatwoot room mappings remain present.
+- Restart `integration`, then restart `mautrix-meta`, then perform a normal full redeploy without deleting volumes; after each operation Meta login state, Matrix state, NiceGUI user storage and Chatwoot room mappings remain present and message flow recovers.
 - Temporarily make the residential proxy unreachable; Meta traffic must fail rather than silently succeed through the VPS public IP.
 - Restore the proxy and confirm reconnect/message flow recovers.
 
@@ -109,3 +113,18 @@ Backups must be stored off the VPS, access-controlled and restorable. A backup i
 ## Upgrade policy
 
 Keep image versions pinned. NiceGUI is pinned to `3.16.0` in the integration image. Test NiceGUI, mautrix-meta and Synapse upgrades on a disposable copy or separate deployment first. Never replace production dependencies with unpinned `latest` versions as an upgrade strategy.
+
+
+## Repository release gate
+
+Before promoting `dev` to `main`, GitHub branch protection or a repository ruleset must require successful status checks. At minimum require:
+
+- `compose`
+- `runtime-composition`
+- `binding-generations`
+- `onboarding`
+- `live-provisioning-contract`
+- `admin-v2`
+- `tests`
+
+Direct pushes that bypass these checks must be disabled for the production branch. The repository currently documents this requirement because branch/ruleset administration is outside the runtime code path; verify it in GitHub settings before production release.
