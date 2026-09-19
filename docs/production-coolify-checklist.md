@@ -13,6 +13,19 @@ Do not expose `mautrix-meta:29319` publicly.
 
 The integration domain serves `/admin` and the Chatwoot webhook. The admin is a NiceGUI application and requires normal WebSocket upgrade support through Traefik; Coolify/Traefik normally handles this automatically, but it must be verified after deployment. The Meta proxy resolver remains on the same HTTP service but requires internal HTTP Basic authentication; unauthenticated requests return 404. mautrix-meta reaches it through the private Compose network.
 
+## Admin ingress security
+
+Expose the integration admin only through HTTPS on the trusted Coolify/Traefik
+ingress. Keep `INTEGRATION_COOKIE_SECURE=true` and configure an ingress rate
+limit for `/admin` and the NiceGUI login/WebSocket origin. The application uses
+constant-time password comparison and a failed-login delay, but reverse-proxy
+rate limiting is the authoritative brute-force control because the proxy is the
+component that owns the trusted client-IP boundary.
+
+Do not expose port 8080 directly to the public Internet and do not trust arbitrary
+client-supplied `X-Forwarded-For` headers as an application-level rate-limit
+identity.
+
 ## Required Coolify secrets
 
 Set strong, unrelated values for:
