@@ -204,6 +204,14 @@ class ProductionRuntimeCompositionContractTests(unittest.TestCase):
                     {"id": 2, "attribute_key": "facebook_profile_url"},
                     {"id": 3, "attribute_key": "marketplace_listing_url"},
                 ]})
+            if url.endswith("/labels"):
+                return FakeResponse({"payload": [
+                    {
+                        "id": 10,
+                        "title": "marketplace",
+                        "description": "Facebook Marketplace conversation",
+                    }
+                ]})
             if url.endswith("/conversations/77"):
                 return FakeResponse(
                     {
