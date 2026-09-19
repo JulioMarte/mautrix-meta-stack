@@ -138,6 +138,34 @@ class RuntimeEnhancementTests(unittest.TestCase):
         self.assertEqual(row["conversation_id"], 77)
         profile_sync.assert_called_once_with(1, 5, "@meta_123:matrix.example.com")
 
+    def test_contact_profile_uploads_matrix_avatar_to_chatwoot(self):
+        with patch.object(
+            module,
+            "contact_identity",
+            return_value={"name": "Customer Name", "avatar_url": "mxc://meta/avatar123"},
+        ) as identity, patch.object(
+            module,
+            "matrix_avatar_bytes",
+            return_value=(b"avatar-bytes", "image/jpeg", "avatar.jpg"),
+        ) as avatar, patch.object(module, "chatwoot_request", return_value={}) as request_call:
+            synced = module.update_chatwoot_contact_profile(
+                1, 5, "@meta_123:matrix.example.com", force_refresh=True
+            )
+
+        self.assertTrue(synced)
+        identity.assert_called_once_with(
+            "@meta_123:matrix.example.com", force_refresh=True
+        )
+        avatar.assert_called_once_with("mxc://meta/avatar123")
+        request_call.assert_called_once()
+        args, kwargs = request_call.call_args
+        self.assertEqual(args[:2], ("PUT", "/api/v1/accounts/1/contacts/5"))
+        self.assertEqual(kwargs["data"]["name"], "Customer Name")
+        self.assertEqual(
+            kwargs["files"]["avatar"],
+            ("avatar.jpg", b"avatar-bytes", "image/jpeg"),
+        )
+
     def test_deleted_chatwoot_conversation_removes_stale_mapping(self):
         room = self.insert_link()
         with patch.object(prod, "cw_get", side_effect=self.http_error(404)):
