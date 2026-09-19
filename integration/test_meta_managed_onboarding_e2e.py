@@ -70,6 +70,16 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         cls.managed = importlib.import_module("nicegui_app")
         cls.cookie_page = importlib.import_module("meta_cookie_page")
 
+        # The onboarding suite runs in one Python process with other modules that
+        # may already have imported app.py against an earlier TemporaryDirectory.
+        # Rebind the cached legacy DB globals so this class is hermetic even when
+        # test ordering changes.
+        legacy = cls.managed._legacy_ui.legacy
+        legacy.DATA_DIR = cls.tmp.name
+        legacy.DB_PATH = os.path.join(cls.tmp.name, "integration.db")
+        os.makedirs(legacy.DATA_DIR, exist_ok=True)
+        legacy.init_db()
+
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
@@ -108,7 +118,7 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.assertEqual(payload["operation"], "submit_user_input")
         self.assertEqual(payload["status_code"], 400)
 
-    def test_cookie_first_product_path_and_managed_helper_fallback_complete_end_to_end(self):
+    def test_managed_product_path_and_cookie_helper_fallback_complete_end_to_end(self):
         # The managed BridgeV2 flow is now the supported production path after
         # real-provider validation. Cookie extraction remains an explicit fallback.
         self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), self.patch.NAV_ITEMS)
@@ -124,7 +134,7 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.assertNotIn("Copy as cURL", managed_source)
         self.assertNotIn("Network / Red", managed_source)
 
-        # Simulate the exact server/helper boundary for the experimental managed
+        # Simulate the exact server/helper boundary for the recovery cookie
         # path: desktop helper fetches sanitized metadata, captures only requested
         # cookies and posts them once, then BridgeV2 returns complete.
         item, token = routes.registry.create(COOKIE_STEP)
