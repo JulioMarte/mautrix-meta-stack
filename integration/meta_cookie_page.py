@@ -15,7 +15,7 @@ from nicegui import ui
 import admin_v2
 import nicegui_app
 from meta_cookie_auth import CookieInputError, login_with_browser_cookies
-from meta_provisioning import ProvisioningError
+from meta_provisioning import ProvisioningError, operator_error_message, provisioning_debug
 
 
 @ui.page("/admin/meta-cookie")
@@ -156,11 +156,27 @@ def meta_cookie_page():
                     result_label.text = str(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except ProvisioningError as exc:
-                    suffix = f" [{exc.errcode}]" if exc.errcode else ""
-                    result_label.text = f"Facebook/mautrix rechazó la sesión: {exc}{suffix}"
+                    provisioning_debug(
+                        "cookie_ui_login_failed",
+                        trace_id=exc.trace_id,
+                        error_type=type(exc).__name__,
+                        status_code=exc.status_code,
+                        errcode=exc.errcode,
+                        failure_code=exc.failure_code,
+                        retryable=exc.retryable,
+                    )
+                    result_label.text = operator_error_message(exc)
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 except Exception as exc:
-                    result_label.text = f"No se pudo conectar: {exc}"
+                    provisioning_debug(
+                        "cookie_ui_login_failed",
+                        error_type=type(exc).__name__,
+                        failure_code="META_LOGIN_UNEXPECTED",
+                    )
+                    result_label.text = (
+                        "No se pudo completar el acceso por un error inesperado del panel. "
+                        "Revisa los logs META_LOGIN_DEBUG del mismo momento."
+                    )
                     result_label.classes(replace="text-sm mt-3 text-red-700 font-medium")
                 finally:
                     cookie_text.value = ""
