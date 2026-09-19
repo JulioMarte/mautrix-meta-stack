@@ -63,6 +63,7 @@ Required contracts include:
 - Chatwoot webhook -> normalized message;
 - normalized outbound message -> Matrix send;
 - retry/idempotency semantics across remote failures.
+- production runtime composition after all install/monkey-patch layers are applied; cross-module helpers must be exercised through the production entrypoint rather than only as isolated imports.
 
 ### 2.4 Real-container integration tests
 
