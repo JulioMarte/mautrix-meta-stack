@@ -58,13 +58,15 @@ In `/admin`, configure:
 4. User API access token with access to that account/inbox.
 5. Run **Test Chatwoot** and require success.
 
-Configure a Chatwoot `message_created` webhook to:
+Configure a Chatwoot `message_created` webhook to the canonical signed endpoint:
 
 ```text
-https://<integration-domain>/webhooks/chatwoot/<CHATWOOT_WEBHOOK_SECRET>
+https://<integration-domain>/webhooks/chatwoot
 ```
 
-Treat the webhook URL as sensitive because the path contains the deployment secret.
+Then use **Verify webhook & import secret** in `/admin`. When Chatwoot exposes the webhook signing secret through its API, the panel imports it into the private integration volume and invalidates any previous delivery verification. If the Chatwoot version does not expose it, paste the webhook signing secret in the authenticated admin.
+
+New deployments must use signed webhook headers and the canonical path. The legacy `/webhooks/chatwoot/<secret>` route exists only for migration compatibility and should not be configured for a new production deployment.
 
 ## Meta onboarding
 
