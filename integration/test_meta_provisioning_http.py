@@ -57,6 +57,7 @@ class ContractHandler(BaseHTTPRequestHandler):
             return
         if entry["path"].endswith("/v3/login/flows"):
             self._reply(200, {"flows": [
+                {"id": "messenger-lite-android", "name": "Messenger Android"},
                 {"id": "facebook", "name": "facebook.com"},
                 {"id": "messenger", "name": "messenger.com"},
             ]})
@@ -72,7 +73,20 @@ class ContractHandler(BaseHTTPRequestHandler):
         if not self._authorize(entry):
             return
         path = entry["path"]
-        if path.endswith("/v3/login/start/facebook"):
+        if path.endswith("/v3/login/start/messenger-lite-android"):
+            self._reply(200, {
+                "login_id": "android/login-process",
+                "step_id": "fi.mau.meta.login",
+                "txn_id": "android-txn-1",
+                "type": "user_input",
+                "user_input": {
+                    "fields": [
+                        {"id": "email", "name": "Correo o teléfono", "type": "text", "required": True},
+                        {"id": "password", "name": "Contraseña", "type": "password", "required": True},
+                    ],
+                },
+            })
+        elif path.endswith("/v3/login/start/facebook"):
             self._reply(200, {
                 "login_id": "process/with slash",
                 "step_id": "fi.mau.meta.cookies",
@@ -85,6 +99,12 @@ class ContractHandler(BaseHTTPRequestHandler):
                         {"id": "xs", "required": True},
                     ],
                 },
+            })
+        elif "/v3/login/step/" in path and path.endswith("/user_input"):
+            self._reply(200, {
+                "type": "complete",
+                "login_id": "android/login-process",
+                "step_id": "fi.mau.meta.complete",
             })
         elif "/v3/login/step/" in path and path.endswith("/cookies"):
             self._reply(200, {"type": "complete", "step_id": "fi.mau.meta.complete"})
@@ -123,7 +143,10 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
 
     def test_full_cookie_flow_uses_exact_http_contract(self):
         flows = self.client.flows()
-        self.assertEqual([flow["id"] for flow in flows], ["facebook", "messenger"])
+        self.assertEqual(
+            [flow["id"] for flow in flows],
+            ["messenger-lite-android", "facebook", "messenger"],
+        )
 
         step = self.client.start("facebook", existing_login_id="existing/login")
         self.assertEqual(step["type"], "cookies")
@@ -146,6 +169,33 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
         self.assertEqual(submit["query"]["txn_id"], ["txn/1"])
         self.assertEqual(submit["payload"], {"c_user": "123", "xs": "abc"})
         self.assertTrue(all(r["authorization"] == "Bearer integration-contract-secret" for r in ContractHandler.requests))
+
+    def test_recommended_android_flow_uses_user_input_contract(self):
+        step = self.client.start("messenger-lite-android")
+        self.assertEqual(step["type"], "user_input")
+        self.assertEqual(step["login_id"], "android/login-process")
+        self.assertEqual(
+            [field["id"] for field in step["user_input"]["fields"]],
+            ["email", "password"],
+        )
+
+        done = self.client.submit_user_input(
+            step["login_id"],
+            step["step_id"],
+            {"email": "person@example.com", "password": "not-a-real-password"},
+            txn_id=step["txn_id"],
+        )
+        self.assertEqual(done["type"], "complete")
+
+        start = ContractHandler.requests[0]
+        submit = ContractHandler.requests[1]
+        self.assertTrue(start["path"].endswith("/v3/login/start/messenger-lite-android"))
+        self.assertIn("android%2Flogin-process", submit["path"])
+        self.assertEqual(submit["query"]["txn_id"], ["android-txn-1"])
+        self.assertEqual(
+            submit["payload"],
+            {"email": "person@example.com", "password": "not-a-real-password"},
+        )
 
     def test_real_http_rejects_bad_secret_without_leaking_it(self):
         bad = mp.MautrixProvisioningClient(mp.ProvisioningConfig(
@@ -179,10 +229,58 @@ class ProvisioningHTTPContractTests(unittest.TestCase):
             errcode="M_FORBIDDEN",
             status_code=400,
         )
-        self.assertEqual(
-            mp.operator_error_message(exc),
-            "Facebook rejected this step",
+        message = mp.operator_error_message(exc)
+        self.assertIn("Facebook rejected this step", message)
+        self.assertIn("META_LOGIN_REJECTED", message)
+
+    def test_operator_error_exposes_stable_code_reference_and_retryability(self):
+        exc = mp.ProvisioningError(
+            "rate limited",
+            errcode="M_LIMIT_EXCEEDED",
+            status_code=429,
+            trace_id="trace-abc123",
+            retryable=True,
         )
+        message = mp.operator_error_message(exc)
+        self.assertIn("META_RATE_LIMITED", message)
+        self.assertIn("trace-abc123", message)
+        self.assertIn("reintentable", message)
+        self.assertEqual(mp.operator_error_code(exc), "META_RATE_LIMITED")
+
+    def test_real_http_error_log_has_trace_duration_and_stable_failure_code(self):
+        bad = mp.MautrixProvisioningClient(mp.ProvisioningConfig(
+            base_url=self.config.base_url,
+            user_id=self.config.user_id,
+            shared_secret="wrong-secret-long-enough",
+            timeout=3,
+        ))
+        stream = io.StringIO()
+        with redirect_stdout(stream), self.assertRaises(mp.ProvisioningError) as ctx:
+            bad.whoami()
+        output = stream.getvalue()
+        self.assertTrue(ctx.exception.trace_id)
+        self.assertEqual(ctx.exception.failure_code, "META_PROVISIONING_AUTH")
+        self.assertIn(f'"trace_id":"{ctx.exception.trace_id}"', output)
+        self.assertIn('"failure_code":"META_PROVISIONING_AUTH"', output)
+        self.assertIn('"duration_ms":', output)
+        self.assertNotIn("wrong-secret-long-enough", output)
+
+    def test_one_client_trace_correlates_full_login_attempt(self):
+        client = mp.MautrixProvisioningClient(self.config, trace_id="attempt-correlation-01")
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            step = client.start("messenger-lite-android")
+            client.submit_user_input(
+                step["login_id"],
+                step["step_id"],
+                {"email": "person@example.com", "password": "secret-not-logged"},
+                txn_id=step["txn_id"],
+            )
+        lines = [line for line in stream.getvalue().splitlines() if "META_LOGIN_DEBUG" in line]
+        self.assertGreaterEqual(len(lines), 4)
+        for line in lines:
+            self.assertIn('"trace_id":"attempt-correlation-01"', line)
+            self.assertNotIn("secret-not-logged", line)
 
     def test_debug_logging_redacts_payload_secrets_and_temporary_ids(self):
         stream = io.StringIO()

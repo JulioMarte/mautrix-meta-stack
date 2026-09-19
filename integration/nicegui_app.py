@@ -19,10 +19,12 @@ import admin_v2 as _admin_v2
 import meta_admin_patch as _meta_admin_patch
 from meta_helper_routes import create_pairing, register_helper_routes
 from meta_login_recovery import is_missing_login_process
+from meta_onboarding_diagnostics import new_trace_id
 from meta_provisioning import (
     MautrixProvisioningClient,
     ProvisioningError,
     connection_summary,
+    operator_error_code,
     operator_error_message,
     provisioning_debug,
     safe_step,
@@ -39,6 +41,8 @@ _meta_admin_patch.install()
 META_STEP_KEY = "meta_onboarding_step"
 META_STEP_STARTED_KEY = "meta_onboarding_step_started_at"
 META_LAST_COMPLETE_KEY = "meta_onboarding_last_complete_at"
+META_TRACE_KEY = "meta_onboarding_trace_id"
+META_LAST_FAILURE_KEY = "meta_onboarding_last_failure"
 META_PROCESS_TTL = 30 * 60
 
 # Prefer the mobile Messenger login APIs because the exact pinned v26.08.1
@@ -64,21 +68,51 @@ def __getattr__(name: str):
     return getattr(_legacy_ui, name)
 
 
-def _prov_client() -> MautrixProvisioningClient:
-    return MautrixProvisioningClient()
+def _prov_client(trace_id: str = "") -> MautrixProvisioningClient:
+    return MautrixProvisioningClient(trace_id=trace_id)
+
+
+def _meta_trace_id() -> str:
+    return str(_legacy_ui.legacy.get_setting(META_TRACE_KEY) or "")[:64]
 
 
 def _clear_meta_step() -> None:
     _legacy_ui.legacy.set_setting(META_STEP_KEY, "")
     _legacy_ui.legacy.set_setting(META_STEP_STARTED_KEY, "")
+    _legacy_ui.legacy.set_setting(META_TRACE_KEY, "")
 
 
-def _store_meta_step(step: dict[str, Any]) -> dict[str, Any]:
+def _record_meta_failure(exc: Exception, *, operation: str, trace_id: str = "") -> None:
+    trace = str(trace_id or getattr(exc, "trace_id", "") or _meta_trace_id())[:64]
+    payload = {
+        "at": _legacy_ui._now_utc(),
+        "operation": str(operation)[:64],
+        "code": str(operator_error_code(exc))[:80],
+        "trace_id": trace,
+        "status_code": int(getattr(exc, "status_code", 0) or 0),
+        "errcode": str(getattr(exc, "errcode", "") or "")[:80],
+    }
+    _legacy_ui.legacy.set_setting(META_LAST_FAILURE_KEY, json.dumps(payload, separators=(",", ":")))
+
+
+def _load_meta_failure() -> dict[str, Any]:
+    raw = _legacy_ui.legacy.get_setting(META_LAST_FAILURE_KEY)
+    try:
+        value = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _store_meta_step(step: dict[str, Any], *, trace_id: str = "") -> dict[str, Any]:
     safe = safe_step(step)
     if safe.get("type") == "complete":
         _legacy_ui.legacy.set_setting(META_LAST_COMPLETE_KEY, _legacy_ui._now_utc())
+        _legacy_ui.legacy.set_setting(META_LAST_FAILURE_KEY, "")
         _clear_meta_step()
         return safe
+    if trace_id:
+        _legacy_ui.legacy.set_setting(META_TRACE_KEY, str(trace_id)[:64])
     _legacy_ui.legacy.set_setting(META_STEP_KEY, json.dumps(safe, separators=(",", ":")))
     _legacy_ui.legacy.set_setting(META_STEP_STARTED_KEY, str(int(time.time())))
     return safe
@@ -125,7 +159,7 @@ def meta_runtime_state() -> dict[str, Any]:
             "status": "error",
             "connected": False,
             "logins": [],
-            "error": str(exc),
+            "error": operator_error_message(exc),
             "network": "Meta",
         }
 
@@ -180,6 +214,7 @@ def meta_onboarding_page():
 
     runtime = meta_runtime_state()
     saved_step, expired = _load_meta_step()
+    last_failure = _load_meta_failure()
 
     with ui.column().classes("w-full max-w-5xl mx-auto p-4 md:p-6 gap-5"):
         with ui.row().classes("items-center justify-between w-full"):
@@ -229,19 +264,24 @@ def meta_onboarding_page():
                     description = str(flow.get("description") or "")
                     flow_options[flow_id] = product_label or (f"{name} — {description}" if description else name)
             except Exception as exc:
-                ui.label(f"No se pudieron cargar los métodos de acceso: {exc}").classes("text-red-700 mt-2")
+                _record_meta_failure(exc, operation="list_flows")
+                ui.label(f"No se pudieron cargar los métodos de acceso: {operator_error_message(exc)}").classes("text-red-700 mt-2")
 
             async def start_login(event):
                 selected = str(event.value or "").strip()
                 if not selected:
                     return
+                trace_id = new_trace_id()
                 try:
-                    step = await asyncio.to_thread(_prov_client().start, selected)
-                    _store_meta_step(step)
+                    step = await asyncio.to_thread(_prov_client(trace_id).start, selected)
+                    _store_meta_step(step, trace_id=trace_id)
+                    provisioning_debug("ui_login_started", trace_id=trace_id, flow_id=selected)
                     ui.navigate.to("/admin/meta")
                 except Exception as exc:
+                    _record_meta_failure(exc, operation="start_login", trace_id=trace_id)
                     provisioning_debug(
                         "ui_start_failed",
+                        trace_id=trace_id,
                         flow_id=selected,
                         error_type=type(exc).__name__,
                         status_code=getattr(exc, "status_code", 0),
@@ -250,13 +290,22 @@ def meta_onboarding_page():
                     ui.notify(f"No se pudo iniciar la conexión: {operator_error_message(exc)}", type="negative", close_button=True)
 
             async def disconnect_all():
+                trace_id = new_trace_id()
                 try:
-                    await asyncio.to_thread(_prov_client().logout, "all")
+                    await asyncio.to_thread(_prov_client(trace_id).logout, "all")
                     _clear_meta_step()
                     ui.notify("Cuenta Meta desconectada", type="positive")
                     ui.navigate.to("/admin/meta")
                 except Exception as exc:
-                    ui.notify(f"No se pudo desconectar: {exc}", type="negative", close_button=True)
+                    _record_meta_failure(exc, operation="logout", trace_id=trace_id)
+                    provisioning_debug(
+                        "ui_logout_failed",
+                        trace_id=trace_id,
+                        error_type=type(exc).__name__,
+                        status_code=getattr(exc, "status_code", 0),
+                        errcode=getattr(exc, "errcode", ""),
+                    )
+                    ui.notify(f"No se pudo desconectar: {operator_error_message(exc)}", type="negative", close_button=True)
 
             if saved_step:
                 ui.label(
@@ -293,7 +342,7 @@ def meta_onboarding_page():
                     login_id = str(saved_step.get("login_id") or "")
                     try:
                         if login_id:
-                            await asyncio.to_thread(_prov_client().cancel, login_id)
+                            await asyncio.to_thread(_prov_client(_meta_trace_id()).cancel, login_id)
                     except ProvisioningError:
                         pass
                     _clear_meta_step()
@@ -390,7 +439,7 @@ def meta_onboarding_page():
                         values = {key: str(widget.value or "") for key, widget in inputs.items()}
                         try:
                             step = await asyncio.to_thread(
-                                _prov_client().submit_user_input,
+                                _prov_client(_meta_trace_id()).submit_user_input,
                                 str(saved_step.get("login_id") or ""),
                                 str(saved_step.get("step_id") or ""),
                                 values,
@@ -398,9 +447,10 @@ def meta_onboarding_page():
                             )
                             for key in values:
                                 values[key] = ""
-                            _store_meta_step(step)
+                            _store_meta_step(step, trace_id=_meta_trace_id())
                             ui.navigate.to("/admin/meta")
                         except Exception as exc:
+                            _record_meta_failure(exc, operation="submit_user_input")
                             for key in values:
                                 values[key] = ""
                             if _recover_missing_login_process(exc):
@@ -421,6 +471,7 @@ def meta_onboarding_page():
                                 return
                             provisioning_debug(
                                 "ui_submit_failed",
+                                trace_id=_meta_trace_id(),
                                 operation="submit_user_input",
                                 login_id=str(saved_step.get("login_id") or ""),
                                 step_id=str(saved_step.get("step_id") or ""),
@@ -442,14 +493,15 @@ def meta_onboarding_page():
                     async def continue_wait():
                         try:
                             step = await asyncio.to_thread(
-                                _prov_client().wait,
+                                _prov_client(_meta_trace_id()).wait,
                                 str(saved_step.get("login_id") or ""),
                                 str(saved_step.get("step_id") or ""),
                                 txn_id=str(saved_step.get("txn_id") or ""),
                             )
-                            _store_meta_step(step)
+                            _store_meta_step(step, trace_id=_meta_trace_id())
                             ui.navigate.to("/admin/meta")
                         except Exception as exc:
+                            _record_meta_failure(exc, operation="display_and_wait")
                             if _recover_missing_login_process(exc):
                                 provisioning_debug(
                                     "ui_login_process_missing",
@@ -468,6 +520,7 @@ def meta_onboarding_page():
                                 return
                             provisioning_debug(
                                 "ui_submit_failed",
+                                trace_id=_meta_trace_id(),
                                 operation="display_and_wait",
                                 login_id=str(saved_step.get("login_id") or ""),
                                 step_id=str(saved_step.get("step_id") or ""),
@@ -497,6 +550,19 @@ def meta_onboarding_page():
             ).classes("text-sm text-slate-600")
             if _legacy_ui.legacy.get_setting(META_LAST_COMPLETE_KEY):
                 ui.label(f"Última conexión completada: {_legacy_ui.legacy.get_setting(META_LAST_COMPLETE_KEY)}").classes("text-xs text-slate-500 mt-2")
+            if last_failure:
+                code = str(last_failure.get("code") or "META_LOGIN_UNEXPECTED")
+                trace = str(last_failure.get("trace_id") or "")
+                operation = str(last_failure.get("operation") or "")
+                when = str(last_failure.get("at") or "")
+                detail = f"Último fallo: {code}"
+                if trace:
+                    detail += f" · ref {trace}"
+                if operation:
+                    detail += f" · {operation}"
+                if when:
+                    detail += f" · {when}"
+                ui.label(detail).classes("text-xs text-amber-700 mt-2")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

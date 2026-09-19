@@ -1,146 +1,197 @@
 # Production Readiness Ledger
 
-Status: authoritative current-state ledger for the Meta Control Plane workstream.
+Status: authoritative current-state ledger for the current single-client mautrix-meta ↔ Matrix/Synapse ↔ Chatwoot stack.
 
-This document prevents green phase CI from being mistaken for end-to-end production readiness. It records what is proven, what is integrated, and what still requires controlled staging or human evidence.
+This file is the release truth source. Historical control-plane and multi-tenant plans remain useful design history, but they are not release criteria for the production runtime in `compose.yaml`.
 
 ## Promotion rule
 
-`main` is the current human-accepted deployment baseline. No automated agent, bot, CI workflow or unattended release process may promote `dev` to `main`.
+`dev` is the integration branch. `main` is the production baseline.
 
-A human owner must explicitly approve the exact candidate SHA after reviewing the evidence and comparing it with the currently working `main` deployment. Until that instruction exists, `main` remains unchanged.
+No release is production-ready merely because a feature branch or PR is green. Promotion to `main` requires:
 
-## Integrated `dev` baseline
+1. one exact `dev` candidate SHA;
+2. all required repository checks green for that SHA;
+3. the controlled staging runbook passing against that exact SHA;
+4. a tested off-host backup/restore path;
+5. an explicit human decision to promote that exact candidate.
 
-The current integrated baseline is `dev@1b7263daac18a9d83e02c8b22b44b510e0c10aea`.
+Evidence from different SHAs must not be combined.
 
-This baseline includes PR #18 (Chatwoot tenancy/migration completion) and PR #19 (exclusive live egress reservations). The post-merge push matrix for this exact SHA contains no failed workflow run.
+## Current runtime architecture
 
-Integrated deterministic evidence includes:
+```text
+Meta / Messenger / Marketplace
+          ↕
+       mautrix-meta
+          ↕
+      Matrix / Synapse
+          ↕
+ Python/NiceGUI integration
+          ↕
+   Chatwoot API Inbox
+```
 
-- control-plane startup, authenticated management boundary, migrations and durable SQLite state;
-- sticky per-connection fail-closed egress resolution and secret redaction;
-- deterministic mautrix-meta reconstruction from pinned upstream `ed37c9e6ce47e83dc75b9abea7b636302715b9bc`;
-- account-aware login/messaging/media/E2EE proxy-context tests and direct-egress sentinels;
-- signed Chatwoot -> Matrix routing, attachments, provenance, duplicate suppression and ambiguous-response reconciliation;
-- two-tenant A/B routing/egress, restart persistence, assigned-proxy failure and secret-canary checks;
-- cold backup/restore of the full control-plane data volume in a disposable environment;
-- pre-Meta provisioning claims: one-time digest-only authority, exact connection binding, bootstrap egress before provider traffic, login-ID binding and direct-sentinel proof;
-- real Matrix/Synapse Client-Server ingestion using a dedicated Matrix service identity, verified bridge room attribution, durable sync checkpoints and bounded gap recovery;
-- disposable Synapse acceptance with two tenants/two rooms, trusted invite/join, unbound-room rejection, text/PDF/voice-note normalization and checkpoint persistence;
-- backup/restore coverage for Matrix room attribution and sync checkpoint state;
-- Chatwoot historical-route preservation across binding migration, current-binding selection for new threads, authenticated historical webhook routing, cross-tenant/cross-binding collision rejection and fail-closed disabled-history behavior;
-- exclusive live egress ownership: a non-disabled connection reserves its profile, disabling releases it, and stale reactivation fails when another live connection has legitimately reused that profile.
+The production integration is the Python runtime under `integration/`. The legacy/multi-tenant TypeScript control-plane is not production-authoritative.
 
-These facts are strong engineering evidence. They are not equivalent to the global Definition of Done.
+Current pinned infrastructure includes:
 
-## Integrated Matrix/Synapse ingestion
+- Synapse `matrixdotorg/synapse:v1.160.0`;
+- mautrix-meta runtime based on `v26.08.1` plus repository-controlled patches;
+- Chatwoot contract coverage against v4.7.0 behavior;
+- persistent Synapse, mautrix-meta and integration volumes.
 
-PR #17 is integrated in `dev`.
+## Repository-proven behavior
 
-Integrated behavior includes:
+The current repository test matrix proves, with local services/test doubles where appropriate:
 
-- schema-backed `matrix_room_bindings` and `matrix_sync_checkpoints`;
-- standard `/sync` client using a dedicated Matrix service identity;
-- bridge-bot-only trusted invitation auto-join rather than global Application Service visibility;
-- exact room attribution from bridge-authored `m.bridge`/`uk.half-shot.bridge` state: `channel.receiver -> mautrix_login_id -> meta_connection`, with `channel.id -> remote_thread_id`;
-- strict persisted room/thread/login/tenant conflict rejection;
-- unknown/inactive bridge logins treated as unattributable rooms with zero downstream side effects, without allowing one invalid room to block unrelated valid rooms in the same sync batch;
-- bootstrap sync with timeline limit zero and durable `next_batch` checkpointing;
-- bounded recovery of `limited` timelines using forward `/messages` pagination from the persisted checkpoint to `prev_batch`, with event-ID deduplication across recovered pages and current timeline;
-- recovery failure, missing range information, non-converging pagination or oversized history leaves the checkpoint unchanged;
-- runtime long-poll loop, bounded backoff, shutdown handling and Matrix-aware readiness;
-- fork metadata on bridged message parts carrying explicit Meta provenance and provider remote sender ID;
-- ordinary Matrix and Chatwoot-originated events excluded from Meta inbound routing;
-- text, image/video/audio/file metadata, encrypted-file metadata and Matrix voice-note semantics;
-- encrypted Matrix media fails closed if its v2/JWK metadata is unusable, with the checkpoint left unchanged;
-- composed retry proof: downstream Chatwoot failure leaves `next_batch` unchanged, replay deduplicates already-delivered events and only the failed event repeats its side effect.
+- generation-scoped Chatwoot binding identity;
+- durable external Meta identity independent from ephemeral Chatwoot conversation IDs;
+- stale Chatwoot projection recovery without reusing old-generation conversations;
+- intentional conversation deletion tombstones and bidirectional deletion lifecycle;
+- generation-scoped event deduplication;
+- Matrix portal auto-join and bounded history import without outbound replay;
+- contact display-name/avatar reconciliation;
+- live reconciliation after profile/history policy changes;
+- Matrix ↔ Chatwoot delivery acknowledgement and duplicate suppression;
+- Chatwoot API Inbox callback HMAC verification and authenticated fallback for documented HMAC mismatch behavior;
+- destructive deletion requiring a verified API-Inbox signature;
+- Meta onboarding through the BridgeV2 provisioning API;
+- `messenger-lite-android` as the supported primary browser-safe `user_input` flow;
+- cookie/helper onboarding only as a recovery fallback;
+- secret-safe login diagnostics with one correlation reference across a login attempt;
+- production runtime composition using the same import/install order as the container;
+- SQLite connection closure for integration and mautrix metadata readers;
+- process liveness separated from product readiness;
+- cold backup/restore helpers for the three current authoritative volumes.
 
-The bootstrap policy intentionally starts at the first persisted `/sync` token with timeline limit zero. Historical messages predating initial ingestion startup are not replayed automatically. Historical CRM backfill would require a separate explicit policy.
+CI includes real Synapse + integration + mautrix-meta containers for repository E2E journeys. Chatwoot and Meta provider behavior are partially represented by controlled doubles/contracts; CI does not contain real Facebook credentials.
 
-## Integrated Chatwoot tenancy and migration semantics
+## Required repository release checks
 
-PR #18 is integrated in `dev`.
+For the exact release candidate SHA, require successful current-head results for at least:
 
-Integrated/proven behavior includes:
+- `compose`;
+- `runtime-composition`;
+- `binding-generations`;
+- `onboarding`;
+- `live-provisioning-contract`;
+- `admin-v2`;
+- `tests`.
 
-- colliding account/inbox/conversation/contact-looking IDs across different tenant contexts do not cross-route;
-- deterministic remote-contact identity remains scoped by tenant + Meta connection + remote contact;
-- webhook/binding mismatches fail closed before Matrix side effects;
-- a connection migration from Chatwoot binding A to B preserves historical thread routing through A while new threads use B;
-- Chatwoot replies arriving through historical binding A still target the original Matrix room after the connection points at B;
-- binding B cannot claim a historical A conversation merely because numeric conversation IDs collide;
-- another tenant with colliding numeric IDs cannot claim the conversation;
-- if historical binding A is disabled, new delivery for that historical thread fails terminally with no Chatwoot side effect and no silent fallback to B;
-- dedicated Chatwoot tenancy acceptance runs alongside broader Phase 4/5/6 regressions.
+Additional workflows such as marketplace/thread discovery must also be green when triggered by the candidate diff.
 
-The current MVP deliberately supports at most one `(account_id, inbox_id)` binding per tenant. Simultaneously configuring two different Chatwoot installations with the same numeric account+inbox IDs inside one tenant remains outside the MVP and would require promoting installation/binding identity into the persistent conversation key.
+Automatic workflows use a per-PR/ref concurrency group with `cancel-in-progress: true` so obsolete commits do not consume runner capacity or masquerade as current evidence.
 
-## Integrated egress ownership semantics
+## Operational interfaces
 
-PR #19 is integrated in `dev`.
+### Liveness
 
-The global `egress_profiles` inventory remains operator-managed, but one live reservation is enforced per profile. Connections in `draft`, `ready`, `active`, `degraded` or `blocked` reserve their assigned profile; `disabled` releases it.
+`GET /health` is intentionally lightweight. Container orchestration may use it without restarting the integration because an external dependency is temporarily unavailable.
 
-Deterministic coverage proves:
+### Readiness
 
-- two live connections cannot share the same profile;
-- a disabled connection releases the profile for deliberate reuse;
-- a disabled connection cannot reactivate if another live connection has reused its stale assignment;
-- distinct A/B profiles continue to support independent multi-tenant routing;
-- the behavior is enforced at the persistence boundary rather than relying only on operator convention.
+`GET /ready` verifies the local DB/configuration plus the current Synapse, mautrix provisioning, Meta-session and Chatwoot API-Inbox delivery prerequisites.
 
-## Remaining blocking gaps
+`GET /ready?deep=1` additionally performs a live Chatwoot API-Inbox check and verifies that the selected Channel::Api still points at the canonical callback path.
 
-### 1. Real Meta/provider deployment evidence
+Readiness output must not expose API tokens, HMAC secrets, provisioning secrets, Meta credentials or login IDs.
 
-Repository CI intentionally does not use real Facebook customer credentials or paid residential proxies. Therefore it cannot prove:
+### Chatwoot outbound path
 
-- one deployed patched mautrix process hosting at least two real Meta logins;
-- actual Meta acceptance for both sessions;
-- actual public exit IP/country per account;
-- absence of host/Contabo direct egress on the public network;
-- real login/reconnect/messaging/media/avatar/E2EE behavior through assigned egress;
-- real Meta -> Matrix -> Chatwoot -> Matrix -> Meta round trip;
-- behavior through the actual Coolify/DNS/TLS/network policy;
-- the real portal lifecycle behavior needed by the Matrix ingestion identity in the deployed environment.
+The supported agent-reply path is:
 
-**Status:** mandatory controlled staging/human evidence. Test doubles cannot honestly replace it.
+```text
+Chatwoot Channel::Api
+  -> /webhooks/chatwoot/inbox
+  -> timestamp/HMAC or authenticated REST fallback
+  -> mapped Matrix room
+  -> Matrix event acknowledgement
+  -> Meta
+```
 
-The normative procedure is `staging-acceptance-runbook.md`. All mandatory checks must pass against one exact candidate SHA; evidence from different SHAs must not be combined into one acceptance result.
+A delivery is considered verified only after Matrix returns an event ID and that event is verified in the target room.
 
-### 2. Production backup operations
+Account-level `/webhooks/chatwoot` handling is migration compatibility, not the production happy path.
 
-The repository proves the recovery algorithm on disposable Docker volumes, including Matrix room attribution and sync checkpoint state. It does not prove real backup storage, encryption/access control, retention, off-host durability, restore permissions or Coolify-specific volume identifiers.
+### Meta onboarding
 
-**Status:** production-operations/human evidence gap.
+The supported happy path is `/admin/meta` using `messenger-lite-android`.
 
-`staging-acceptance-runbook.md` requires an off-volume backup and destructive restore drill using the intended operational mechanism before readiness can be claimed.
+`/admin/meta-cookie` is a recovery fallback only.
 
-## Non-blocking but material debt
+Normal onboarding must not require Element, Matrix bot commands, browser developer tools or direct access to the mautrix provisioning port.
 
-- dynamic Instagram identity remains explicitly unsupported until its identity transition is modeled and tested;
-- Messenger Lite dynamic egress remains unsupported because stable pre-network identity is unavailable in that flow;
-- request-scoped media transports may create transient connection/resource overhead under heavy chunked usage;
-- container/action/package inputs are not fully hermetic or digest-pinned;
-- the fork delta is composed from multiple deterministic Python applicators and should be consolidated after correctness is stable;
-- production operator RBAC, retention policy, metrics/OpenTelemetry and PostgreSQL migration remain deferred according to architecture docs;
-- the server-rendered administrative surface remains intentionally minimal and should be expanded before broad operator self-service is claimed.
+## Production blockers that CI cannot close
 
-## Completion sequence from current state
+### 1. Exact current-head CI completion
 
-1. select and record an exact green `dev` candidate SHA for staging;
-2. execute every mandatory check in `staging-acceptance-runbook.md` with at least two disposable real Meta accounts and two distinct real egress endpoints;
-3. verify real public exit IP/country, reconnect stickiness, provider media/avatar/E2EE behavior and the complete Meta -> Matrix -> Chatwoot -> Matrix -> Meta round trip;
-4. perform the real off-host backup/restore operational drill and capture evidence for encryption/access/retention/restore permissions and actual volume identifiers;
-5. record any failure without rewriting or combining evidence across candidate SHAs; fix on a normal branch and rerun against the new exact candidate;
-6. human owner evaluates the exact passing `dev` candidate against the currently working `main` deployment;
-7. only an explicit human instruction approving that exact SHA may authorize any later `main` promotion.
+The release candidate cannot be merged/promoted on evidence from an earlier head. All required checks must complete on the exact candidate.
+
+### 2. Real Meta/provider acceptance
+
+Repository CI cannot prove future Meta checkpoints, account restrictions or provider-side changes.
+
+Staging must prove on the exact candidate:
+
+- a real Messenger Android login through the admin panel;
+- connected state after restart/redeploy;
+- a new real Messenger inbound conversation reaching Chatwoot with correct identity;
+- a Chatwoot reply reaching the correct Meta thread exactly once;
+- Marketplace behavior when Marketplace is part of the intended deployment;
+- image/file/audio behavior used in production;
+- no dependence on manually accepting rooms in Element.
+
+### 3. Real Chatwoot acceptance
+
+Staging must prove against the target Chatwoot instance:
+
+- selected inbox is `Channel::Api`;
+- callback URL is exactly `/webhooks/chatwoot/inbox`;
+- HMAC token is imported/verified where exposed;
+- a real agent reply produces a positively verified Matrix event;
+- old account-level connector webhooks are removed after migration acceptance.
+
+### 4. Persistence and recovery
+
+The repository includes cold-backup and destructive-restore helpers, but production readiness additionally requires:
+
+- backup stored outside the VPS/source-volume failure domain;
+- appropriate encryption/access control;
+- a real restore drill;
+- post-restore message-path verification.
+
+### 5. Repository governance
+
+Branch protection/rulesets must require the release checks and prevent direct production-branch pushes. This is a GitHub administrative control and is not enforced by application code.
+
+## Non-blocking debt
+
+The following items are material but are not release blockers for the current single-client scope unless the production environment specifically requires them:
+
+- broader operator RBAC beyond the single protected admin surface;
+- PostgreSQL migration from SQLite;
+- full OpenTelemetry/metrics stack;
+- automatic release promotion;
+- generalized multi-tenant identity/egress allocation;
+- Instagram-specific identity transitions.
+
+These items must not be described as already supported.
+
+## Completion sequence
+
+1. Finish the exact current PR head CI and audit the full compose log for hidden warnings/errors.
+2. Merge the fully green hardening PR into `dev`.
+3. Verify the post-merge `dev` workflows.
+4. Record that exact green `dev` SHA as the staging candidate.
+5. Execute `staging-acceptance-runbook.md` against the deployed candidate.
+6. Perform the off-host backup and destructive restore drill.
+7. Enable/verify GitHub branch protection or a ruleset requiring the release checks.
+8. Review the candidate against the existing production baseline.
+9. Promote to `main` only after explicit human approval of that exact SHA.
 
 ## Current readiness statement
 
-The repository is **not production-ready yet** under its own normative documents.
+The codebase has repository-level coverage for the critical single-client identity, delivery, deletion, onboarding, reconciliation and recovery mechanisms.
 
-The deterministic repository blockers identified earlier—provisioning, real Matrix/Synapse ingestion, Chatwoot tenancy/migration semantics and exclusive live egress ownership—are integrated in `dev`. The remaining mandatory blockers are controlled real-provider/Coolify staging evidence and real production backup/deployment operations.
-
-No CI result or merge to `dev` changes the human-controlled `main` promotion rule.
+Production readiness is not claimed until the exact candidate passes current-head CI plus the real staging and backup/restore gates above.

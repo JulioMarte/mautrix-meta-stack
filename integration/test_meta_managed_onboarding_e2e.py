@@ -33,6 +33,7 @@ COOKIE_STEP = {
 class FakeBridgeV2:
     def __init__(self):
         self.received = []
+        self.trace_id = ""
 
     def submit_cookies_trusted(self, login_id, step_id, cookies, *, txn_id=""):
         self.received.append({
@@ -40,6 +41,7 @@ class FakeBridgeV2:
             "step_id": step_id,
             "cookie_names": sorted(cookies),
             "txn_id": txn_id,
+            "trace_id": self.trace_id,
         })
         return {
             "type": "complete",
@@ -68,6 +70,16 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         cls.managed = importlib.import_module("nicegui_app")
         cls.cookie_page = importlib.import_module("meta_cookie_page")
 
+        # The onboarding suite runs in one Python process with other modules that
+        # may already have imported app.py against an earlier TemporaryDirectory.
+        # Rebind the cached legacy DB globals so this class is hermetic even when
+        # test ordering changes.
+        legacy = cls.managed._legacy_ui.legacy
+        legacy.DATA_DIR = cls.tmp.name
+        legacy.DB_PATH = os.path.join(cls.tmp.name, "integration.db")
+        os.makedirs(legacy.DATA_DIR, exist_ok=True)
+        legacy.init_db()
+
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
@@ -89,12 +101,28 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.stored.append(dict(step))
         return dict(step)
 
-    def test_cookie_first_product_path_and_managed_helper_fallback_complete_end_to_end(self):
-        # The proven manual browser-cookie flow is the primary production path.
-        # The managed BridgeV2/helper flow remains intentionally available as a
-        # separate test path rather than replacing the known-good workflow.
-        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta-cookie"), self.patch.NAV_ITEMS)
-        self.assertIn(("meta_test", "Facebook login (prueba)", "science", "/admin/meta"), self.patch.NAV_ITEMS)
+    def test_persisted_login_failure_is_secret_safe_and_traceable(self):
+        sensitive = "do-not-persist-this-value"
+        exc = self.managed.ProvisioningError(
+            f"provider rejected sensitive value {sensitive}",
+            errcode="M_FORBIDDEN",
+            status_code=400,
+            trace_id="attempt-safe-001",
+        )
+        self.managed._record_meta_failure(exc, operation="submit_user_input")
+        stored = self.managed._legacy_ui.legacy.get_setting(self.managed.META_LAST_FAILURE_KEY)
+        self.assertNotIn(sensitive, stored)
+        payload = json.loads(stored)
+        self.assertEqual(payload["trace_id"], "attempt-safe-001")
+        self.assertEqual(payload["code"], "META_LOGIN_REJECTED")
+        self.assertEqual(payload["operation"], "submit_user_input")
+        self.assertEqual(payload["status_code"], 400)
+
+    def test_managed_product_path_and_cookie_helper_fallback_complete_end_to_end(self):
+        # The managed BridgeV2 flow is now the supported production path after
+        # real-provider validation. Cookie extraction remains an explicit fallback.
+        self.assertIn(("meta", "Facebook Messenger", "forum", "/admin/meta"), self.patch.NAV_ITEMS)
+        self.assertIn(("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie"), self.patch.NAV_ITEMS)
 
         cookie_source = importlib.import_module("inspect").getsource(self.cookie_page.meta_cookie_page)
         self.assertIn("Copy as cURL", cookie_source)
@@ -106,7 +134,7 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
         self.assertNotIn("Copy as cURL", managed_source)
         self.assertNotIn("Network / Red", managed_source)
 
-        # Simulate the exact server/helper boundary for the experimental managed
+        # Simulate the exact server/helper boundary for the recovery cookie
         # path: desktop helper fetches sanitized metadata, captures only requested
         # cookies and posts them once, then BridgeV2 returns complete.
         item, token = routes.registry.create(COOKIE_STEP)
@@ -142,6 +170,7 @@ class ManagedMetaOnboardingJourneyTests(unittest.TestCase):
             self.bridge.received[0]["cookie_names"],
             ["c_user", "datr", "sb", "xs"],
         )
+        self.assertEqual(self.bridge.received[0]["trace_id"], "journey-e2e-001")
         self.assertEqual(self.stored[-1]["type"], "complete")
 
         joined_logs = "\n".join(captured.output)

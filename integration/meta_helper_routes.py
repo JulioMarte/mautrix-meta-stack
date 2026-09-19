@@ -146,7 +146,12 @@ def register_helper_routes(app, client_factory: Callable[[], Any], store_step: C
             fields=sorted(clean.keys()),
         )
         try:
-            next_step = client_factory().submit_cookies_trusted(
+            client = client_factory()
+            # Keep helper boundary events and provisioning HTTP diagnostics on
+            # one correlation reference without changing the factory contract.
+            if hasattr(client, "trace_id"):
+                client.trace_id = trace_id
+            next_step = client.submit_cookies_trusted(
                 item.login_id,
                 item.step_id,
                 clean,

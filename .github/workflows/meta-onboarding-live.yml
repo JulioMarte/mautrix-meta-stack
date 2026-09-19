@@ -20,6 +20,10 @@ on:
       - '.github/workflows/meta-onboarding-live.yml'
       - '.github/workflows/meta-onboarding.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   live-provisioning-contract:
     runs-on: ubuntu-latest
@@ -102,7 +106,7 @@ jobs:
       - name: Exercise real v26.08.1 provisioning state machine
         run: docker compose -f compose.yaml exec -T integration python /app/smoke_mautrix_provisioning.py
 
-      - name: Verify running production process exposes cookie-first primary and managed fallback
+      - name: Verify running production process exposes managed primary and cookie fallback
         shell: bash
         run: |
           set -euo pipefail
@@ -114,8 +118,9 @@ jobs:
               *"python /app/runtime_entrypoint.py"*) ;;
               *) echo "integration PID 1 is not runtime_entrypoint.py" >&2; exit 1 ;;
             esac
-            grep -Fq '\''("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")'\'' /app/meta_admin_patch.py
-            grep -Fq '\''("meta_test", "Facebook login (prueba)", "science", "/admin/meta")'\'' /app/meta_admin_patch.py
+            grep -Fq '\''("meta", "Facebook Messenger", "forum", "/admin/meta")'\'' /app/meta_admin_patch.py
+            grep -Fq '\''("meta_fallback", "Facebook web fallback", "cookie", "/admin/meta-cookie")'\'' /app/meta_admin_patch.py
+            ! grep -Fq '\''("meta", "Facebook Messenger", "forum", "/admin/meta-cookie")'\'' /app/meta_admin_patch.py
             grep -Fq '\''import meta_cookie_page'\'' /app/runtime_entrypoint.py
             grep -Fq '\''@ui.page("/admin/meta-cookie")'\'' /app/meta_cookie_page.py
             grep -Fq '\''Copy as cURL'\'' /app/meta_cookie_page.py
@@ -148,7 +153,7 @@ jobs:
           assert managed_status == 200, f'/admin/meta returned {managed_status}'
           assert cookie_headers.get('Location') not in {'/admin/meta', '/admin/meta/'}, cookie_headers.get('Location')
           assert managed_headers.get('Location') not in {'/admin/meta-cookie', '/admin/meta-cookie/'}, managed_headers.get('Location')
-          print('running production process registers both protected Meta routes with cookie-first as primary')
+          print('running production process registers managed Meta as primary and cookie flow as fallback')
           PY
 
       - name: Confirm isolated secret survives mautrix runtime rewrite

@@ -77,13 +77,29 @@ The operator UI is implemented with **NiceGUI 3.16.0** and runs on the integrati
 
 NiceGUI uses a WebSocket after the initial page load, so the integration domain must allow WebSocket upgrades through Coolify/Traefik.
 
-## Managed Meta onboarding direction
+## Managed Meta onboarding
 
-The next product-facing onboarding path will also live in `/admin`: users should connect, reconnect and disconnect Facebook Messenger / Marketplace without opening Element, sending bridge bot commands, copying browser cookies, or interacting with Matrix directly.
+The production Facebook Messenger onboarding path is `/admin/meta`. The panel
+queries the login flows exposed by the pinned mautrix-meta BridgeV2 provisioning
+API and prioritizes `messenger-lite-android`, which can be completed as
+`user_input` steps inside the authenticated admin UI.
 
-The design extends the existing `integration` backend and keeps the mautrix provisioning interface private. A normal web page cannot generically extract Facebook session cookies from another origin, so iframe/popup cookie scraping is explicitly rejected. If the pinned bridge login flow requires privileged webview/cookie access, the supported path will use a trusted helper such as an Electron-based client rather than browser security workarounds.
+Normal users do not need Element, Matrix bot commands, developer tools, direct
+access to the mautrix provisioning port, or manual cookie extraction. The
+provisioning shared secret remains server-side.
 
-The complete architecture, security boundary, implementation phases and acceptance criteria are documented in `docs/architecture/managed-meta-onboarding.md`.
+`/admin/meta-cookie` remains available only as a recovery fallback for web-cookie
+flows. Raw cookies, passwords, OTP values and provisioning tokens are not written
+to normal logs. Login failures emit credential-safe correlation references and
+stable failure codes so operators can trace one attempt in container logs.
+
+`/health` is a lightweight process liveness endpoint. `/ready` is the product
+readiness diagnostic and reports local configuration plus Synapse, mautrix
+provisioning and Meta-session readiness without exposing credentials. Use
+`/ready?deep=1` during deployment acceptance to include a live Chatwoot check.
+
+The architecture, security boundary and acceptance criteria are documented in
+`docs/architecture/managed-meta-onboarding.md`.
 
 ## Persistence
 
@@ -101,6 +117,7 @@ The integration volume contains its SQLite database and NiceGUI server-side user
 
 - The integration container has a read-only root filesystem, `no-new-privileges`, and all Linux capabilities dropped.
 - NiceGUI storage is explicitly written to `/data/nicegui` because `/app` is read-only.
+- Chatwoot agent replies use the selected API Inbox callback at `/webhooks/chatwoot/inbox` with timestamped HMAC verification. Account-level `/webhooks/chatwoot` delivery is migration-only and should be removed after callback acceptance.
 - The Meta proxy resolver requires internal HTTP Basic authentication and returns 404 when unauthenticated.
 - Residential proxy credentials belong in `META_PROXY_URL` in Coolify, not in Git.
 - Matrix-side portal encryption is disabled because the Chatwoot sidecar does not implement Matrix crypto. This does not disable Meta/Messenger E2EE handled by mautrix-meta.
